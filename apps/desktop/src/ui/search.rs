@@ -184,7 +184,7 @@ pub fn SearchPage() -> Element {
         if view.no_sources {
             div { class: "banner warn",
                 "No sources are installed yet. "
-                button { class: "btn small", onclick: move |_| state.go(Page::Sources), "Add sources" }
+                button { class: "btn small", onclick: move |_| state.go(Page::Sources), Icon { name: "plus", size: 15 } "Add sources" }
             }
         }
         if view.none_selected {
@@ -204,13 +204,13 @@ pub fn SearchPage() -> Element {
             EmptyState {
                 title: "What are we reading?",
                 message: "Type a title above and the cat will go looking for it.",
-                scene: "search",
+                scene: "ocean",
             }
         }
         if !view.failed.is_empty() && !view.searching {
             p { class: "muted small",
                 "These sources did not answer: {failed_text}. "
-                button { class: "btn small", onclick: move |_| state.go(Page::Sources), "Check sources" }
+                button { class: "btn small", onclick: move |_| state.go(Page::Sources), Icon { name: "refresh-cw", size: 15 } "Check sources" }
             }
         }
 

@@ -37,7 +37,7 @@ pub fn EmptyState(
     compact: Option<bool>,
     /// Show the cat asleep on an empty bookshelf instead of on its own.
     shelf: Option<bool>,
-    /// Or another scene: "search" or "waiting".
+    /// Or another scene: "search", "ocean" or "waiting".
     scene: Option<&'static str>,
 ) -> Element {
     let class = if compact.unwrap_or(false) {
@@ -47,7 +47,9 @@ pub fn EmptyState(
     };
     rsx! {
         div { class: "{class}",
-            if scene == Some("search") {
+            if scene == Some("ocean") {
+                super::ocean::OceanCat {}
+            } else if scene == Some("search") {
                 super::scenes::SearchCat {}
             } else if scene == Some("waiting") {
                 super::scenes::WaitingCat {}

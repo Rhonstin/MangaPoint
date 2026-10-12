@@ -182,7 +182,7 @@ pub fn SettingsPage() -> Element {
                         Row {
                             label: "Your library",
                             desc: format!("{}, {}, {}", plural(series_count, "series"), plural(chapter_count, "chapter"), human_bytes(library_bytes)),
-                            button { class: "btn small", onclick: move |_| state.go(Page::Library), "Open Library" }
+                            button { class: "btn", onclick: move |_| state.go(Page::Library), Icon { name: "book-open", size: 15 } "Open Library" }
                         }
                     },
                     SettingsSection::Files => rsx! {

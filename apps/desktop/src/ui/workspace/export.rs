@@ -277,7 +277,7 @@ pub fn ExportTab() -> Element {
                                 }
                             }
                         }
-                        button { class: "btn ghost small", onclick: move |_| state.go(Page::Library), "See all in Library" }
+                        button { class: "btn ghost small", onclick: move |_| state.go(Page::Library), Icon { name: "book-open", size: 15 } "See all in Library" }
                     }
                 }
             }

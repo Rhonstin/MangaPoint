@@ -6,6 +6,7 @@ mod conversion;
 mod downloads_page;
 mod icons;
 mod library_page;
+mod ocean;
 mod plan_page;
 mod presets;
 mod presets_lab;
@@ -207,7 +208,7 @@ fn DownloadBar() -> Element {
                         Icon { name: "play", size: 14 } "Resume"
                     }
                 }
-                button { class: "btn small", onclick: move |_| state.go(Page::Downloads), "Downloads" }
+                button { class: "btn small", onclick: move |_| state.go(Page::Downloads), Icon { name: "download", size: 15 } "Downloads" }
             }
             if let Some(batch) = &running {
                 div { style: "margin-top: 8px", ProgressBar { fraction: Some(batch.progress.fraction()) } }
