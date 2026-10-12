@@ -280,10 +280,8 @@ pub struct PreviewView {
     pub zoom: Zoom,
     /// Hide the settings panel to give the pages the whole width.
     pub focus: bool,
-    /// Show the downloaded page beside the converted one.
-    pub show_original: bool,
-    /// Draw the cropped-away area on the original.
-    pub show_crop: bool,
+    /// Show pages the user left out of the file (dimmed, with a way back).
+    pub show_skipped: bool,
 }
 
 impl Default for PreviewView {
@@ -291,23 +289,31 @@ impl Default for PreviewView {
         Self {
             zoom: Zoom::Fit,
             focus: false,
-            show_original: true,
-            show_crop: true,
+            show_skipped: true,
         }
     }
 }
 
-/// One page of the chapter, rendered for the preview.
+/// One page of the chapter's plan, as the Pages tab shows it.
 #[derive(Clone, PartialEq)]
 pub struct PreviewPage {
-    /// The page as it will appear on the reader (several for a long strip,
-    /// two for a split spread).
-    pub converted: Vec<Shot>,
-    /// The downloaded page, unconverted, for comparison.
-    pub original: Shot,
-    /// The part of the original the conversion keeps: left, top, width, height
-    /// as fractions of the image.
-    pub kept: [f32; 4],
+    /// The page as it will appear on the reader; `None` until it is drawn.
+    pub shot: Option<Shot>,
+    /// Left out of the file.
+    pub skipped: bool,
+    /// Starts at a cut the user placed, or has a spread handling they chose.
+    pub manual: bool,
+    /// Where the page starts in the stitched strip and how tall it is, in
+    /// units (a strip 1000 wide). Both 0 for a paged chapter.
+    pub unit_top: u32,
+    pub unit_height: u32,
+    /// The page's image, for a paged chapter.
+    pub image: Option<usize>,
+    /// The image is a landscape double page.
+    pub landscape: bool,
+    /// 0 or 1 when the page is half of a split spread; `None` otherwise.
+    pub half: Option<u8>,
+    pub rotated: bool,
 }
 
 /// What the Preview tab is showing: every page of one chapter.
@@ -315,10 +321,13 @@ pub struct PreviewPage {
 pub struct PreviewState {
     /// Downloaded chapter being previewed.
     pub chapter_key: Option<String>,
-    /// Every page of the chapter, in order. A page is `None` until it has been
-    /// drawn; after a settings change the old drawing stays until the new one
-    /// replaces it.
-    pub pages: Vec<Option<Rc<PreviewPage>>>,
+    /// Every page the chapter becomes, in order. After a settings change the
+    /// old drawing of a page stays until the new one replaces it.
+    pub pages: Vec<Rc<PreviewPage>>,
+    /// The chapter is one stitched strip (a webtoon), not one page per image.
+    pub strip: bool,
+    /// How many downloaded images the chapter has.
+    pub images: usize,
     /// Pages drawn with the current settings so far.
     pub fresh: usize,
     pub view: PreviewView,
@@ -579,8 +588,36 @@ impl AppState {
         let _ = JsonFile::new(paths().speeds_file()).save(&*self.speeds.read());
     }
 
+    /// Save the presets, bring every series that follows a preset up to date
+    /// with it, and redraw the preview.
     pub fn save_presets(&self) {
         let _ = JsonFile::new(paths().presets_file()).save(&*self.presets.read());
+        let mut library = self.library;
+        let changed = library.write().follow_presets(&self.presets.read());
+        if changed {
+            self.save_library();
+        }
+        if self.workspace.peek().is_some() {
+            crate::ui::work::schedule_preview(*self, 0);
+        }
+    }
+
+    /// The conversion settings and preset a new series starts with: the
+    /// preset chosen for the current reader if there is one, else the user's
+    /// defaults.
+    pub fn new_series_defaults(&self) -> (library::ConversionSettings, Option<String>) {
+        let settings = self.settings.peek();
+        let for_device = settings
+            .device_presets
+            .get(&settings.device)
+            .and_then(|id| self.presets.peek().find(id));
+        match for_device {
+            Some(entry) => (entry.preset.settings, Some(entry.preset.id)),
+            None => (
+                settings.conversion.clone(),
+                settings.default_preset_id.clone(),
+            ),
+        }
     }
 
     pub fn save_exports(&self) {

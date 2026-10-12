@@ -638,3 +638,14 @@ table.chapters tbody tr.locked:hover { background: transparent; }
 .hang .zz { opacity: 0; animation: zz 4.2s steps(4) infinite; }
 .hang .z1 { animation-delay: 2.1s; }
 @media (prefers-reduced-motion: reduce) { .hang *, .hang { animation: none !important; } .hang .tail-b, .hang .leaves-b, .hang .zz { opacity: 0; } }
+
+/* ---- pages: the cards of the chapter's plan ---- */
+.pages-grid { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start; transition: opacity 0.12s; }
+.pages-grid.busy { opacity: 0.92; }
+.page-card { display: flex; flex-direction: column; gap: 8px; max-width: 100%; }
+.page-card-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 0.9rem; }
+.page-card .page-shot { display: block; border: 1px solid var(--line-strong); border-radius: 6px; background: #fff; image-rendering: auto; }
+.page-card.skipped .page-shot { opacity: 0.35; filter: grayscale(1); }
+.page-card-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.page-card-actions .btn.small { padding: 6px 10px; min-height: 34px; font-size: 0.85rem; }
+.page-card-actions .seg button { padding: 6px 10px; font-size: 0.85rem; }

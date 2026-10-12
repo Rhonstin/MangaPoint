@@ -22,6 +22,7 @@ use pipeline::{
 use search::{merge_chapters, RankedSeries, ScoredMember};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc::unbounded_channel;
 use tracing::{info, warn};
@@ -238,8 +239,7 @@ pub fn saved_sources_of(members: &[ScoredMember]) -> Vec<library::SavedSource> {
 
 /// Put a series in the library without downloading anything.
 pub fn add_to_library(state: AppState, title: &str, sources: Vec<library::SavedSource>) {
-    let defaults = state.settings.peek().conversion.clone();
-    let preset = state.settings.peek().default_preset_id.clone();
+    let (defaults, preset) = state.new_series_defaults();
     let already = state
         .library
         .peek()
@@ -730,8 +730,7 @@ pub fn commit_plan(state: AppState) {
 
 /// Put a series in the library as a download is queued, without a message.
 fn add_to_library_quietly(state: AppState, title: &str, sources: &[library::SavedSource]) {
-    let defaults = state.settings.peek().conversion.clone();
-    let preset = state.settings.peek().default_preset_id.clone();
+    let (defaults, preset) = state.new_series_defaults();
     let id = {
         let mut library = state.library;
         let mut db = library.write();
@@ -783,8 +782,7 @@ async fn run_batch(state: AppState, id: u64) {
     };
     let started = Instant::now();
     let files = library_files();
-    let defaults = state.settings.peek().conversion.clone();
-    let default_preset = state.settings.peek().default_preset_id.clone();
+    let (defaults, default_preset) = state.new_series_defaults();
     let shrink = state.settings.peek().shrink_downloads;
     let policy = RetryPolicy::default();
     let limits = state.settings.peek().download.limits();
@@ -1091,10 +1089,12 @@ pub fn schedule_lab(state: AppState, delay_ms: u64) {
         let device = state.settings.peek().device_profile();
         let opts = pipeline::process_options_for(&device, &draft);
 
-        // The page to try: from the library, or drawn from scratch.
+        // The page to try: from the library, or drawn from scratch. A few
+        // pages from there on are planned together, so a webtoon preset shows
+        // its stitched pages the way the export will make them.
         let mut total_pages = 0;
         let mut page_index = 0;
-        let mut file = None;
+        let mut files = Vec::new();
         if let Some(series_id) = &sample {
             let first = state
                 .library
@@ -1106,15 +1106,39 @@ pub fn schedule_lab(state: AppState, delay_ms: u64) {
                 if !pages.is_empty() {
                     total_pages = pages.len();
                     page_index = wanted_page.min(pages.len() - 1);
-                    file = Some(pages[page_index].clone());
+                    files = pages[page_index..]
+                        .iter()
+                        .take(LAB_WINDOW)
+                        .cloned()
+                        .collect();
                 }
             }
         }
-        let rendered = tokio::task::spawn_blocking(move || match file {
-            Some(path) => std::fs::read(&path)
-                .map_err(|e| format!("Could not read the page: {e}"))
-                .and_then(|bytes| pipeline::render_page(&bytes, &opts).map_err(|e| e.to_string())),
-            None => Ok(pipeline::render_gray(&pipeline::sample_page(), &opts)),
+        let rendered = tokio::task::spawn_blocking(move || {
+            let grays = if files.is_empty() {
+                vec![pipeline::sample_page()]
+            } else {
+                files
+                    .iter()
+                    .map(|path| {
+                        std::fs::read(path)
+                            .map_err(|e| format!("Could not read the page: {e}"))
+                            .and_then(|bytes| {
+                                pipeline::decode_page(&bytes).map_err(|e| e.to_string())
+                            })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?
+            };
+            let chapter =
+                pipeline::prepare_chapter(&grays, &opts, &converter::PageEdits::default());
+            let converted: Vec<PreviewImage> = chapter
+                .plan
+                .kept()
+                .take(3)
+                .map(|page| pipeline::render_planned(&chapter.prepared, page, &opts))
+                .collect();
+            let original = pipeline::render_original(&grays[0], &opts);
+            Ok::<_, String>((converted, original))
         })
         .await;
         if !current(state) {
@@ -1124,10 +1148,10 @@ pub fn schedule_lab(state: AppState, delay_ms: u64) {
         let mut l = lab.write();
         l.busy = false;
         match rendered {
-            Ok(Ok(page)) => {
-                l.converted = page.converted.iter().map(shot).collect();
-                l.original = Some(shot(&page.original.image));
-                l.kept = Some(page.original.kept);
+            Ok(Ok((converted, original))) => {
+                l.converted = converted.iter().map(shot).collect();
+                l.original = Some(shot(&original.image));
+                l.kept = Some(original.kept);
                 l.total_pages = total_pages;
                 l.page = page_index;
             }
@@ -1192,16 +1216,74 @@ pub fn prepare_preview(state: AppState) {
             .chapter_key
             .as_ref()
             .map_or(0, |k| library_files().page_files(&ws.series_id, k).len());
-        valid && on_disk > 0 && p.pages.len() == on_disk && p.fresh == on_disk && !p.busy
+        valid && on_disk > 0 && !p.pages.is_empty() && p.fresh == p.pages.len() && !p.busy
     };
     if !up_to_date {
         schedule_preview(state, 0);
     }
 }
 
-/// Draw every page of the chapter with the series' settings, a few at a time
-/// in the background. Settings changes call this with a short delay, so
-/// dragging a slider draws once it settles.
+/// The decoded images of the chapter last previewed, so tuning a slider does
+/// not read and decode every page again.
+type DecodedChapter = (String, Arc<Vec<converter::GrayImage>>);
+static DECODED: Mutex<Option<DecodedChapter>> = Mutex::new(None);
+
+/// Read and decode a chapter's saved pages, in order.
+async fn decode_chapter(
+    cache_key: String,
+    files: Vec<std::path::PathBuf>,
+) -> Result<Arc<Vec<converter::GrayImage>>, String> {
+    if let Some((k, grays)) = DECODED.lock().ok().and_then(|g| g.clone()) {
+        if k == cache_key {
+            return Ok(grays);
+        }
+    }
+    let decoded: Vec<Result<converter::GrayImage, String>> = stream::iter(files.into_iter())
+        .map(|path| async move {
+            tokio::task::spawn_blocking(move || {
+                let bytes = std::fs::read(&path)
+                    .map_err(|e| format!("Could not read a saved page: {e}"))?;
+                pipeline::decode_page(&bytes).map_err(|e| e.to_string())
+            })
+            .await
+            .map_err(|e| e.to_string())?
+        })
+        .buffered(PREVIEW_THREADS)
+        .collect()
+        .await;
+    let grays = Arc::new(decoded.into_iter().collect::<Result<Vec<_>, _>>()?);
+    if let Ok(mut g) = DECODED.lock() {
+        *g = Some((cache_key, grays.clone()));
+    }
+    Ok(grays)
+}
+
+/// Change the page corrections of the chapter being previewed, save them, and
+/// draw the chapter again.
+pub fn edit_pages(state: AppState, change: impl FnOnce(&mut converter::PageEdits)) {
+    let Some(ws) = state.workspace.peek().clone() else {
+        return;
+    };
+    let Some(key) = state.preview.peek().chapter_key.clone() else {
+        return;
+    };
+    let mut edits = state
+        .library
+        .peek()
+        .find(&ws.series_id)
+        .and_then(|s| s.page_edits.get(&key).cloned())
+        .unwrap_or_default();
+    change(&mut edits);
+    let mut library = state.library;
+    library.write().set_page_edits(&ws.series_id, &key, edits);
+    state.save_library();
+    schedule_preview(state, 0);
+}
+
+/// Plan the chapter with the series' settings, then draw each page a few at a
+/// time in the background. The plan appears first, so the screen takes its
+/// shape at once. Settings changes call this with a short delay, so dragging a
+/// slider draws once it settles.
 pub fn schedule_preview(state: AppState, delay_ms: u64) {
     let mut preview = state.preview;
     let generation = {
@@ -1244,9 +1326,36 @@ pub fn schedule_preview(state: AppState, delay_ms: u64) {
             return fail("This series is not in your library.".into());
         };
         let device = state.settings.peek().device_profile();
-        let pages = library_files().page_files(&ws.series_id, &key);
-        if pages.is_empty() {
+        let files = library_files().page_files(&ws.series_id, &key);
+        if files.is_empty() {
             return fail("This chapter has no saved pages. Download it again.".into());
+        }
+        let image_count = files.len();
+        let grays =
+            match decode_chapter(format!("{}/{key}/{image_count}", ws.series_id), files).await {
+                Ok(g) => g,
+                Err(message) => return fail(message),
+            };
+        if !current(state) {
+            return;
+        }
+
+        // The same planning and conversion the export runs.
+        let opts = pipeline::process_options_for(&device, &series.settings);
+        let edits = series.page_edits.get(&key).cloned().unwrap_or_default();
+        let chapter = {
+            let (opts, edits, grays) = (opts.clone(), edits, grays.clone());
+            match tokio::task::spawn_blocking(move || {
+                pipeline::prepare_chapter(&grays, &opts, &edits)
+            })
+            .await
+            {
+                Ok(c) => c,
+                Err(e) => return fail(e.to_string()),
+            }
+        };
+        if !current(state) {
+            return;
         }
         {
             let mut p = state.preview;
@@ -1254,25 +1363,52 @@ pub fn schedule_preview(state: AppState, delay_ms: u64) {
             if w.generation != generation {
                 return;
             }
-            w.pages.resize(pages.len(), None);
+            let old = std::mem::take(&mut w.pages);
+            w.strip = chapter.plan.strip;
+            w.images = image_count;
+            w.pages = chapter
+                .plan
+                .pages
+                .iter()
+                .enumerate()
+                .map(|(i, page)| {
+                    // Keep the previous drawing of this page until it is redrawn.
+                    let shot = old.get(i).and_then(|o| o.shot.clone());
+                    let (image, half, rotated) = match page.source {
+                        converter::Source::Image { index, part } => (
+                            Some(index),
+                            match part {
+                                converter::plan::Part::Half(n) => Some(n),
+                                _ => None,
+                            },
+                            part == converter::plan::Part::Rotated,
+                        ),
+                        converter::Source::Strip { .. } => (None, None, false),
+                    };
+                    Rc::new(PreviewPage {
+                        shot,
+                        skipped: page.skipped,
+                        manual: page.manual,
+                        unit_top: page.unit_top,
+                        unit_height: page.unit_height,
+                        image,
+                        landscape: page.landscape,
+                        half,
+                        rotated,
+                    })
+                })
+                .collect();
         }
 
-        // The same conversion the export runs, on background threads.
-        let opts = pipeline::process_options_for(&device, &series.settings);
-        let mut drawn = stream::iter(pages.into_iter().enumerate())
-            .map(|(index, path)| {
-                let opts = opts.clone();
+        let prepared = chapter.prepared.clone();
+        let jobs: Vec<(usize, converter::PlannedPage)> =
+            chapter.plan.pages.iter().cloned().enumerate().collect();
+        let mut drawn = stream::iter(jobs)
+            .map(|(index, page)| {
+                let (opts, prepared) = (opts.clone(), prepared.clone());
                 async move {
                     let result = tokio::task::spawn_blocking(move || {
-                        let bytes = std::fs::read(&path)
-                            .map_err(|e| format!("Could not read a saved page: {e}"))?;
-                        let page =
-                            pipeline::render_page(&bytes, &opts).map_err(|e| e.to_string())?;
-                        Ok::<PreviewPage, String>(PreviewPage {
-                            converted: page.converted.iter().map(shot).collect(),
-                            original: shot(&page.original.image),
-                            kept: page.original.kept,
-                        })
+                        pipeline::render_planned(&prepared, &page, &opts)
                     })
                     .await;
                     (index, result)
@@ -1285,19 +1421,18 @@ pub fn schedule_preview(state: AppState, delay_ms: u64) {
                 return;
             }
             match result {
-                Ok(Ok(page)) => {
+                Ok(image) => {
                     let mut p = state.preview;
                     let mut w = p.write();
                     if let Some(slot) = w.pages.get_mut(index) {
-                        *slot = Some(Rc::new(page));
+                        let mut next = (**slot).clone();
+                        next.shot = Some(shot(&image));
+                        *slot = Rc::new(next);
                     }
                     w.fresh += 1;
                 }
-                Ok(Err(message)) => {
-                    first_error.get_or_insert(format!("Page {}: {message}", index + 1));
-                }
                 Err(e) => {
-                    first_error.get_or_insert(e.to_string());
+                    first_error.get_or_insert(format!("Page {}: {e}", index + 1));
                 }
             }
         }
@@ -1312,6 +1447,9 @@ pub fn schedule_preview(state: AppState, delay_ms: u64) {
 
 /// Pages drawn at the same time while previewing.
 const PREVIEW_THREADS: usize = 3;
+
+/// Pages from the chosen one on that the Presets test page plans together.
+const LAB_WINDOW: usize = 6;
 
 // ---- Exporting -------------------------------------------------------------
 

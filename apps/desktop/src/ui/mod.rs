@@ -19,7 +19,7 @@ mod setup;
 mod shelf;
 mod sources_page;
 mod widgets;
-mod work;
+pub mod work;
 mod workspace;
 
 use crate::backend;

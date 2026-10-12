@@ -898,7 +898,7 @@ mod tests {
     fn a_spread_is_cut_at_the_spine_when_there_is_a_blank_one() {
         // Art on both sides with a blank band a little left of centre.
         let img = GrayImage::from_fn(1000, 800, |x, y| {
-            let margin = x < 30 || x >= 970 || y < 30 || y >= 770;
+            let margin = !(30..970).contains(&x) || !(30..770).contains(&y);
             if margin || (440..470).contains(&x) {
                 255
             } else {
@@ -908,7 +908,7 @@ mod tests {
         .unwrap();
         assert!((450..=460).contains(&spine(&img)), "{}", spine(&img));
         let solid = GrayImage::from_fn(1000, 800, |x, y| {
-            if x < 30 || x >= 970 || y < 30 || y >= 770 {
+            if !(30..970).contains(&x) || !(30..770).contains(&y) {
                 255
             } else {
                 30

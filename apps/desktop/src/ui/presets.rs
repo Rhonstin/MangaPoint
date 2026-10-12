@@ -16,7 +16,7 @@ pub fn apply_to_series(
     let mut library = state.library;
     {
         let mut db = library.write();
-        db.set_settings(series_id, settings);
+        db.set_settings(series_id, settings.clone(), Some(&settings));
         db.set_preset(series_id, preset_id);
     }
     state.save_library();
