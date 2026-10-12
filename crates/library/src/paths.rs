@@ -69,6 +69,20 @@ impl AppPaths {
     pub fn page_cache_dir(&self) -> PathBuf {
         self.root.join("cache").join("pages")
     }
+    /// Downloaded chapters (see `downloads`).
+    pub fn library_dir(&self) -> PathBuf {
+        self.root.join("library")
+    }
+    pub fn library_file(&self) -> PathBuf {
+        self.root.join("library.json")
+    }
+    pub fn exports_file(&self) -> PathBuf {
+        self.root.join("exports.json")
+    }
+    /// Scratch space for files being assembled.
+    pub fn spool_dir(&self) -> PathBuf {
+        self.root.join("cache").join("spool")
+    }
     pub fn default_export_dir(&self) -> PathBuf {
         self.root.join("exports")
     }
@@ -94,6 +108,10 @@ mod tests {
             p.server_data_dir(),
             p.page_cache_dir(),
             p.default_export_dir(),
+            p.library_dir(),
+            p.library_file(),
+            p.exports_file(),
+            p.spool_dir(),
         ] {
             assert!(f.starts_with("/r"), "{f:?}");
         }

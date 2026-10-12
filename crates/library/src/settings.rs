@@ -70,6 +70,9 @@ pub struct Settings {
     pub export: ExportSettings,
     /// Allow Suwayomi's embedded Chromium (needed by a few sources).
     pub browser_support: bool,
+    /// Shrink downloaded pages to save disk space. Off by default: pages are
+    /// kept exactly as downloaded, for the best quality.
+    pub shrink_downloads: bool,
     /// Preferred source language for search and ranking.
     pub language: String,
     /// Source ids the user prefers when the same series exists in several.
@@ -84,6 +87,7 @@ impl Default for Settings {
             conversion: ConversionSettings::default(),
             export: ExportSettings::default(),
             browser_support: false,
+            shrink_downloads: false,
             language: "en".into(),
             preferred_sources: Vec::new(),
         }
@@ -103,6 +107,10 @@ mod tests {
         assert_eq!(s.conversion.overlap_percent, 8);
         assert_eq!(s.conversion.dither, Dither::FloydSteinberg);
         assert!(!s.browser_support, "browser support is opt-in");
+        assert!(
+            !s.shrink_downloads,
+            "pages are kept at full quality by default"
+        );
     }
 
     #[test]
