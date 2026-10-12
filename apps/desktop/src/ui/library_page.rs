@@ -1,14 +1,43 @@
 //! The Library: everything downloaded, and every file exported.
 
-use super::widgets::{show_in_folder, Chip, EmptyState, Icon};
-use super::work::{forget_exported_file, open_series_from_library};
-use crate::logic::{ago, human_bytes};
+use super::widgets::{show_in_folder, Chip, Cover, EmptyState, Icon};
+use super::work::{
+    ensure_series_info, forget_exported_file, load_saved_cover, open_series_from_library,
+    saved_cover_key,
+};
+use crate::logic::{ago, human_bytes, plural};
 use crate::state::{now_secs, AppState, Modal, ModalAction, Page};
 use dioxus::prelude::*;
 
 #[component]
 pub fn LibraryPage() -> Element {
     let state = use_context::<AppState>();
+    // Fetch the details and covers of series that do not have them yet, and
+    // show the saved covers. Runs again when the catalog comes up or the
+    // library changes.
+    use_effect(move || {
+        let _catalog_ready = state.services.read().is_some();
+        let series: Vec<(String, bool, bool)> = state
+            .library
+            .read()
+            .series
+            .iter()
+            .map(|s| {
+                (
+                    s.id.clone(),
+                    s.info.is_some(),
+                    s.info.as_ref().is_some_and(|i| i.has_cover),
+                )
+            })
+            .collect();
+        for (id, has_info, has_cover) in series {
+            if !has_info {
+                ensure_series_info(state, &id);
+            } else if has_cover {
+                load_saved_cover(state, &id);
+            }
+        }
+    });
     let library = state.library.read().clone();
     let mut records = state.exports.read().records.clone();
     records.reverse(); // newest first
@@ -36,36 +65,64 @@ pub fn LibraryPage() -> Element {
                     button { class: "btn", onclick: move |_| state.go(Page::Search), Icon { name: "search", size: 16 } "Find a series" }
                 }
             }
-            for s in library.series.iter() {
-                {
-                    let id = s.id.clone();
-                    let open_id = s.id.clone();
-                    let title = s.title.clone();
-                    let size = human_bytes(s.bytes());
-                    let body = format!(
-                        "The downloaded pages of {} ({size}) will be deleted. Files you already exported are kept, and you can download the chapters again later.",
-                        s.title
-                    );
-                    rsx! {
-                        div { class: "list-row", key: "{s.id}",
-                            div { class: "grow",
-                                strong { "{s.title}" }
-                                div { class: "muted small", "{s.chapters.len()} chapters · {s.page_count()} pages · {size}" }
-                            }
-                            button { class: "btn primary small", onclick: move |_| open_series_from_library(state, &open_id),
-                                Icon { name: "eye", size: 14 } "Open"
-                            }
-                            button {
-                                class: "btn small danger", title: "Delete the downloaded pages",
-                                onclick: move |_| state.ask(Modal {
-                                    title: format!("Delete {title}?"),
-                                    body: body.clone(),
-                                    confirm: "Delete".into(),
-                                    cancel: "Keep".into(),
-                                    danger: true,
-                                    action: ModalAction::DeleteDownloadedSeries { series_id: id.clone() },
-                                }),
-                                Icon { name: "trash", size: 14 } "Delete"
+            div { class: "lib-grid",
+                for s in library.series.iter() {
+                    {
+                        let id = s.id.clone();
+                        let open_id = s.id.clone();
+                        let title = s.title.clone();
+                        let size = human_bytes(s.bytes());
+                        let body = format!(
+                            "The downloaded pages of {} ({size}) will be deleted. Files you already exported are kept, and you can download the chapters again later.",
+                            s.title
+                        );
+                        let info = s.info.clone();
+                        let has_cover = info.as_ref().is_some_and(|i| i.has_cover);
+                        let cover_key = saved_cover_key(&s.id);
+                        let status = info.as_ref().map(|i| i.status.clone()).unwrap_or_default();
+                        let genres = info.as_ref().map(|i| i.genres.iter().take(4).cloned().collect::<Vec<_>>().join(" · ")).unwrap_or_default();
+                        let blurb = info.as_ref().map(|i| i.description.clone()).unwrap_or_default();
+                        let sources = info
+                            .as_ref()
+                            .map(|i| i.source_names.iter().map(|(_, n)| n.clone()).collect::<Vec<_>>().join(", "))
+                            .unwrap_or_default();
+                        let loading = state.info_busy.read().contains(&s.id);
+                        rsx! {
+                            div { class: "lib-card", key: "{s.id}",
+                                div { class: "lib-main", title: "Open {s.title}",
+                                    onclick: move |_| open_series_from_library(state, &open_id),
+                                    div { class: "lib-cover",
+                                        if has_cover { Cover { key_id: cover_key } } else { div { class: "cover empty", "📖" } }
+                                    }
+                                    div { class: "lib-text",
+                                        strong { class: "lib-title", "{s.title}" }
+                                        div { class: "row wrap", style: "margin: 4px 0",
+                                            if !status.is_empty() { Chip { text: status, kind: Some("accent".to_string()) } }
+                                            span { class: "muted small", "{plural(s.chapters.len(), \"chapter\")} · {plural(s.page_count(), \"page\")} · {size}" }
+                                        }
+                                        if !genres.is_empty() { div { class: "muted small", "{genres}" } }
+                                        if !blurb.is_empty() {
+                                            p { class: "muted small clamp2", style: "margin: 6px 0 0", "{blurb}" }
+                                        } else if loading {
+                                            p { class: "muted small", style: "margin: 6px 0 0", "Loading details…" }
+                                        }
+                                        if !sources.is_empty() { div { class: "muted small", style: "margin-top: 4px", "From {sources}" } }
+                                    }
+                                }
+                                div { class: "lib-actions",
+                                    button {
+                                        class: "btn small danger", title: "Delete the downloaded pages",
+                                        onclick: move |_| state.ask(Modal {
+                                            title: format!("Delete {title}?"),
+                                            body: body.clone(),
+                                            confirm: "Delete".into(),
+                                            cancel: "Keep".into(),
+                                            danger: true,
+                                            action: ModalAction::DeleteDownloadedSeries { series_id: id.clone() },
+                                        }),
+                                        Icon { name: "trash", size: 14 }
+                                    }
+                                }
                             }
                         }
                     }

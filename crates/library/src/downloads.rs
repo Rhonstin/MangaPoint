@@ -78,6 +78,49 @@ pub struct DownloadedChapter {
     pub downloaded_at: u64,
 }
 
+/// What the sources say about a series, saved so the Library can describe it
+/// long after the search that found it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SeriesInfo {
+    pub description: String,
+    pub author: String,
+    pub artist: String,
+    /// "Ongoing", "Completed" and so on; empty when the source does not say.
+    pub status: String,
+    pub genres: Vec<String>,
+    /// Source id and name, for the sources chapters came from.
+    pub source_names: Vec<(String, String)>,
+    /// A cover is saved next to the chapters (see [`LibraryFiles::cover_path`]).
+    pub has_cover: bool,
+    /// Seconds since the Unix epoch.
+    pub saved_at: u64,
+}
+
+impl SeriesInfo {
+    /// The name of a source, if it was recorded.
+    pub fn source_name(&self, source_id: &str) -> Option<&str> {
+        self.source_names
+            .iter()
+            .find(|(id, _)| id == source_id)
+            .map(|(_, name)| name.as_str())
+    }
+}
+
+/// A source's status word, as a person would say it.
+pub fn status_label(raw: &str) -> String {
+    match raw.trim().to_ascii_uppercase().as_str() {
+        "ONGOING" => "Ongoing",
+        "COMPLETED" => "Completed",
+        "ON_HIATUS" => "On hiatus",
+        "CANCELLED" => "Cancelled",
+        "LICENSED" => "Licensed",
+        "PUBLISHING_FINISHED" => "Publishing finished",
+        _ => "",
+    }
+    .to_string()
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DownloadedSeries {
@@ -89,6 +132,8 @@ pub struct DownloadedSeries {
     /// The preset these settings started from, if any. The settings may have
     /// been changed since.
     pub preset_id: Option<String>,
+    /// Description, author, genres and so on, once they have been fetched.
+    pub info: Option<SeriesInfo>,
     pub updated_at: u64,
 }
 
@@ -137,6 +182,7 @@ impl LibraryDb {
                     chapters: Vec::new(),
                     settings: defaults.clone(),
                     preset_id: None,
+                    info: None,
                     updated_at: now,
                 });
                 self.series.len() - 1
@@ -195,6 +241,12 @@ impl LibraryDb {
         }
     }
 
+    pub fn set_info(&mut self, series_id: &str, info: SeriesInfo) {
+        if let Some(s) = self.series.iter_mut().find(|s| s.id == series_id) {
+            s.info = Some(info);
+        }
+    }
+
     /// Remember which preset a series started from.
     pub fn set_preset(&mut self, series_id: &str, preset_id: Option<String>) {
         if let Some(s) = self.series.iter_mut().find(|s| s.id == series_id) {
@@ -246,6 +298,12 @@ impl LibraryFiles {
 
     pub fn series_dir(&self, series_id: &str) -> PathBuf {
         self.root.join(component(series_id))
+    }
+
+    /// Where the series' cover image is kept: in its folder, beside the
+    /// chapters, so deleting the series deletes it too.
+    pub fn cover_path(&self, series_id: &str) -> PathBuf {
+        self.series_dir(series_id).join("cover.img")
     }
 
     pub fn chapter_dir(&self, series_id: &str, key: &str) -> PathBuf {
@@ -345,6 +403,54 @@ mod tests {
             bytes: 1000,
             downloaded_at: 5,
         }
+    }
+
+    #[test]
+    fn status_words_are_readable_and_unknown_ones_are_left_out() {
+        assert_eq!(status_label("ONGOING"), "Ongoing");
+        assert_eq!(status_label("on_hiatus"), "On hiatus");
+        assert_eq!(status_label("PUBLISHING_FINISHED"), "Publishing finished");
+        assert_eq!(status_label("UNKNOWN"), "");
+        assert_eq!(status_label(""), "");
+    }
+
+    #[test]
+    fn a_series_keeps_its_details_and_the_cover_lives_in_its_own_folder() {
+        let mut db = LibraryDb::default();
+        let id = db.record_chapter(
+            "X",
+            &ConversionSettings::default(),
+            chapter(Some(1.0), 1, "a"),
+            1,
+        );
+        assert!(db.find(&id).unwrap().info.is_none());
+        db.set_info(
+            &id,
+            SeriesInfo {
+                description: "A story.".into(),
+                genres: vec!["Action".into()],
+                source_names: vec![("42".into(), "Some Source".into())],
+                has_cover: true,
+                ..Default::default()
+            },
+        );
+        let info = db.find(&id).unwrap().info.clone().unwrap();
+        assert_eq!(info.source_name("42"), Some("Some Source"));
+        assert_eq!(info.source_name("nope"), None);
+
+        let files = LibraryFiles::new("/lib");
+        assert_eq!(
+            files.cover_path(&id).parent().unwrap(),
+            files.series_dir(&id)
+        );
+        // Even a hostile id cannot put the cover outside the library.
+        let evil = files.cover_path("../../etc");
+        assert!(evil.starts_with("/lib"), "{evil:?}");
+
+        // Old library files without details still load.
+        let old = r#"{"series":[{"id":"a","title":"A","chapters":[]}]}"#;
+        let db: LibraryDb = serde_json::from_str(old).unwrap();
+        assert!(db.series[0].info.is_none());
     }
 
     #[test]

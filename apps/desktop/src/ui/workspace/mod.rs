@@ -3,9 +3,11 @@
 mod chapters;
 mod downloads;
 mod export;
+mod overview;
 mod preview;
 
 use super::widgets::{cover_key, Chip, Cover, EmptyState, Icon};
+use super::work::{load_saved_cover, saved_cover_key};
 use crate::logic::{tab_blocked, Needs};
 use crate::state::{AppState, JobKind, Page, SeriesTab};
 use dioxus::prelude::*;
@@ -45,10 +47,22 @@ pub fn WorkspacePage() -> Element {
         "Results"
     };
     let origin = ws.origin;
+    // The cover from the search that found it, or the one saved with the series.
+    let saved_cover = state
+        .library
+        .read()
+        .find(&ws.series_id)
+        .and_then(|s| s.info.as_ref())
+        .is_some_and(|i| i.has_cover);
     let cover = ws
         .ranked
         .as_ref()
-        .map(|r| cover_key(&r.best().candidate.source_id, r.best().candidate.manga_id));
+        .map(|r| cover_key(&r.best().candidate.source_id, r.best().candidate.manga_id))
+        .or_else(|| saved_cover.then(|| saved_cover_key(&ws.series_id)));
+    {
+        let id = ws.series_id.clone();
+        use_effect(move || load_saved_cover(state, &id));
+    }
     let source_chips: Vec<String> = ws
         .ranked
         .as_ref()
@@ -67,7 +81,8 @@ pub fn WorkspacePage() -> Element {
         }
         div { class: "spacer" }
         div { class: "page-head",
-            if let Some(key) = cover {
+            // The Overview tab shows the cover large, so it is not repeated here.
+            if let Some(key) = cover.filter(|_| ws.tab != SeriesTab::Overview) {
                 div { style: "width: 72px; flex: none; border-radius: 8px; overflow: hidden", Cover { key_id: key } }
             }
             div { class: "grow",
@@ -88,6 +103,8 @@ pub fn WorkspacePage() -> Element {
         }
 
         div { class: "tabs",
+            Tab { tab: SeriesTab::Overview, icon: "info", label: "Overview", active: ws.tab == SeriesTab::Overview,
+                blocked: tab_blocked(Needs::Downloads, selected, downloaded, downloading), badge: None }
             Tab { tab: SeriesTab::Chapters, icon: "list-checks", label: "Chapters", active: ws.tab == SeriesTab::Chapters,
                 blocked: tab_blocked(Needs::Nothing, selected, downloaded, downloading),
                 badge: (selected > 0).then(|| selected.to_string()) }
@@ -101,6 +118,7 @@ pub fn WorkspacePage() -> Element {
         }
 
         {match ws.tab {
+            SeriesTab::Overview => rsx! { overview::OverviewTab {} },
             SeriesTab::Chapters => rsx! { chapters::ChaptersTab {} },
             SeriesTab::Downloads => rsx! { downloads::DownloadsTab {} },
             SeriesTab::Preview => rsx! { preview::PreviewTab {} },

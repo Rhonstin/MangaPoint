@@ -1,7 +1,7 @@
 //! An in-memory [`Catalog`] for tests (enable the `fake` feature).
 
 use crate::api::Catalog;
-use crate::client::{Browse, BrowsePage, Chapter, Extension, MangaSummary, Source};
+use crate::client::{Browse, BrowsePage, Chapter, Extension, MangaDetails, MangaSummary, Source};
 use crate::error::{CatalogError, Result};
 use async_trait::async_trait;
 use std::collections::{HashMap, HashSet};
@@ -39,6 +39,8 @@ struct State {
     manga: HashMap<String, Vec<MangaSummary>>,
     chapters: HashMap<i64, Vec<Chapter>>,
     pages: HashMap<i64, Vec<String>>,
+    /// chapter id -> details of its series
+    details: HashMap<i64, MangaDetails>,
     bytes: HashMap<String, Vec<u8>>,
     faults: HashMap<String, Fault>,
     /// Fail the first N calls to each path in `get_bytes`.
@@ -113,6 +115,14 @@ impl FakeCatalog {
             .unwrap()
             .pages
             .insert(chapter_id, paths.iter().map(|p| p.to_string()).collect());
+    }
+
+    pub fn set_details(&self, chapter_id: i64, details: MangaDetails) {
+        self.state
+            .lock()
+            .unwrap()
+            .details
+            .insert(chapter_id, details);
     }
 
     pub fn set_bytes(&self, path: &str, data: Vec<u8>) {
@@ -275,6 +285,17 @@ impl Catalog for FakeCatalog {
             .get(&manga_id)
             .cloned()
             .unwrap_or_default())
+    }
+
+    async fn manga_of_chapter(&self, chapter_id: i64) -> Result<MangaDetails> {
+        self.record(format!("details {chapter_id}"));
+        self.state
+            .lock()
+            .unwrap()
+            .details
+            .get(&chapter_id)
+            .cloned()
+            .ok_or_else(|| CatalogError::BadResponse("no such chapter".into()))
     }
 
     async fn chapter_pages(&self, chapter_id: i64) -> Result<Vec<String>> {

@@ -160,33 +160,23 @@ pub fn ChaptersTab() -> Element {
         .iter()
         .map(|&i| {
             let ch = &loaded.merged[i];
-            let on = selected_now.contains(&i);
-            let saved = have.contains(&merged_key(ch));
-            let number = ch.number.map(logic::format_number).unwrap_or_else(|| "–".to_string());
-            let date = logic::format_date(logic::latest_upload(ch));
-            let count = ch.options.len();
             let tip = ch
                 .options
                 .iter()
                 .filter_map(|o| loaded.member_names.get(o.member).cloned())
                 .collect::<Vec<_>>()
                 .join(", ");
-            let name = ch.name.clone();
-            let mut selected = state.selected;
             rsx! {
-                tr {
+                ChapterRow {
                     key: "{i}",
-                    class: if on { "on" } else { "" },
-                    onclick: move |_| {
-                        let mut s = selected.write();
-                        if !s.remove(&i) { s.insert(i); }
-                    },
-                    td { class: "check", input { r#type: "checkbox", checked: on, readonly: true, style: "pointer-events: none" } }
-                    td { class: "num", "{number}" }
-                    td { class: "name", title: "{name}", "{name}" }
-                    td { class: "saved", if saved { Icon { name: "circle-check", size: 15 } } }
-                    td { class: "src", title: "{tip}", "{count}" }
-                    td { class: "date", "{date}" }
+                    index: i,
+                    on: selected_now.contains(&i),
+                    saved: have.contains(&merged_key(ch)),
+                    number: ch.number.map(logic::format_number).unwrap_or_else(|| "–".to_string()),
+                    name: ch.name.clone(),
+                    sources: ch.options.len(),
+                    tip,
+                    date: logic::format_date(logic::latest_upload(ch)),
                 }
             }
         })
@@ -331,6 +321,38 @@ pub fn ChaptersTab() -> Element {
                     }
                 }
             }
+        }
+    }
+}
+
+/// One row of the chapter table, a component of its own so that ticking a
+/// chapter redraws that row and not the whole table.
+#[component]
+fn ChapterRow(
+    index: usize,
+    on: bool,
+    saved: bool,
+    number: String,
+    name: String,
+    sources: usize,
+    tip: String,
+    date: String,
+) -> Element {
+    let state = use_context::<AppState>();
+    rsx! {
+        tr {
+            class: if on { "on" } else { "" },
+            onclick: move |_| {
+                let mut selected = state.selected;
+                let mut s = selected.write();
+                if !s.remove(&index) { s.insert(index); }
+            },
+            td { class: "check", input { r#type: "checkbox", checked: on, readonly: true, style: "pointer-events: none" } }
+            td { class: "num", "{number}" }
+            td { class: "name", title: "{name}", "{name}" }
+            td { class: "saved", if saved { Icon { name: "circle-check", size: 15 } } }
+            td { class: "src", title: "{tip}", "{sources}" }
+            td { class: "date", "{date}" }
         }
     }
 }

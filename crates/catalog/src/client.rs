@@ -69,6 +69,22 @@ pub struct BrowsePage {
     pub has_next_page: bool,
 }
 
+/// What a source says about a series itself.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MangaDetails {
+    pub id: i64,
+    pub title: String,
+    pub description: Option<String>,
+    pub author: Option<String>,
+    pub artist: Option<String>,
+    #[serde(default)]
+    pub genre: Vec<String>,
+    /// For example "ONGOING" or "COMPLETED".
+    pub status: Option<String>,
+    pub thumbnail_url: Option<String>,
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Chapter {
@@ -346,6 +362,50 @@ impl SuwayomiClient {
         );
         let r: R = self.graphql(&q).await?;
         Ok(r.fetch_chapters.chapters)
+    }
+
+    /// The series a chapter belongs to, with its description, author, genres,
+    /// status and cover. Works for any chapter the server has seen, so it can
+    /// describe a series downloaded long ago.
+    ///
+    /// A server only knows a series' title and cover from a search; the rest
+    /// is read from the source on request, so if it is missing this asks.
+    pub async fn manga_of_chapter(&self, chapter_id: i64) -> Result<MangaDetails> {
+        #[derive(Deserialize)]
+        struct Inner {
+            manga: MangaDetails,
+        }
+        #[derive(Deserialize)]
+        struct R {
+            chapter: Inner,
+        }
+        const FIELDS: &str = "id title description author artist genre status thumbnailUrl";
+        let q = format!("{{ chapter(id:{chapter_id}) {{ manga {{ {FIELDS} }} }} }}");
+        let known: MangaDetails = self.graphql::<R>(&q).await?.chapter.manga;
+        let missing = known.description.as_deref().is_none_or(str::is_empty)
+            && known.author.is_none()
+            && known.genre.is_empty();
+        if !missing {
+            return Ok(known);
+        }
+        #[derive(Deserialize)]
+        struct Fetched {
+            manga: MangaDetails,
+        }
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct F {
+            fetch_manga: Fetched,
+        }
+        let q = format!(
+            "mutation {{ fetchManga(input:{{id:{}}}) {{ manga {{ {FIELDS} }} }} }}",
+            known.id
+        );
+        // If the source cannot be reached, what was already known is still useful.
+        Ok(match self.graphql::<F>(&q).await {
+            Ok(f) => f.fetch_manga.manga,
+            Err(_) => known,
+        })
     }
 
     /// Page image paths for a chapter. Each is fetchable with

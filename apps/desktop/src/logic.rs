@@ -523,6 +523,55 @@ pub fn describe_settings(c: &library::ConversionSettings) -> String {
     )
 }
 
+/// Turn what a source says about a series into what the Library keeps.
+pub fn series_info_from(
+    details: &catalog::MangaDetails,
+    source_names: Vec<(String, String)>,
+    has_cover: bool,
+    now: u64,
+) -> library::SeriesInfo {
+    let clean = |s: &Option<String>| s.as_deref().map(str::trim).unwrap_or("").to_string();
+    let mut genres: Vec<String> = Vec::new();
+    for g in &details.genre {
+        let g = g.trim();
+        if !g.is_empty() && !genres.iter().any(|x| x.eq_ignore_ascii_case(g)) {
+            genres.push(g.to_string());
+        }
+    }
+    // Descriptions often arrive with Windows line breaks and long runs of blank lines.
+    let mut description = clean(&details.description).replace("\r\n", "\n");
+    while description.contains("\n\n\n") {
+        description = description.replace("\n\n\n", "\n\n");
+    }
+    library::SeriesInfo {
+        description,
+        author: clean(&details.author),
+        artist: clean(&details.artist),
+        status: library::status_label(details.status.as_deref().unwrap_or("")),
+        genres,
+        source_names,
+        has_cover,
+        saved_at: now,
+    }
+}
+
+/// "1 chapter", "2 chapters".
+pub fn plural(n: usize, noun: &str) -> String {
+    if n == 1 {
+        format!("{n} {noun}")
+    } else {
+        format!("{n} {noun}s")
+    }
+}
+
+/// The first and last chapter numbers of a list, if any are numbered.
+pub fn number_range(numbers: impl Iterator<Item = Option<f64>>) -> Option<(f64, f64)> {
+    numbers.flatten().fold(None, |range, n| match range {
+        None => Some((n, n)),
+        Some((lo, hi)) => Some((lo.min(n), hi.max(n))),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -993,5 +1042,65 @@ mod stop_tests {
         assert_eq!(p.label(), "Chapter 1 of 3");
         p.stopping = true;
         assert_eq!(p.label(), "Stopping…");
+    }
+}
+
+#[cfg(test)]
+mod info_tests {
+    use super::*;
+
+    fn details() -> catalog::MangaDetails {
+        catalog::MangaDetails {
+            id: 1,
+            title: "Series".into(),
+            description: Some("  First.\r\nSecond.\n\n\n\nThird.  ".into()),
+            author: Some(" A. Writer ".into()),
+            artist: None,
+            genre: vec![
+                "Action".into(),
+                " action ".into(),
+                "".into(),
+                "Fantasy".into(),
+            ],
+            status: Some("ONGOING".into()),
+            thumbnail_url: Some("/cover".into()),
+        }
+    }
+
+    #[test]
+    fn series_details_are_tidied_for_display() {
+        let info = series_info_from(&details(), vec![("1".into(), "Src".into())], true, 99);
+        assert_eq!(info.description, "First.\nSecond.\n\nThird.");
+        assert_eq!(info.author, "A. Writer");
+        assert_eq!(info.artist, "");
+        assert_eq!(info.status, "Ongoing");
+        assert_eq!(info.genres, ["Action", "Fantasy"], "no blanks or repeats");
+        assert!(info.has_cover);
+        assert_eq!(info.saved_at, 99);
+        assert_eq!(info.source_name("1"), Some("Src"));
+    }
+
+    #[test]
+    fn missing_details_become_empty_not_errors() {
+        let info = series_info_from(&catalog::MangaDetails::default(), Vec::new(), false, 0);
+        assert_eq!(info.description, "");
+        assert_eq!(info.status, "");
+        assert!(info.genres.is_empty());
+        assert!(!info.has_cover);
+    }
+
+    #[test]
+    fn counts_are_worded_in_the_singular_and_plural() {
+        assert_eq!(plural(0, "chapter"), "0 chapters");
+        assert_eq!(plural(1, "chapter"), "1 chapter");
+        assert_eq!(plural(235, "page"), "235 pages");
+    }
+
+    #[test]
+    fn the_chapter_range_ignores_unnumbered_chapters() {
+        let nums = [Some(3.0), None, Some(1.5), Some(10.0)];
+        assert_eq!(number_range(nums.into_iter()), Some((1.5, 10.0)));
+        assert_eq!(number_range([None, None].into_iter()), None);
+        assert_eq!(number_range(std::iter::empty()), None);
     }
 }

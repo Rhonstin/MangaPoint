@@ -293,3 +293,26 @@ td.status, th.status { width: 170px; }
 .slices { display: flex; flex-direction: column; gap: 8px; }
 .skeleton { background: var(--panel); border: 1px dashed var(--line-strong); border-radius: 6px; margin: 0 auto; }
 .side.panel { position: sticky; top: 64px; max-height: calc(100vh - 90px); }
+
+/* ---- library cards and the series overview ---- */
+.lib-grid { display: grid; gap: 12px; margin-top: 12px; }
+.lib-card {
+  display: flex; align-items: stretch; gap: 10px; padding: 12px; border: 1px solid var(--line);
+  border-radius: 14px; background: var(--panel-2); transition: border-color 0.15s, background 0.15s;
+}
+.lib-card:hover { border-color: var(--line-strong); background: var(--panel-3); }
+.lib-main { display: flex; gap: 16px; flex: 1; min-width: 0; cursor: pointer; }
+.lib-cover { width: 84px; flex: none; }
+.lib-cover .cover, .overview-cover .cover { width: 100%; aspect-ratio: 2 / 3; object-fit: cover; border-radius: 10px; display: block; }
+.lib-cover .cover.empty, .overview-cover .cover.empty { display: flex; align-items: center; justify-content: center; background: var(--panel); border: 1px solid var(--line); font-size: 1.6rem; }
+.lib-text { min-width: 0; flex: 1; }
+.lib-title { font-size: 1.05rem; }
+.lib-actions { display: flex; align-items: flex-start; }
+.clamp2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.overview { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 28px; align-items: start; }
+.overview-cover { position: sticky; top: 12px; }
+.overview .description { white-space: pre-line; line-height: 1.55; margin: 14px 0 6px; color: var(--text); max-width: 70ch; }
+.overview .description.clamp { display: -webkit-box; -webkit-line-clamp: 6; -webkit-box-orient: vertical; overflow: hidden; }
+.overview .facts { margin-top: 18px; max-width: 640px; border-top: 1px solid var(--line); padding-top: 8px; }
+.overview .facts .right { text-align: right; max-width: 70%; color: var(--text); }
+@media (max-width: 760px) { .overview { grid-template-columns: 1fr; } .overview-cover { position: static; width: 160px; } }

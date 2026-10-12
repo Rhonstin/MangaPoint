@@ -18,8 +18,8 @@ pub mod sources;
 pub mod speeds;
 
 pub use downloads::{
-    chapter_key, remove_inside, series_id, DownloadedChapter, DownloadedSeries, LibraryDb,
-    LibraryFiles,
+    chapter_key, remove_inside, series_id, status_label, DownloadedChapter, DownloadedSeries,
+    LibraryDb, LibraryFiles, SeriesInfo,
 };
 pub use exports::{delete_exported_file, ExportRecord, ExportedFileRecord, ExportsDb};
 pub use health::{HealthDb, StepTiming, TestRecord, Verdict};

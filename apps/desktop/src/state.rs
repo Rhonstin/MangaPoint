@@ -46,6 +46,7 @@ pub enum Page {
 /// The steps within an open series.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SeriesTab {
+    Overview,
     Chapters,
     Downloads,
     Preview,
@@ -329,6 +330,8 @@ pub struct AppState {
     pub speeds: Signal<SpeedDb>,
     /// Where the next download takes its chapters from.
     pub download_source: Signal<SourceChoice>,
+    /// Series whose details are being fetched right now.
+    pub info_busy: Signal<HashSet<String>>,
     pub workspace: Signal<Option<Workspace>>,
     pub chapters: Signal<ChaptersState>,
     /// Chapters ticked in the table, by position in the merged list.
@@ -387,6 +390,7 @@ impl AppState {
             presets: sig(JsonFile::<PresetsDb>::new(paths().presets_file()).load()),
             speeds: sig(JsonFile::<SpeedDb>::new(paths().speeds_file()).load()),
             download_source: sig(SourceChoice::Adaptive),
+            info_busy: sig(HashSet::new()),
             workspace: sig(None),
             chapters: sig(ChaptersState::Idle),
             selected: sig(HashSet::new()),

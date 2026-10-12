@@ -19,7 +19,9 @@ pub mod release;
 pub mod server;
 
 pub use api::Catalog;
-pub use client::{Browse, BrowsePage, Chapter, Extension, MangaSummary, Source, SuwayomiClient};
+pub use client::{
+    Browse, BrowsePage, Chapter, Extension, MangaDetails, MangaSummary, Source, SuwayomiClient,
+};
 pub use error::{CatalogError, Result};
 pub use provision::{provision, Install, Progress};
 pub use server::{RunningServer, ServerConfig};

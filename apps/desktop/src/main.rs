@@ -75,6 +75,12 @@ fn main() {
             ));
         }
     }
+    // A copy run with its own data folder (MANGAPOINT_HOME) also gets its own
+    // web view folder. Otherwise it shares one with any MangaPoint already
+    // open, which blocks it from starting with different settings.
+    if std::env::var_os("MANGAPOINT_HOME").is_some() {
+        config = config.with_data_directory(state::paths().root().join("webview"));
+    }
     dioxus::LaunchBuilder::desktop()
         .with_cfg(config)
         .launch(ui::App);

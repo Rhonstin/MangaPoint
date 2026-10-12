@@ -57,9 +57,13 @@ fn level_png(img: &LevelImage) -> PreviewImage {
     }
 }
 
-/// Longest side of the original shown beside the converted page. Large enough
-/// to look sharp when the preview fills a wide window.
-pub const ORIGINAL_MAX_SIDE: u32 = 1100;
+/// Widest the original shown beside the converted page is made: sharp enough
+/// for a wide window, small enough to keep a long chapter light.
+pub const ORIGINAL_MAX_WIDTH: u32 = 760;
+
+/// Tallest it is made. Browsers refuse images much taller than this, so only
+/// an absurdly long strip is shrunk further than the width limit alone would.
+pub const ORIGINAL_MAX_HEIGHT: u32 = 16_000;
 
 /// JPEG quality of the original shown beside the converted page.
 const ORIGINAL_QUALITY: u8 = 82;
@@ -76,11 +80,13 @@ pub struct OriginalPreview {
 
 /// The downloaded page itself, without conversion, for comparing against the
 /// converted result. It keeps its own shape (nothing is letterboxed) and is
-/// only shrunk if it is very large.
+/// only shrunk if it is wider than the preview can use. The limit is on the
+/// width, not the longest side: limiting that would squash a tall strip into a
+/// sliver and make it look blurry.
 pub fn render_original(gray: &GrayImage, opts: &ProcessOptions) -> OriginalPreview {
-    let longest = gray.width.max(gray.height);
-    let shown = if longest > ORIGINAL_MAX_SIDE {
-        let scale = ORIGINAL_MAX_SIDE as f64 / longest as f64;
+    let scale = (ORIGINAL_MAX_WIDTH as f64 / gray.width as f64)
+        .min(ORIGINAL_MAX_HEIGHT as f64 / gray.height as f64);
+    let shown = if scale < 1.0 {
         let w = ((gray.width as f64 * scale).round() as u32).max(1);
         let h = ((gray.height as f64 * scale).round() as u32).max(1);
         resize(gray, w, h)
@@ -204,8 +210,24 @@ mod tests {
     fn very_large_originals_are_shrunk_but_keep_their_proportions() {
         let big = GrayImage::new(3000, 4500, 200).unwrap();
         let o = render_original(&big, &opts(Depth::Two)).image;
-        assert_eq!(o.height, ORIGINAL_MAX_SIDE);
-        assert_eq!(o.width, 733);
+        assert_eq!((o.width, o.height), (ORIGINAL_MAX_WIDTH, 1140));
+    }
+
+    #[test]
+    fn a_tall_strip_keeps_its_width_and_is_not_squashed_into_a_sliver() {
+        // Limiting the longest side would have made this about 110 px wide.
+        let strip = GrayImage::new(960, 9600, 200).unwrap();
+        let o = render_original(&strip, &opts(Depth::Two)).image;
+        assert_eq!((o.width, o.height), (ORIGINAL_MAX_WIDTH, 7600));
+        // Narrower than the limit: untouched.
+        let narrow = GrayImage::new(600, 6000, 200).unwrap();
+        let o = render_original(&narrow, &opts(Depth::Two)).image;
+        assert_eq!((o.width, o.height), (600, 6000));
+        // Absurdly tall: held under the height limit, proportions kept.
+        let huge = GrayImage::new(2000, 60_000, 200).unwrap();
+        let o = render_original(&huge, &opts(Depth::Two)).image;
+        assert_eq!(o.height, ORIGINAL_MAX_HEIGHT);
+        assert!((o.width as i32 - 533).abs() <= 1, "{}", o.width);
     }
 
     #[test]

@@ -95,54 +95,38 @@ pub fn DownloadsTab() -> Element {
         };
     }
 
+    // Where each chapter sits in the running job, found once instead of by
+    // searching the plan for every row.
+    let plan_position: std::collections::HashMap<&str, usize> = plan
+        .iter()
+        .enumerate()
+        .map(|(i, key)| (key.as_str(), i))
+        .collect();
     let table_rows: Vec<Element> = rows
         .iter()
         .map(|r| {
-            let status = logic::download_status(&r.key, &saved_keys, &plan, &active, running, &failed);
-            let number = r.number.map(logic::format_number).unwrap_or_else(|| "–".to_string());
-            let size = r.bytes.map(logic::human_bytes).unwrap_or_default();
-            let pages = r.pages.map(|p| p.to_string()).unwrap_or_default();
-            let name = r.name.clone();
-            let delete_name = r.name.clone();
-            let key = r.key.clone();
-            let series_id = ws.series_id.clone();
-            let title = ws.title.clone();
-            let own = job.as_ref().and_then(|j| {
-                let index = plan.iter().position(|k| *k == r.key)?;
-                j.progress.active.get(&index).cloned()
+            let status =
+                logic::download_status(&r.key, &saved_keys, &plan, &active, running, &failed);
+            let progress = job.as_ref().and_then(|j| {
+                let index = *plan_position.get(r.key.as_str())?;
+                j.progress
+                    .active
+                    .get(&index)
+                    .map(|c| (c.pages_done, c.pages_total))
             });
             rsx! {
-                tr { key: "{r.key}",
-                    td { class: "num", "{number}" }
-                    td { class: "name", title: "{name}", "{name}" }
-                    td { class: "status",
-                        {match status {
-                            ChapterStatus::Saved => rsx! { Chip { text: "downloaded", kind: Some("ok".to_string()) } },
-                            ChapterStatus::Downloading => rsx! {
-                                Chip { text: match &own { Some(c) if c.pages_total > 0 => format!("{} / {} pages", c.pages_done, c.pages_total), _ => "starting…".to_string() }, kind: Some("accent".to_string()) }
-                            },
-                            ChapterStatus::Waiting => rsx! { Chip { text: if running { "waiting" } else { "not downloaded" } } },
-                            ChapterStatus::Failed => rsx! { Chip { text: "couldn't download", kind: Some("bad".to_string()) } },
-                        }}
-                    }
-                    td { class: "date", "{pages}" }
-                    td { class: "date", "{size}" }
-                    td { class: "check",
-                        if status == ChapterStatus::Saved && !running {
-                            button {
-                                class: "btn ghost small", title: "Delete the downloaded pages of this chapter",
-                                onclick: move |_| state.ask(Modal {
-                                    title: "Delete this chapter?".into(),
-                                    body: format!("The downloaded pages of {delete_name} in {title} will be deleted. Files you already exported are kept."),
-                                    confirm: "Delete".into(),
-                                    cancel: "Keep".into(),
-                                    danger: true,
-                                    action: ModalAction::DeleteDownloadedChapter { series_id: series_id.clone(), key: key.clone() },
-                                }),
-                                Icon { name: "trash", size: 14 }
-                            }
-                        }
-                    }
+                DownloadRow {
+                    key: "{r.key}",
+                    chapter_key: r.key.clone(),
+                    series_id: ws.series_id.clone(),
+                    title: ws.title.clone(),
+                    number: r.number.map(logic::format_number).unwrap_or_else(|| "–".to_string()),
+                    name: r.name.clone(),
+                    status,
+                    running,
+                    progress,
+                    pages: r.pages.map(|p| p.to_string()).unwrap_or_default(),
+                    size: r.bytes.map(logic::human_bytes).unwrap_or_default(),
                 }
             }
         })
@@ -223,6 +207,68 @@ pub fn DownloadsTab() -> Element {
                 "Space-saving mode is on, so tall pages are shrunk as they download. Change it in Settings → Saved pages."
             } else {
                 "Pages are saved exactly as downloaded, for the best quality. Settings → Saved pages has a save-space option."
+            }
+        }
+    }
+}
+
+/// One row of the table. It is its own component, with plain values as its
+/// inputs, so a progress update redraws only the rows whose own values changed
+/// instead of the whole table.
+#[component]
+fn DownloadRow(
+    chapter_key: String,
+    series_id: String,
+    title: String,
+    number: String,
+    name: String,
+    status: ChapterStatus,
+    running: bool,
+    /// Pages done and in all, while this chapter is downloading.
+    progress: Option<(usize, usize)>,
+    pages: String,
+    size: String,
+) -> Element {
+    let state = use_context::<AppState>();
+    let chip = match status {
+        ChapterStatus::Saved => rsx! { Chip { text: "downloaded", kind: Some("ok".to_string()) } },
+        ChapterStatus::Downloading => {
+            let text = match progress {
+                Some((done, total)) if total > 0 => format!("{done} / {total} pages"),
+                _ => "starting…".to_string(),
+            };
+            rsx! { Chip { text, kind: Some("accent".to_string()) } }
+        }
+        ChapterStatus::Waiting => {
+            rsx! { Chip { text: if running { "waiting" } else { "not downloaded" } } }
+        }
+        ChapterStatus::Failed => {
+            rsx! { Chip { text: "couldn't download", kind: Some("bad".to_string()) } }
+        }
+    };
+    let delete_name = name.clone();
+    rsx! {
+        tr {
+            td { class: "num", "{number}" }
+            td { class: "name", title: "{name}", "{name}" }
+            td { class: "status", {chip} }
+            td { class: "date", "{pages}" }
+            td { class: "date", "{size}" }
+            td { class: "check",
+                if status == ChapterStatus::Saved && !running {
+                    button {
+                        class: "btn ghost small", title: "Delete the downloaded pages of this chapter",
+                        onclick: move |_| state.ask(Modal {
+                            title: "Delete this chapter?".into(),
+                            body: format!("The downloaded pages of {delete_name} in {title} will be deleted. Files you already exported are kept."),
+                            confirm: "Delete".into(),
+                            cancel: "Keep".into(),
+                            danger: true,
+                            action: ModalAction::DeleteDownloadedChapter { series_id: series_id.clone(), key: chapter_key.clone() },
+                        }),
+                        Icon { name: "trash", size: 14 }
+                    }
+                }
             }
         }
     }

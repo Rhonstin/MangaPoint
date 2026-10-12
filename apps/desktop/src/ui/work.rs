@@ -99,13 +99,111 @@ pub fn open_series_from_library(state: AppState, series_id: &str) {
         series_id: series_id.to_string(),
         title,
         ranked: None,
-        tab: SeriesTab::Preview,
+        tab: SeriesTab::Overview,
         origin: Page::Library,
     }));
     let mut chapters = state.chapters;
     chapters.set(ChaptersState::Idle);
     state.go(Page::Series);
-    prepare_preview(state);
+}
+
+/// The key a series' saved cover is kept under in `state.covers`.
+pub fn saved_cover_key(series_id: &str) -> String {
+    format!("saved:{series_id}")
+}
+
+/// Show the cover saved with a series, once it has been read from disk.
+pub fn load_saved_cover(state: AppState, series_id: &str) {
+    let key = saved_cover_key(series_id);
+    if state.covers.peek().contains_key(&key) {
+        return;
+    }
+    let path = library_files().cover_path(series_id);
+    spawn_forever(async move {
+        let Ok(bytes) = tokio::fs::read(&path).await else {
+            return;
+        };
+        let mime = match bytes.first() {
+            Some(0x89) => "image/png",
+            Some(b'R') => "image/webp",
+            Some(b'G') => "image/gif",
+            _ => "image/jpeg",
+        };
+        let url = format!("data:{mime};base64,{}", STANDARD.encode(&bytes));
+        let mut covers = state.covers;
+        covers.write().insert(key, url);
+    });
+}
+
+/// Fetch and keep what the sources say about a downloaded series (its
+/// description, author, genres and cover), if that has not been done. It asks
+/// about a chapter the series was downloaded from, so it also works for series
+/// downloaded before details were saved.
+pub fn ensure_series_info(state: AppState, series_id: &str) {
+    let Some(series) = state.library.peek().find(series_id).cloned() else {
+        return;
+    };
+    if series.info.is_some() || state.info_busy.peek().contains(series_id) {
+        return;
+    }
+    let Some(client) = state.client() else {
+        return;
+    };
+    let id = series_id.to_string();
+    let mut busy = state.info_busy;
+    busy.write().insert(id.clone());
+    spawn_forever(async move {
+        let files = library_files();
+        // The first chapter that the server still knows about.
+        let mut details = None;
+        for chapter in series.chapters.iter().take(4) {
+            if let Ok(found) = client.manga_of_chapter(chapter.chapter_id).await {
+                details = Some(found);
+                break;
+            }
+        }
+        if let Some(details) = details {
+            let names: HashMap<String, String> = client
+                .list_sources()
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .map(|s| (s.id, s.name))
+                .collect();
+            let mut source_names: Vec<(String, String)> = Vec::new();
+            for chapter in &series.chapters {
+                if let Some(name) = names.get(&chapter.source_id) {
+                    if !source_names.iter().any(|(id, _)| *id == chapter.source_id) {
+                        source_names.push((chapter.source_id.clone(), name.clone()));
+                    }
+                }
+            }
+            let mut has_cover = false;
+            if let Some(path) = details.thumbnail_url.as_deref() {
+                if let Ok(bytes) = client.get_bytes(path).await {
+                    if converter::decode::image_dimensions(&bytes).is_ok() {
+                        let target = files.cover_path(&id);
+                        if let Some(dir) = target.parent() {
+                            let _ = std::fs::create_dir_all(dir);
+                        }
+                        has_cover = std::fs::write(&target, &bytes).is_ok();
+                    }
+                }
+            }
+            let info = logic::series_info_from(&details, source_names, has_cover, now_secs());
+            let mut library = state.library;
+            library.write().set_info(&id, info);
+            state.save_library();
+            info!("Saved details for \"{}\"", series.title);
+            if has_cover {
+                load_saved_cover(state, &id);
+            }
+        } else {
+            warn!("Could not fetch details for \"{}\"", series.title);
+        }
+        let mut busy = state.info_busy;
+        busy.write().remove(&id);
+    });
 }
 
 async fn load_chapters(state: AppState, members: Vec<ScoredMember>) -> Option<LoadedChapters> {
@@ -312,23 +410,39 @@ pub fn start_download(state: AppState) {
         );
         let watch = async {
             let mut logged = HashMap::new();
-            while let Some(event) = rx.recv().await {
-                log_event(&event, &mut logged);
-                if let JobEvent::ChapterSaved { chapter } = &event {
-                    // Record each chapter as soon as it is safe on disk, so
-                    // cancelling or failing later never loses it.
-                    let mut library = state.library;
-                    {
-                        let mut db = library.write();
-                        let id =
-                            db.record_chapter(&ws.title, &defaults, chapter.clone(), now_secs());
-                        db.adopt_default_preset(&id, &defaults, &default_preset);
+            while let Some(first) = rx.recv().await {
+                // Take everything that has arrived and show it in one go:
+                // redrawing for every single page would keep the screen busy
+                // far more than anyone can see.
+                let mut batch = vec![first];
+                while let Ok(event) = rx.try_recv() {
+                    batch.push(event);
+                }
+                for event in &batch {
+                    log_event(event, &mut logged);
+                    if let JobEvent::ChapterSaved { chapter } = event {
+                        // Record each chapter as soon as it is safe on disk, so
+                        // cancelling or failing later never loses it.
+                        let mut library = state.library;
+                        {
+                            let mut db = library.write();
+                            let id = db.record_chapter(
+                                &ws.title,
+                                &defaults,
+                                chapter.clone(),
+                                now_secs(),
+                            );
+                            db.adopt_default_preset(&id, &defaults, &default_preset);
+                        }
+                        state.save_library();
                     }
-                    state.save_library();
                 }
                 if let Some(view) = job.write().as_mut() {
-                    view.progress.apply(&event);
+                    for event in &batch {
+                        view.progress.apply(event);
+                    }
                 }
+                tokio::time::sleep(PROGRESS_REFRESH).await;
             }
         };
         let (result, ()) = join(run, watch).await;
@@ -467,6 +581,10 @@ async fn order_sources(
     }
     pipeline::apply_choice(requests, &SourceChoice::Adaptive, &ranked).requests
 }
+
+/// How often the progress on screen is brought up to date while a download or
+/// export runs (about seven times a second).
+const PROGRESS_REFRESH: Duration = Duration::from_millis(140);
 
 /// Stop the running download or export. The screen says so at once; the job
 /// itself ends as soon as the pages already on their way are dropped.
@@ -731,11 +849,20 @@ pub fn start_export(state: AppState) {
         let run = export_series(&files, &export, Some(tx), &cancel);
         let watch = async {
             let mut logged = HashMap::new();
-            while let Some(event) = rx.recv().await {
-                log_event(&event, &mut logged);
-                if let Some(view) = job.write().as_mut() {
-                    view.progress.apply(&event);
+            while let Some(first) = rx.recv().await {
+                let mut batch = vec![first];
+                while let Ok(event) = rx.try_recv() {
+                    batch.push(event);
                 }
+                for event in &batch {
+                    log_event(event, &mut logged);
+                }
+                if let Some(view) = job.write().as_mut() {
+                    for event in &batch {
+                        view.progress.apply(event);
+                    }
+                }
+                tokio::time::sleep(PROGRESS_REFRESH).await;
             }
         };
         let (result, ()) = join(run, watch).await;
@@ -904,6 +1031,7 @@ pub fn delete_downloaded_chapter(state: AppState, series_id: String, key: String
                 // Keep the preview pointing at something that still exists.
                 let gone = state.library.peek().find(&series_id).is_none();
                 if gone {
+                    let _ = library_files().remove_series(&series_id);
                     let mut ws = state.workspace;
                     ws.set(None);
                     state.go(Page::Library);

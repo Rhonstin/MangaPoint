@@ -4,7 +4,7 @@
 //! crate (sources, search, pipeline) talks to the trait, which keeps that
 //! logic testable without a server and lets another backend be added later.
 
-use crate::client::{Browse, BrowsePage, Chapter, Extension, Source, SuwayomiClient};
+use crate::client::{Browse, BrowsePage, Chapter, Extension, MangaDetails, Source, SuwayomiClient};
 use crate::error::Result;
 use async_trait::async_trait;
 
@@ -19,6 +19,8 @@ pub trait Catalog: Send + Sync {
     async fn list_sources(&self) -> Result<Vec<Source>>;
     async fn browse(&self, source_id: &str, kind: &Browse, page: u32) -> Result<BrowsePage>;
     async fn fetch_chapters(&self, manga_id: i64) -> Result<Vec<Chapter>>;
+    /// The series a chapter belongs to, with its description and cover.
+    async fn manga_of_chapter(&self, chapter_id: i64) -> Result<MangaDetails>;
     /// Paths of the page images of a chapter, usable with [`Catalog::get_bytes`].
     async fn chapter_pages(&self, chapter_id: i64) -> Result<Vec<String>>;
     /// Fetch a page image or cover by the path the catalog gave out.
@@ -47,6 +49,9 @@ impl Catalog for SuwayomiClient {
     }
     async fn fetch_chapters(&self, manga_id: i64) -> Result<Vec<Chapter>> {
         SuwayomiClient::fetch_chapters(self, manga_id).await
+    }
+    async fn manga_of_chapter(&self, chapter_id: i64) -> Result<MangaDetails> {
+        SuwayomiClient::manga_of_chapter(self, chapter_id).await
     }
     async fn chapter_pages(&self, chapter_id: i64) -> Result<Vec<String>> {
         SuwayomiClient::chapter_pages(self, chapter_id).await
