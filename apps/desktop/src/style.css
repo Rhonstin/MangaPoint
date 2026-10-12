@@ -230,7 +230,6 @@ table.chapters td.name { overflow: hidden; text-overflow: ellipsis; max-width: 0
 .badge { background: var(--panel-3); border: 1px solid var(--line-strong); border-radius: 999px; padding: 0 7px; font-size: 0.75rem; color: var(--text); }
 
 .preview-stage { display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; transition: opacity 0.12s; }
-.preview-stage.busy { opacity: 0.55; }
 .device { margin: 0; text-align: center; }
 .device img { display: block; max-height: calc(100vh - 360px); max-width: 100%; border: 1px solid var(--line-strong); border-radius: 6px; background: #fff; }
 
@@ -286,7 +285,6 @@ td.status, th.status { width: 170px; }
 /* ---- preview: one long column of pages ---- */
 .toolbar.sticky { position: sticky; top: 0; z-index: 6; background: var(--bg); padding: 8px 0; margin-bottom: 6px; border-bottom: 1px solid var(--line); }
 .preview-stage { display: block; overflow-x: auto; }
-.preview-stage.busy .page-row { opacity: 0.85; }
 .page-row { padding: 10px 0 18px; border-bottom: 1px solid var(--line); }
 .page-row:last-child { border-bottom: 0; }
 .page-label { color: var(--muted); font-size: 0.8rem; margin-bottom: 6px; text-align: center; }
