@@ -13,8 +13,11 @@
 //! [`remove_inside`], which refuses to touch anything but a folder strictly
 //! inside the library.
 
-use crate::settings::ConversionSettings;
+use crate::presets::PresetsDb;
+use crate::settings::{ConversionField, ConversionSettings};
+use converter::PageEdits;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -146,6 +149,13 @@ pub struct DownloadedSeries {
     /// The preset these settings started from, if any. The settings may have
     /// been changed since.
     pub preset_id: Option<String>,
+    /// Settings this series changed from its preset. They keep the series'
+    /// own value; everything else follows the preset, so editing a preset
+    /// updates every series that uses it.
+    pub overridden: Vec<ConversionField>,
+    /// The user's corrections to how each chapter is cut into pages, by
+    /// chapter key.
+    pub page_edits: BTreeMap<String, PageEdits>,
     /// Description, author, genres and so on, once they have been fetched.
     pub info: Option<SeriesInfo>,
     /// Where to find the series again: the sources that carry it. A series can
@@ -201,6 +211,8 @@ impl LibraryDb {
                     chapters: Vec::new(),
                     settings: defaults.clone(),
                     preset_id: None,
+                    overridden: Vec::new(),
+                    page_edits: BTreeMap::new(),
                     info: None,
                     sources: Vec::new(),
                     added_at: now,
@@ -252,6 +264,8 @@ impl LibraryDb {
                 chapters: Vec::new(),
                 settings: defaults.clone(),
                 preset_id: None,
+                overridden: Vec::new(),
+                page_edits: BTreeMap::new(),
                 info: None,
                 sources,
                 added_at: now,
@@ -273,9 +287,58 @@ impl LibraryDb {
         Some(self.series.remove(i))
     }
 
-    pub fn set_settings(&mut self, series_id: &str, settings: ConversionSettings) {
+    /// Give a series these settings. `preset` is the settings of the preset it
+    /// follows, if any: whatever differs from it is remembered as the series'
+    /// own.
+    pub fn set_settings(
+        &mut self,
+        series_id: &str,
+        settings: ConversionSettings,
+        preset: Option<&ConversionSettings>,
+    ) {
         if let Some(s) = self.series.iter_mut().find(|s| s.id == series_id) {
+            s.overridden = preset.map(|p| p.differing(&settings)).unwrap_or_default();
             s.settings = settings;
+        }
+    }
+
+    /// Bring every series up to date with its preset after presets changed:
+    /// a series takes the preset's settings except the ones it overrides. A
+    /// series whose preset is gone keeps what it has and loses the link.
+    /// Returns whether anything changed.
+    pub fn follow_presets(&mut self, presets: &PresetsDb) -> bool {
+        let mut changed = false;
+        for s in &mut self.series {
+            let Some(id) = s.preset_id.clone() else {
+                continue;
+            };
+            let Some(entry) = presets.find(&id) else {
+                s.preset_id = None;
+                s.overridden.clear();
+                changed = true;
+                continue;
+            };
+            let mut next = entry.preset.settings.clone();
+            for &field in &s.overridden {
+                next.copy_field(&s.settings, field);
+            }
+            if next != s.settings {
+                s.settings = next;
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    /// Replace the page corrections of one chapter. Empty corrections are
+    /// forgotten rather than stored.
+    pub fn set_page_edits(&mut self, series_id: &str, chapter_key: &str, edits: PageEdits) {
+        if let Some(s) = self.series.iter_mut().find(|s| s.id == series_id) {
+            if edits.is_empty() {
+                s.page_edits.remove(chapter_key);
+            } else {
+                s.page_edits.insert(chapter_key.to_string(), edits);
+            }
         }
     }
 
@@ -290,6 +353,7 @@ impl LibraryDb {
         if let Some(s) = self.series.iter_mut().find(|s| s.id == series_id) {
             if s.preset_id.is_none() && s.settings == *defaults {
                 s.preset_id = preset_id.clone();
+                s.overridden.clear();
             }
         }
     }
@@ -304,6 +368,7 @@ impl LibraryDb {
     pub fn set_preset(&mut self, series_id: &str, preset_id: Option<String>) {
         if let Some(s) = self.series.iter_mut().find(|s| s.id == series_id) {
             s.preset_id = preset_id;
+            s.overridden.clear();
         }
     }
 
@@ -581,9 +646,61 @@ mod tests {
         // Later chapters do not overwrite settings the user tuned for the series.
         let mut tuned = defaults.clone();
         tuned.contrast = 40;
-        db.set_settings(&id, tuned);
+        db.set_settings(&id, tuned, None);
         db.record_chapter("X", &defaults, chapter(Some(2.0), 2, "b"), 2);
         assert_eq!(db.find(&id).unwrap().settings.contrast, 40);
+    }
+
+    #[test]
+    fn series_follow_their_preset_except_for_what_they_changed() {
+        let mut presets = PresetsDb::default();
+        let manga = presets.find("manga").unwrap().preset.settings;
+        let mut db = LibraryDb::default();
+        let id = db.record_chapter("X", &manga, chapter(Some(1.0), 1, "a"), 1);
+        db.set_preset(&id, Some("manga".into()));
+
+        // The user raises this series' contrast: that one setting is its own.
+        let mut mine = manga.clone();
+        mine.contrast = 90;
+        db.set_settings(&id, mine, Some(&manga));
+        assert_eq!(db.find(&id).unwrap().overridden, vec![ConversionField::Contrast]);
+
+        // Editing the preset changes the series' other settings, not its own.
+        let mut edited = manga.clone();
+        edited.contrast = 20;
+        edited.overlap_percent = 30;
+        presets.overwrite("manga", edited).unwrap();
+        assert!(db.follow_presets(&presets));
+        let s = &db.find(&id).unwrap().settings;
+        assert_eq!(s.contrast, 90, "overridden");
+        assert_eq!(s.overlap_percent, 30, "followed the preset");
+        assert!(!db.follow_presets(&presets), "nothing left to change");
+
+        // Picking a preset again drops the series' own changes.
+        db.set_preset(&id, Some("manga".into()));
+        assert!(db.find(&id).unwrap().overridden.is_empty());
+
+        // A deleted preset leaves the settings and cuts the link.
+        db.series[0].preset_id = Some("gone".into());
+        assert!(db.follow_presets(&presets));
+        assert_eq!(db.series[0].preset_id, None);
+    }
+
+    #[test]
+    fn page_edits_are_stored_per_chapter_and_empty_ones_are_dropped() {
+        let mut db = LibraryDb::default();
+        let d = ConversionSettings::default();
+        let id = db.record_chapter("X", &d, chapter(Some(1.0), 1, "a"), 1);
+        let edits = PageEdits {
+            cuts: vec![1200],
+            ..Default::default()
+        };
+        db.set_page_edits(&id, "c1", edits.clone());
+        assert_eq!(db.find(&id).unwrap().page_edits.get("c1"), Some(&edits));
+        let json = serde_json::to_string(&db).unwrap();
+        assert_eq!(serde_json::from_str::<LibraryDb>(&json).unwrap(), db);
+        db.set_page_edits(&id, "c1", PageEdits::default());
+        assert!(db.find(&id).unwrap().page_edits.is_empty());
     }
 
     #[test]

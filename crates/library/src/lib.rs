@@ -29,7 +29,7 @@ pub use presets::{
     builtin_presets, ConversionPreset, Deleted, PresetEntry, PresetError, PresetsDb,
 };
 pub use settings::{
-    ConversionSettings, DownloadLimits, DownloadSettings, DownloadSpeed, ExportSettings, Settings,
+    ConversionField, ConversionSettings, DownloadLimits, DownloadSettings, DownloadSpeed, ExportSettings, Settings,
 };
 pub use sources::{Choice, SourceState};
 pub use speeds::{SourceSpeed, SpeedDb};

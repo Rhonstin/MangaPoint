@@ -8,10 +8,10 @@
 use crate::error::{PipelineError, Result};
 use crate::export::{output_file_name, sanitize_component, ExportTarget, ExportedFile};
 use crate::options::process_options_for;
-use crate::preview::{decode_page, render_levels};
+use crate::preview::decode_page;
 use crate::types::{CancelFlag, JobEvent};
 use converter::xtc::{Chapter as XtcChapter, Metadata, WriteError, XtcBuilder};
-use converter::{LevelImage, ProcessOptions};
+use converter::{GrayImage, LevelImage, PageEdits, ProcessOptions};
 use device_profiles::DeviceProfile;
 use futures_util::stream::{self, StreamExt};
 use library::{DownloadedChapter, DownloadedSeries, LibraryFiles};
@@ -171,8 +171,23 @@ pub async fn export_series(
                 total,
                 name: chapter.name.clone(),
             });
-            let images =
-                convert_chapter(files, &job.series.id, chapter, &opts, ci, &events, cancel).await?;
+            let edits = job
+                .series
+                .page_edits
+                .get(&chapter.key)
+                .cloned()
+                .unwrap_or_default();
+            let images = convert_chapter(
+                files,
+                &job.series.id,
+                chapter,
+                &opts,
+                &edits,
+                ci,
+                &events,
+                cancel,
+            )
+            .await?;
             emit(JobEvent::ChapterDone { index: ci });
 
             // Start a new file if this chapter would not fit in the open one.
@@ -306,12 +321,16 @@ fn volume_name(
     )
 }
 
-/// Decode and convert every saved page of a chapter, in reading order.
+/// Decode every saved page of a chapter, then plan and convert it as a whole:
+/// a webtoon's images are joined before they are cut into pages, so the pages
+/// match what the preview showed and the user's corrections apply.
+#[allow(clippy::too_many_arguments)]
 async fn convert_chapter(
     files: &LibraryFiles,
     series_id: &str,
     chapter: &DownloadedChapter,
     opts: &ProcessOptions,
+    edits: &PageEdits,
     chapter_index: usize,
     events: &Option<UnboundedSender<JobEvent>>,
     cancel: &CancelFlag,
@@ -328,19 +347,15 @@ async fn convert_chapter(
     let done = &done;
     let name = chapter.name.as_str();
 
-    let results: Vec<Result<Vec<LevelImage>>> = stream::iter(pages.into_iter().enumerate())
-        .map(|(index, path)| {
-            let opts = opts.clone();
-            async move {
-                if cancel.is_cancelled() {
-                    return Err(PipelineError::Cancelled);
-                }
-                let bytes = tokio::fs::read(&path)
-                    .await
-                    .map_err(|e| PipelineError::Io(path.clone(), e))?;
-                let levels = tokio::task::spawn_blocking(move || {
-                    decode_page(&bytes).map(|gray| render_levels(&gray, &opts))
-                })
+    let decoded: Vec<Result<GrayImage>> = stream::iter(pages.into_iter().enumerate())
+        .map(|(index, path)| async move {
+            if cancel.is_cancelled() {
+                return Err(PipelineError::Cancelled);
+            }
+            let bytes = tokio::fs::read(&path)
+                .await
+                .map_err(|e| PipelineError::Io(path.clone(), e))?;
+            let gray = tokio::task::spawn_blocking(move || decode_page(&bytes))
                 .await
                 .map_err(|e| PipelineError::Decode(e.to_string()))?
                 .map_err(|e| {
@@ -349,26 +364,28 @@ async fn convert_chapter(
                         index + 1
                     ))
                 })?;
-                let n = done.fetch_add(1, Ordering::SeqCst) + 1;
-                if let Some(tx) = events {
-                    let _ = tx.send(JobEvent::PageDone {
-                        chapter_index,
-                        done: n,
-                        total,
-                    });
-                }
-                Ok(levels)
+            let n = done.fetch_add(1, Ordering::SeqCst) + 1;
+            if let Some(tx) = events {
+                let _ = tx.send(JobEvent::PageDone {
+                    chapter_index,
+                    done: n,
+                    total,
+                });
             }
+            Ok(gray)
         })
         .buffered(PAGE_CONCURRENCY)
         .collect()
         .await;
 
-    let mut images = Vec::new();
-    for r in results {
-        images.extend(r?);
+    let grays = decoded.into_iter().collect::<Result<Vec<_>>>()?;
+    if cancel.is_cancelled() {
+        return Err(PipelineError::Cancelled);
     }
-    Ok(images)
+    let (opts, edits) = (opts.clone(), edits.clone());
+    tokio::task::spawn_blocking(move || converter::plan::convert_chapter(&grays, &opts, &edits))
+        .await
+        .map_err(|e| PipelineError::Decode(e.to_string()))
 }
 
 fn now_secs() -> u64 {

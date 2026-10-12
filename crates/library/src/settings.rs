@@ -53,6 +53,73 @@ impl Default for ConversionSettings {
     }
 }
 
+/// One setting of [`ConversionSettings`], named, so a series can remember
+/// which ones it changed from its preset.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ConversionField {
+    Format,
+    Direction,
+    Layout,
+    Crop,
+    Margins,
+    TrimSensitivity,
+    TrimPadding,
+    Spread,
+    Contrast,
+    AutoLevels,
+    OverlapPercent,
+    Dither,
+}
+
+impl ConversionField {
+    pub const ALL: [ConversionField; 12] = [
+        ConversionField::Format,
+        ConversionField::Direction,
+        ConversionField::Layout,
+        ConversionField::Crop,
+        ConversionField::Margins,
+        ConversionField::TrimSensitivity,
+        ConversionField::TrimPadding,
+        ConversionField::Spread,
+        ConversionField::Contrast,
+        ConversionField::AutoLevels,
+        ConversionField::OverlapPercent,
+        ConversionField::Dither,
+    ];
+}
+
+impl ConversionSettings {
+    /// The settings in which `self` and `other` differ.
+    pub fn differing(&self, other: &ConversionSettings) -> Vec<ConversionField> {
+        ConversionField::ALL
+            .into_iter()
+            .filter(|&f| {
+                let mut probe = self.clone();
+                probe.copy_field(other, f);
+                probe != *self
+            })
+            .collect()
+    }
+
+    /// Take one setting from `from`.
+    pub fn copy_field(&mut self, from: &ConversionSettings, field: ConversionField) {
+        match field {
+            ConversionField::Format => self.format = from.format,
+            ConversionField::Direction => self.direction = from.direction,
+            ConversionField::Layout => self.layout = from.layout,
+            ConversionField::Crop => self.crop = from.crop,
+            ConversionField::Margins => self.margins = from.margins,
+            ConversionField::TrimSensitivity => self.trim_sensitivity = from.trim_sensitivity,
+            ConversionField::TrimPadding => self.trim_padding = from.trim_padding,
+            ConversionField::Spread => self.spread = from.spread,
+            ConversionField::Contrast => self.contrast = from.contrast,
+            ConversionField::AutoLevels => self.auto_levels = from.auto_levels,
+            ConversionField::OverlapPercent => self.overlap_percent = from.overlap_percent,
+            ConversionField::Dither => self.dither = from.dither,
+        }
+    }
+}
+
 /// How hard downloads push on a source.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DownloadSpeed {
@@ -324,6 +391,23 @@ mod tests {
         d.race_sources = false;
         let l = d.limits();
         assert!(l.spread_sources && !l.race_sources);
+    }
+
+    #[test]
+    fn differing_names_exactly_the_changed_settings() {
+        let a = ConversionSettings::default();
+        assert!(a.differing(&a).is_empty());
+        let mut b = a.clone();
+        b.contrast = 80;
+        b.margins.top = 5;
+        assert_eq!(
+            a.differing(&b),
+            vec![ConversionField::Margins, ConversionField::Contrast]
+        );
+        let mut c = a.clone();
+        c.copy_field(&b, ConversionField::Contrast);
+        assert_eq!(c.contrast, 80);
+        assert_eq!(c.margins, a.margins, "only the named setting is copied");
     }
 
     #[test]
