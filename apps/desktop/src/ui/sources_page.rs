@@ -1,7 +1,7 @@
 //! Installed sources, their test results, and adding new ones.
 
 use super::ask_enable_browser;
-use super::widgets::Chip;
+use super::widgets::{Chip, Icon};
 use crate::backend;
 use crate::logic::{ago, verdict_label};
 use crate::state::spawn_forever;
@@ -68,11 +68,12 @@ pub fn SourcesPage() -> Element {
 
         div { class: "card",
             div { class: "row",
-                h2 { class: "grow", style: "margin: 0", "Installed ({installed_count})" }
+                h2 { class: "grow", Icon { name: "layers", size: 17 } "Installed ({installed_count})" }
                 button {
                     class: "btn small",
                     disabled: installed_count == 0 || !testing.is_empty(),
                     onclick: move |_| retest_all(state),
+                    Icon { name: "refresh-cw", size: 14 }
                     "Retest all"
                 }
             }
@@ -84,7 +85,7 @@ pub fn SourcesPage() -> Element {
         }
 
         div { class: "card",
-            h2 { "Recommended sources" }
+            h2 { Icon { name: "circle-check", size: 17 } "Recommended sources" }
             p { class: "muted small", "Tested by MangaPoint. These are the ones we know work." }
             for d in sources::DEFAULTS.iter() {
                 {
@@ -116,6 +117,7 @@ pub fn SourcesPage() -> Element {
                                             });
                                         }
                                     },
+                                    Icon { name: "download", size: 14 }
                                     "Install"
                                 }
                             }
@@ -126,7 +128,7 @@ pub fn SourcesPage() -> Element {
         }
 
         div { class: "card",
-            h2 { "Add more sources" }
+            h2 { Icon { name: "plus", size: 17 } "Add more sources" }
             div { class: "banner warn small", "{EXTENSION_TRUST_WARNING}" }
             p { class: "muted small", "Add an extension store (an https address), then search it below." }
             form {
@@ -155,7 +157,7 @@ pub fn SourcesPage() -> Element {
                     value: "{store_url}",
                     oninput: move |e| store_url.set(e.value()),
                 }
-                button { class: "btn", r#type: "submit", "Add store" }
+                button { class: "btn", r#type: "submit", Icon { name: "plus", size: 15 } "Add store" }
             }
             div { class: "spacer" }
             input {
@@ -193,6 +195,7 @@ pub fn SourcesPage() -> Element {
                                         state.bump_sources();
                                     });
                                 },
+                                Icon { name: "download", size: 14 }
                                 "Install"
                             }
                         }
@@ -273,6 +276,7 @@ fn source_row(
                     let reference = reference.clone();
                     move |_| retest(state, source.clone(), reference.clone())
                 },
+                Icon { name: "refresh-cw", size: 14 }
                 "Retest"
             }
             button {
@@ -287,6 +291,7 @@ fn source_row(
                         action: ModalAction::RemoveExtension(pkg.clone()),
                     });
                 },
+                Icon { name: "trash", size: 14 }
                 "Remove"
             }
         }

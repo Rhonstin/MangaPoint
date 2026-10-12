@@ -7,6 +7,28 @@ use base64::Engine;
 use dioxus::prelude::*;
 use sources::check::image_kind;
 
+/// A Lucide icon by name (see `icons.rs`). Takes the surrounding text color.
+#[component]
+pub fn Icon(name: &'static str, size: Option<u32>) -> Element {
+    let size = size.unwrap_or(18);
+    let body = super::icons::body(name).unwrap_or("");
+    rsx! {
+        svg {
+            class: "icon",
+            width: "{size}",
+            height: "{size}",
+            view_box: "0 0 24 24",
+            fill: "none",
+            stroke: "currentColor",
+            stroke_width: "2",
+            stroke_linecap: "round",
+            stroke_linejoin: "round",
+            "aria-hidden": "true",
+            dangerous_inner_html: "{body}",
+        }
+    }
+}
+
 #[component]
 pub fn ProgressBar(fraction: Option<f32>) -> Element {
     match fraction {

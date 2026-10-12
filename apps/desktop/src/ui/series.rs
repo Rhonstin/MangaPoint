@@ -1,11 +1,11 @@
-//! One series: pick chapters and export them.
+//! One series: a sortable chapter table and an export panel.
 
 use super::jobs::start_job;
-use super::widgets::{cover_key, Chip, Cover};
-use crate::logic::{self, TargetChoice};
+use super::widgets::{cover_key, Chip, Cover, Icon};
+use crate::logic::{self, SortKey, TargetChoice};
 use crate::state::{paths, AppState, Page};
 use converter::xtc::Format;
-use device_profiles::Support;
+use device_profiles::{Firmware, Support};
 use dioxus::prelude::*;
 use futures_util::future::join_all;
 use pipeline::export::removable_drives;
@@ -72,6 +72,17 @@ async fn load(state: AppState, members: Vec<ScoredMember>) -> Option<Loaded> {
     })
 }
 
+/// The arrow shown in a column header.
+fn sort_icon(current: (SortKey, bool), column: SortKey) -> &'static str {
+    if current.0 != column {
+        "chevrons-up-down"
+    } else if current.1 {
+        "chevron-down"
+    } else {
+        "chevron-up"
+    }
+}
+
 #[component]
 pub fn SeriesPage() -> Element {
     let state = use_context::<AppState>();
@@ -79,7 +90,7 @@ pub fn SeriesPage() -> Element {
     let Some(series) = series else {
         return rsx! {
             p { class: "muted", "Pick a series from the search results first." }
-            button { class: "btn", onclick: move |_| state.go(Page::Search), "Back to search" }
+            button { class: "btn", onclick: move |_| state.go(Page::Search), Icon { name: "arrow-left" } "Back to search" }
         };
     };
 
@@ -92,6 +103,8 @@ pub fn SeriesPage() -> Element {
     });
 
     let mut selected = use_signal(HashSet::<usize>::new);
+    let mut filter = use_signal(String::new);
+    let mut sort = use_signal(|| (SortKey::Number, true));
     let mut range_text = use_signal(String::new);
     let mut range_error = use_signal(|| None::<String>);
     let mut target = use_signal(|| TargetChoice::Folder);
@@ -102,201 +115,289 @@ pub fn SeriesPage() -> Element {
     let settings = state.settings.read().clone();
     let format = settings.conversion.format;
     let support = settings.device.xtc_support(settings.firmware);
+    let firmware_label = if settings.firmware == Firmware::CrossPoint {
+        "CrossPoint"
+    } else {
+        "stock firmware"
+    };
     let job_running = state
         .job
         .read()
         .as_ref()
         .is_some_and(|j| j.result.is_none());
+    let folder_hint = settings
+        .export
+        .output_dir
+        .clone()
+        .unwrap_or_else(|| paths().default_export_dir())
+        .display()
+        .to_string();
 
     rsx! {
-        button { class: "btn small", onclick: move |_| state.go(Page::Search), "← Results" }
+        button { class: "btn ghost small", onclick: move |_| state.go(Page::Search),
+            Icon { name: "arrow-left", size: 16 }
+            "Results"
+        }
         div { class: "spacer" }
-        div { class: "row", style: "align-items: flex-start; gap: 18px",
-            div { style: "width: 120px; flex: none", Cover { key_id: cover } }
+        div { class: "page-head",
+            div { style: "width: 84px; flex: none; border-radius: 8px; overflow: hidden", Cover { key_id: cover } }
             div { class: "grow",
                 h1 { "{series.title}" }
                 div { class: "row wrap",
                     for (i, m) in shown.iter().enumerate() {
                         Chip {
                             key: "{i}",
-                            text: if i == 0 { format!("{} (best)", m.candidate.source_name) } else { m.candidate.source_name.clone() },
-                            kind: if i == 0 { Some("ok".to_string()) } else { None },
+                            text: if i == 0 { format!("{} · best", m.candidate.source_name) } else { m.candidate.source_name.clone() },
+                            kind: if i == 0 { Some("accent".to_string()) } else { None },
                         }
                     }
                 }
-                p { class: "muted small", style: "margin-top: 8px",
-                    "If a chapter fails on the best source, MangaPoint tries the others automatically."
+                p { class: "muted small", style: "margin: 8px 0 0",
+                    "If a chapter fails on one source, MangaPoint automatically tries the next."
                 }
             }
         }
-        div { class: "spacer" }
 
         {match &*loaded.read() {
-            None => rsx! { p { class: "muted", "Loading chapters from {shown.len()} source(s)…" } },
-            Some(None) => rsx! { div { class: "banner bad", "The catalog engine is not running." } },
+            None => rsx! {
+                div { class: "card row",
+                    Icon { name: "loader-circle", size: 18 }
+                    span { class: "muted", "Loading chapters from {shown.len()} source(s)…" }
+                }
+            },
+            Some(None) => rsx! { div { class: "banner bad", Icon { name: "circle-x" } "The catalog engine is not running." } },
             Some(Some(l)) => {
                 let numbers: Vec<Option<f64>> = l.merged.iter().map(|m| m.number).collect();
-                let missing = missing_numbers(&l.merged);
                 let total = l.merged.len();
+                let missing = missing_numbers(&l.merged);
+                let (sort_key, sort_desc) = *sort.read();
+                let order = logic::visible_chapters(&l.merged, &filter.read(), sort_key, sort_desc);
                 let picked = selected.read().len();
-                let numbers_for_all = numbers.clone();
-                let numbers_for_latest = numbers.clone();
-                let numbers_for_range = numbers.clone();
+                let all_visible_picked = !order.is_empty() && order.iter().all(|i| selected.read().contains(i));
                 let missing_text = {
-                    let shown: Vec<String> = missing.iter().take(15).map(|n| n.to_string()).collect();
-                    let more = if missing.len() > 15 { " …" } else { "" };
-                    format!("{}{more}", shown.join(", "))
-                };
-                let firmware_label = if settings.firmware == device_profiles::Firmware::CrossPoint {
-                    "CrossPoint"
-                } else {
-                    "Stock firmware"
+                    let first: Vec<String> = missing.iter().take(12).map(|n| n.to_string()).collect();
+                    format!("{}{}", first.join(", "), if missing.len() > 12 { " …" } else { "" })
                 };
                 let sources_used = l.member_names.join(", ");
+                let numbers_all = numbers.clone();
+                let numbers_latest = numbers.clone();
+                let numbers_range = numbers.clone();
+                let order_for_header = order.clone();
+                let current_sort = (sort_key, sort_desc);
+
+                let rows: Vec<Element> = order.iter().map(|&i| {
+                    let ch = &l.merged[i];
+                    let on = selected.read().contains(&i);
+                    let number = ch.number.map(logic::format_number).unwrap_or_else(|| "–".to_string());
+                    let date = logic::format_date(logic::latest_upload(ch));
+                    let count = ch.options.len();
+                    let tip = ch.options.iter()
+                        .filter_map(|o| l.member_names.get(o.member).cloned())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let name = ch.name.clone();
+                    rsx! {
+                        tr {
+                            key: "{i}",
+                            class: if on { "on" } else { "" },
+                            onclick: move |_| {
+                                let mut s = selected.write();
+                                if !s.remove(&i) { s.insert(i); }
+                            },
+                            td { class: "check", input { r#type: "checkbox", checked: on, readonly: true, style: "pointer-events: none" } }
+                            td { class: "num", "{number}" }
+                            td { class: "name", title: "{name}", "{name}" }
+                            td { class: "src", title: "{tip}", "{count}" }
+                            td { class: "date", "{date}" }
+                        }
+                    }
+                }).collect();
+
                 rsx! {
                     if l.unreachable > 0 {
-                        div { class: "banner warn small", "{l.unreachable} source(s) did not answer, so some chapters may be missing." }
+                        div { class: "banner warn small",
+                            Icon { name: "triangle-alert", size: 16 }
+                            "{l.unreachable} source(s) did not answer, so some chapters may be missing."
+                        }
                     }
-                    div { class: "card",
-                        div { class: "row wrap",
-                            strong { "{total} chapters" }
-                            span { class: "muted", "· {picked} selected" }
-                            div { class: "grow" }
-                            button { class: "btn small", onclick: move |_| selected.set((0..numbers_for_all.len()).collect()), "All" }
-                            button {
-                                class: "btn small",
-                                onclick: move |_| selected.set(logic::latest(&numbers_for_latest, 10).into_iter().collect()),
-                                "Latest 10"
-                            }
-                            button { class: "btn small", onclick: move |_| selected.set(HashSet::new()), "None" }
-                        }
-                        form {
-                            class: "row", style: "margin-top: 10px",
-                            onsubmit: move |e| {
-                                e.prevent_default();
-                                match logic::select_by_text(&range_text.read(), &numbers_for_range) {
-                                    Ok(found) => {
-                                        range_error.set(None);
-                                        selected.set(found.into_iter().collect());
+                    div { class: "series-layout",
+                        // ---- chapters ----
+                        div {
+                            div { class: "toolbar",
+                                div { class: "input-icon", style: "max-width: 280px",
+                                    Icon { name: "list-filter", size: 16 }
+                                    input {
+                                        r#type: "search", placeholder: "Filter chapters",
+                                        value: "{filter}",
+                                        oninput: move |e| filter.set(e.value()),
                                     }
-                                    Err(msg) => range_error.set(Some(msg)),
                                 }
-                            },
-                            input {
-                                r#type: "text", class: "grow",
-                                placeholder: "Chapters, for example 1-20, 25, 30-",
-                                value: "{range_text}",
-                                oninput: move |e| range_text.set(e.value()),
+                                button { class: "btn small", onclick: move |_| selected.set((0..numbers_all.len()).collect()), "All" }
+                                button { class: "btn small", onclick: move |_| selected.set(logic::latest(&numbers_latest, 10).into_iter().collect()), "Latest 10" }
+                                button { class: "btn small", onclick: move |_| selected.set(HashSet::new()), "None" }
+                                form {
+                                    class: "row", style: "gap: 6px; margin-left: auto",
+                                    onsubmit: move |e| {
+                                        e.prevent_default();
+                                        match logic::select_by_text(&range_text.read(), &numbers_range) {
+                                            Ok(found) => { range_error.set(None); selected.set(found.into_iter().collect()); }
+                                            Err(msg) => range_error.set(Some(msg)),
+                                        }
+                                    },
+                                    input {
+                                        r#type: "text", style: "width: 190px",
+                                        placeholder: "Range: 1-20, 25, 30-",
+                                        value: "{range_text}",
+                                        oninput: move |e| range_text.set(e.value()),
+                                    }
+                                    button { class: "btn small", r#type: "submit", "Select" }
+                                }
                             }
-                            button { class: "btn small", r#type: "submit", "Select" }
-                        }
-                        if let Some(msg) = range_error() { p { class: "small", style: "color: var(--bad); margin: 6px 0 0", "{msg}" } }
-                        if !missing.is_empty() {
-                            p { class: "muted small", style: "margin: 8px 0 0",
-                                "Not available from any source: chapter {missing_text}"
+                            if let Some(msg) = range_error() {
+                                p { class: "small", style: "color: var(--bad); margin: 0 0 8px", "{msg}" }
                             }
-                        }
-                        div { class: "chapter-list", style: "margin-top: 10px",
-                            for i in (0..total).rev() {
-                                {
-                                    let ch = &l.merged[i];
-                                    let checked = selected.read().contains(&i);
-                                    let from = ch.options.len();
-                                    rsx! {
-                                        label { key: "{i}",
-                                            input {
-                                                r#type: "checkbox", checked,
-                                                onchange: move |e| {
-                                                    let mut s = selected.write();
-                                                    if e.checked() { s.insert(i); } else { s.remove(&i); }
-                                                },
+                            div { class: "table-wrap",
+                                div { class: "table-scroll",
+                                    table { class: "chapters",
+                                        thead {
+                                            tr {
+                                                th { class: "check",
+                                                    input {
+                                                        r#type: "checkbox", checked: all_visible_picked,
+                                                        title: "Select or clear everything shown",
+                                                        onclick: move |_| {
+                                                            let mut s = selected.write();
+                                                            if all_visible_picked {
+                                                                for i in &order_for_header { s.remove(i); }
+                                                            } else {
+                                                                for i in &order_for_header { s.insert(*i); }
+                                                            }
+                                                        },
+                                                    }
+                                                }
+                                                th { class: if sort_key == SortKey::Number { "num sortable sorted" } else { "num sortable" },
+                                                    onclick: move |_| { let cur = *sort.read(); sort.set(logic::next_sort(cur, SortKey::Number)); },
+                                                    span { class: "th", "No." Icon { name: sort_icon(current_sort, SortKey::Number), size: 14 } }
+                                                }
+                                                th { class: if sort_key == SortKey::Name { "sortable sorted" } else { "sortable" },
+                                                    onclick: move |_| { let cur = *sort.read(); sort.set(logic::next_sort(cur, SortKey::Name)); },
+                                                    span { class: "th", "Title" Icon { name: sort_icon(current_sort, SortKey::Name), size: 14 } }
+                                                }
+                                                th { class: if sort_key == SortKey::Sources { "src sortable sorted" } else { "src sortable" },
+                                                    onclick: move |_| { let cur = *sort.read(); sort.set(logic::next_sort(cur, SortKey::Sources)); },
+                                                    span { class: "th", "Sources" Icon { name: sort_icon(current_sort, SortKey::Sources), size: 14 } }
+                                                }
+                                                th { class: if sort_key == SortKey::Date { "date sortable sorted" } else { "date sortable" },
+                                                    onclick: move |_| { let cur = *sort.read(); sort.set(logic::next_sort(cur, SortKey::Date)); },
+                                                    span { class: "th", "Updated" Icon { name: sort_icon(current_sort, SortKey::Date), size: 14 } }
+                                                }
                                             }
-                                            span { class: "grow", "{ch.name}" }
-                                            if from > 1 { span { class: "muted small", "{from} sources" } }
+                                        }
+                                        tbody { {rows.into_iter()} }
+                                    }
+                                    if order.is_empty() {
+                                        div { class: "empty-state", "No chapters match “{filter}”." }
+                                    }
+                                }
+                            }
+                            p { class: "muted small", style: "margin: 8px 0 0",
+                                "Showing {order.len()} of {total} chapters. Click a column heading to sort; click a row to tick it."
+                                if !missing.is_empty() { " Not available from any source: {missing_text}." }
+                            }
+                        }
+
+                        // ---- export panel ----
+                        div { class: "side",
+                            div { class: "card",
+                                h2 { Icon { name: "file-down" } "Export" }
+                                div { class: "summary-line", span { class: "muted", "Chapters" } span { "{picked} selected" } }
+                                div { class: "summary-line", span { class: "muted", "Reader" } span { "{settings.device.profile().name}" } }
+                                div { class: "summary-line", span { class: "muted", "Firmware" } span { "{firmware_label}" } }
+                                div { style: "margin: 4px 0 10px",
+                                    {match support {
+                                        Support::Documented => rsx! { Chip { text: "supported", kind: Some("ok".to_string()) } },
+                                        Support::CommunityReported => rsx! { Chip { text: "reported to work", kind: Some("ok".to_string()) } },
+                                        Support::Unverified => rsx! { Chip { text: "not verified on this firmware", kind: Some("warn".to_string()) } },
+                                    }}
+                                    button { class: "btn ghost small", onclick: move |_| state.go(Page::Settings), "Change" }
+                                }
+
+                                p { class: "muted small", style: "margin: 12px 0 6px", "Quality" }
+                                div { class: "seg",
+                                    button {
+                                        class: if format == Format::Xtch { "on" } else { "" },
+                                        onclick: move |_| { let mut s = state.settings; s.write().conversion.format = Format::Xtch; state.save_settings(); },
+                                        "4 grays"
+                                    }
+                                    button {
+                                        class: if format == Format::Xtc { "on" } else { "" },
+                                        onclick: move |_| { let mut s = state.settings; s.write().conversion.format = Format::Xtc; state.save_settings(); },
+                                        "Black & white"
+                                    }
+                                }
+
+                                p { class: "muted small", style: "margin: 14px 0 6px", "Send to" }
+                                div { class: "seg stack",
+                                    button {
+                                        class: if matches!(target(), TargetChoice::Folder) { "on" } else { "" },
+                                        onclick: move |_| target.set(TargetChoice::Folder),
+                                        Icon { name: "folder-open", size: 16 } "Folder on this computer"
+                                    }
+                                    for d in drives.read().iter() {
+                                        {
+                                            let mount = d.mount.display().to_string();
+                                            let on = target() == TargetChoice::Reader(mount.clone());
+                                            rsx! {
+                                                button {
+                                                    key: "{mount}",
+                                                    class: if on { "on" } else { "" },
+                                                    onclick: { let mount = mount.clone(); move |_| target.set(TargetChoice::Reader(mount.clone())) },
+                                                    Icon { name: "hard-drive", size: 16 } "Reader / SD card ({mount})"
+                                                }
+                                            }
+                                        }
+                                    }
+                                    if settings.export.webdav_url.as_deref().is_some_and(|u| !u.trim().is_empty()) {
+                                        button {
+                                            class: if matches!(target(), TargetChoice::WebDav) { "on" } else { "" },
+                                            onclick: move |_| target.set(TargetChoice::WebDav),
+                                            Icon { name: "wifi", size: 16 } "Over Wi-Fi"
                                         }
                                     }
                                 }
-                            }
-                        }
-                    }
+                                if matches!(target(), TargetChoice::Folder) {
+                                    p { class: "muted small", style: "margin: 6px 0 0; word-break: break-all", "{folder_hint}" }
+                                }
+                                button { class: "btn ghost small", style: "margin-top: 6px", onclick: move |_| drives.set(removable_drives()),
+                                    Icon { name: "refresh-cw", size: 14 } "Look for my reader"
+                                }
 
-                    div { class: "card",
-                        h2 { "Export" }
-                        div { class: "row wrap",
-                            span { "{settings.device.profile().name}" }
-                            span { class: "muted", "· {firmware_label}" }
-                            {match support {
-                                Support::Documented => rsx! { Chip { text: "supported", kind: Some("ok".to_string()) } },
-                                Support::CommunityReported => rsx! { Chip { text: "reported to work", kind: Some("ok".to_string()) } },
-                                Support::Unverified => rsx! { Chip { text: "not verified on this firmware", kind: Some("warn".to_string()) } },
-                            }}
-                            div { class: "grow" }
-                            button { class: "btn small", onclick: move |_| state.go(Page::Settings), "Change" }
-                        }
-                        div { class: "spacer" }
-                        div { class: "row wrap",
-                            span { class: "muted", "Quality" }
-                            div { class: "seg",
+                                div { style: "height: 14px" }
                                 button {
-                                    class: if format == Format::Xtch { "on" } else { "" },
-                                    onclick: move |_| { let mut s = state.settings; s.write().conversion.format = Format::Xtch; state.save_settings(); },
-                                    "4 grays (recommended)"
+                                    class: "btn primary big",
+                                    disabled: picked == 0 || job_running,
+                                    onclick: {
+                                        let merged = l.merged.clone();
+                                        let member_sources = l.member_sources.clone();
+                                        let title = series.title.clone();
+                                        move |_| {
+                                            let settings = state.settings.read().clone();
+                                            let chosen: Vec<usize> = selected.read().iter().copied().collect();
+                                            match logic::export_target(&target.read(), &settings, &paths().default_export_dir()) {
+                                                Err(msg) => state.error(msg),
+                                                Ok(t) => match logic::build_spec(&title, &merged, &chosen, &member_sources, &settings, t) {
+                                                    Some(spec) => start_job(state, spec),
+                                                    None => state.error("Tick at least one chapter first."),
+                                                },
+                                            }
+                                        }
+                                    },
+                                    if job_running { Icon { name: "loader-circle", size: 18 } "An export is running…" }
+                                    else if picked == 0 { "Select chapters to export" }
+                                    else { Icon { name: "download", size: 18 } "Convert & export {picked}" }
                                 }
-                                button {
-                                    class: if format == Format::Xtc { "on" } else { "" },
-                                    onclick: move |_| { let mut s = state.settings; s.write().conversion.format = Format::Xtc; state.save_settings(); },
-                                    "Black & white (smaller)"
-                                }
+                                p { class: "muted small", style: "margin: 8px 0 0", "Sources: {sources_used}." }
                             }
-                        }
-                        div { class: "spacer" }
-                        div { class: "row wrap",
-                            span { class: "muted", "Send to" }
-                            div { class: "seg",
-                                button { class: if matches!(target(), TargetChoice::Folder) { "on" } else { "" }, onclick: move |_| target.set(TargetChoice::Folder), "A folder on this computer" }
-                                for d in drives.read().iter() {
-                                    {
-                                        let mount = d.mount.display().to_string();
-                                        let on = target() == TargetChoice::Reader(mount.clone());
-                                        let label = format!("Reader / SD card ({mount})");
-                                        rsx! { button { key: "{mount}", class: if on { "on" } else { "" }, onclick: move |_| target.set(TargetChoice::Reader(mount.clone())), "{label}" } }
-                                    }
-                                }
-                                if settings.export.webdav_url.as_deref().is_some_and(|u| !u.trim().is_empty()) {
-                                    button { class: if matches!(target(), TargetChoice::WebDav) { "on" } else { "" }, onclick: move |_| target.set(TargetChoice::WebDav), "Over Wi-Fi" }
-                                }
-                            }
-                            button { class: "btn small", onclick: move |_| drives.set(removable_drives()), "Look for my reader" }
-                        }
-                        if drives.read().is_empty() {
-                            p { class: "muted small", style: "margin: 8px 0 0",
-                                "To copy straight to your reader, plug it in with USB (or insert its SD card) and press “Look for my reader”."
-                            }
-                        }
-                        div { class: "spacer" }
-                        button {
-                            class: "btn primary",
-                            disabled: picked == 0 || job_running,
-                            onclick: {
-                                let merged = l.merged.clone();
-                                let member_sources = l.member_sources.clone();
-                                let title = series.title.clone();
-                                move |_| {
-                                    let settings = state.settings.read().clone();
-                                    let chosen: Vec<usize> = selected.read().iter().copied().collect();
-                                    match logic::export_target(&target.read(), &settings, &paths().default_export_dir()) {
-                                        Err(msg) => state.error(msg),
-                                        Ok(t) => match logic::build_spec(&title, &merged, &chosen, &member_sources, &settings, t) {
-                                            Some(spec) => start_job(state, spec),
-                                            None => state.error("Tick at least one chapter first."),
-                                        },
-                                    }
-                                }
-                            },
-                            if job_running { "An export is running…" } else if picked == 0 { "Select chapters to export" } else { "Convert & export {picked} chapter(s)" }
-                        }
-                        p { class: "muted small", style: "margin: 8px 0 0",
-                            "Sources used: {sources_used}."
                         }
                     }
                 }

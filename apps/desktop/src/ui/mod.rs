@@ -1,5 +1,7 @@
 //! The app's screens.
 
+mod cat;
+mod icons;
 mod jobs;
 mod search;
 mod series;
@@ -15,7 +17,7 @@ use dioxus::desktop::tao::event::{Event, WindowEvent};
 use dioxus::desktop::use_wry_event_handler;
 use dioxus::prelude::*;
 use sources::SourceManager;
-use widgets::ProgressBar;
+use widgets::{Icon, ProgressBar};
 
 const CSS: &str = include_str!("../style.css");
 
@@ -59,6 +61,7 @@ fn Splash(message: String, percent: Option<u8>) -> Element {
     let fraction = percent.map(|p| p as f32 / 100.0);
     rsx! {
         div { class: "splash",
+            cat::Cat {}
             h1 { "MangaPoint" }
             p { class: "muted", "{message}" }
             ProgressBar { fraction }
@@ -93,11 +96,14 @@ fn Shell() -> Element {
     let page = *state.page.read();
     rsx! {
         nav { class: "nav",
-            div { class: "brand", "MangaPoint" }
-            NavItem { page: Page::Search, label: "Search" }
-            NavItem { page: Page::Jobs, label: "Exports" }
-            NavItem { page: Page::Sources, label: "Sources" }
-            NavItem { page: Page::Settings, label: "Settings" }
+            div { class: "brand",
+                cat::Cat {}
+                span { "MangaPoint" }
+            }
+            NavItem { page: Page::Search, label: "Search", icon: "search" }
+            NavItem { page: Page::Jobs, label: "Exports", icon: "download" }
+            NavItem { page: Page::Sources, label: "Sources", icon: "layers" }
+            NavItem { page: Page::Settings, label: "Settings", icon: "settings" }
         }
         main { class: "content",
             div { class: "page",
@@ -116,7 +122,7 @@ fn Shell() -> Element {
 }
 
 #[component]
-fn NavItem(page: Page, label: &'static str) -> Element {
+fn NavItem(page: Page, label: &'static str, icon: &'static str) -> Element {
     let state = use_context::<AppState>();
     let current = *state.page.read();
     // The series page belongs to Search; first-run setup belongs to Sources.
@@ -129,7 +135,10 @@ fn NavItem(page: Page, label: &'static str) -> Element {
         "nav-item"
     };
     rsx! {
-        button { class: "{class}", onclick: move |_| state.go(page), "{label}" }
+        button { class: "{class}", onclick: move |_| state.go(page),
+            Icon { name: icon, size: 17 }
+            "{label}"
+        }
     }
 }
 
@@ -158,12 +167,14 @@ fn JobBar() -> Element {
                     button {
                         class: "btn small",
                         onclick: move |_| job.cancel.cancel(),
+                        Icon { name: "x", size: 14 }
                         "Cancel"
                     }
                 } else {
                     button {
                         class: "btn small",
                         onclick: move |_| state.go(Page::Jobs),
+                        Icon { name: "info", size: 14 }
                         "Details"
                     }
                     button {

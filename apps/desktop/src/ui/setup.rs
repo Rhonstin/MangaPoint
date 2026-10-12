@@ -1,7 +1,7 @@
 //! First run: choose which sources to install.
 
 use super::ask_enable_browser;
-use super::widgets::Chip;
+use super::widgets::{Chip, Icon};
 use crate::backend;
 use crate::state::spawn_forever;
 use crate::state::{AppState, Page};
@@ -90,6 +90,7 @@ pub fn Setup() -> Element {
                                         });
                                     }
                                 },
+                                Icon { name: "download", size: 15 }
                                 "Install"
                             }
                             button {
@@ -142,6 +143,7 @@ pub fn Setup() -> Element {
                 class: "btn primary",
                 disabled: !installed_any,
                 onclick: finish,
+                Icon { name: "check", size: 15 }
                 "Done"
             }
         }

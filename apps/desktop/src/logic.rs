@@ -22,6 +22,133 @@ pub fn one_per_source(members: &[ScoredMember], limit: usize) -> Vec<ScoredMembe
         .collect()
 }
 
+// ---- The chapter table -----------------------------------------------------
+
+/// Which column the chapter table is sorted by.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SortKey {
+    Number,
+    Name,
+    Sources,
+    Date,
+}
+
+/// What clicking a column header does: sorting by a new column uses that
+/// column's natural direction (newest and biggest first, names A to Z);
+/// clicking the current column flips the direction.
+pub fn next_sort(current: (SortKey, bool), clicked: SortKey) -> (SortKey, bool) {
+    if current.0 == clicked {
+        (clicked, !current.1)
+    } else {
+        let descending = !matches!(clicked, SortKey::Name);
+        (clicked, descending)
+    }
+}
+
+/// Newest upload time among the sources that have the chapter (0 if unknown).
+pub fn latest_upload(chapter: &MergedChapter) -> i64 {
+    chapter
+        .options
+        .iter()
+        .map(|o| o.upload_date)
+        .max()
+        .unwrap_or(0)
+}
+
+/// Indices of the chapters to show: those matching every word of `filter`
+/// (in the name or the number), ordered by `key`. Chapters with no value for
+/// the sort column (no number, no date) always come last.
+pub fn visible_chapters(
+    merged: &[MergedChapter],
+    filter: &str,
+    key: SortKey,
+    descending: bool,
+) -> Vec<usize> {
+    let words: Vec<String> = filter.split_whitespace().map(str::to_lowercase).collect();
+    let mut shown: Vec<usize> = (0..merged.len())
+        .filter(|&i| {
+            let ch = &merged[i];
+            let haystack = format!(
+                "{} {}",
+                ch.name.to_lowercase(),
+                ch.number.map(format_number).unwrap_or_default()
+            );
+            words.iter().all(|w| haystack.contains(w.as_str()))
+        })
+        .collect();
+
+    // Value to sort on; `None` sorts after everything else.
+    let value = |i: usize| -> Option<f64> {
+        let ch = &merged[i];
+        match key {
+            SortKey::Number => ch.number,
+            SortKey::Sources => Some(ch.options.len() as f64),
+            SortKey::Date => {
+                let d = latest_upload(ch);
+                (d > 0).then_some(d as f64)
+            }
+            SortKey::Name => Some(0.0),
+        }
+    };
+    let (mut present, absent): (Vec<usize>, Vec<usize>) =
+        shown.drain(..).partition(|&i| value(i).is_some());
+    present.sort_by(|&a, &b| {
+        let ord = if key == SortKey::Name {
+            merged[a]
+                .name
+                .to_lowercase()
+                .cmp(&merged[b].name.to_lowercase())
+        } else {
+            value(a).unwrap().total_cmp(&value(b).unwrap())
+        };
+        // Ties keep the chapters' own order (by number, then position).
+        let ord = ord.then_with(|| {
+            merged[a]
+                .number
+                .unwrap_or(f64::MAX)
+                .total_cmp(&merged[b].number.unwrap_or(f64::MAX))
+        });
+        if descending {
+            ord.reverse()
+        } else {
+            ord
+        }
+    });
+    present.extend(absent);
+    present
+}
+
+/// `12`, `12.5`: whole numbers without a decimal point.
+pub fn format_number(n: f64) -> String {
+    if n.fract().abs() < 0.0005 {
+        format!("{}", n.round() as i64)
+    } else {
+        let s = format!("{n:.2}");
+        s.trim_end_matches('0').trim_end_matches('.').to_string()
+    }
+}
+
+/// `2024-05-03` from milliseconds since the Unix epoch; empty if unknown.
+/// (UTC; computed directly so no date library is needed.)
+pub fn format_date(ms: i64) -> String {
+    if ms <= 0 {
+        return String::new();
+    }
+    let days = ms.div_euclid(86_400_000);
+    // Civil-from-days (Howard Hinnant's algorithm).
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let year = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if month <= 2 { year + 1 } else { year };
+    format!("{year:04}-{month:02}-{day:02}")
+}
+
 // ---- Choosing chapters -----------------------------------------------------
 
 /// Indices of chapters matching text like `1-10, 15, 20-`.
@@ -264,6 +391,129 @@ mod tests {
 
     fn nums(v: &[f64]) -> Vec<Option<f64>> {
         v.iter().map(|&n| Some(n)).collect()
+    }
+
+    fn merged_list() -> Vec<MergedChapter> {
+        let mut a = chapter(1, 1.0, 1_000_000_000_000);
+        a.name = "Chapter 1: Start".into();
+        let mut b = chapter(2, 2.0, 1_500_000_000_000);
+        b.name = "Chapter 2: Middle".into();
+        let mut c = chapter(3, 10.0, 0);
+        c.name = "Chapter 10: Finale".into();
+        let mut extra = chapter(4, -1.0, 1_700_000_000_000);
+        extra.name = "Author's note".into();
+        // A second source also has chapter 2, newer.
+        let other = vec![chapter(12, 2.0, 1_600_000_000_000)];
+        merge_chapters(&[vec![a, b, c, extra], other])
+    }
+
+    fn names(merged: &[MergedChapter], order: &[usize]) -> Vec<String> {
+        order.iter().map(|&i| merged[i].name.clone()).collect()
+    }
+
+    #[test]
+    fn the_table_sorts_by_each_column_in_both_directions() {
+        let m = merged_list();
+        let by = |key, desc| names(&m, &visible_chapters(&m, "", key, desc));
+
+        // Number: numbered first; the unnumbered note is last in either direction.
+        assert_eq!(
+            by(SortKey::Number, false),
+            [
+                "Chapter 1: Start",
+                "Chapter 2: Middle",
+                "Chapter 10: Finale",
+                "Author's note"
+            ]
+        );
+        assert_eq!(
+            by(SortKey::Number, true),
+            [
+                "Chapter 10: Finale",
+                "Chapter 2: Middle",
+                "Chapter 1: Start",
+                "Author's note"
+            ]
+        );
+        // Name: A to Z, case-insensitive.
+        assert_eq!(by(SortKey::Name, false)[0], "Author's note");
+        assert_eq!(by(SortKey::Name, true)[0], "Chapter 2: Middle");
+        // Sources: chapter 2 has two sources.
+        assert_eq!(by(SortKey::Sources, true)[0], "Chapter 2: Middle");
+        // Date: newest first; chapter 10 has no date, so it is last either way.
+        assert_eq!(by(SortKey::Date, true)[0], "Author's note");
+        assert_eq!(
+            *by(SortKey::Date, true).last().unwrap(),
+            "Chapter 10: Finale"
+        );
+        assert_eq!(
+            *by(SortKey::Date, false).last().unwrap(),
+            "Chapter 10: Finale"
+        );
+    }
+
+    #[test]
+    fn the_filter_matches_every_word_in_names_and_numbers() {
+        let m = merged_list();
+        let hit = |f: &str| names(&m, &visible_chapters(&m, f, SortKey::Number, false));
+        assert_eq!(hit("finale"), ["Chapter 10: Finale"]);
+        assert_eq!(
+            hit("CHAPTER middle"),
+            ["Chapter 2: Middle"],
+            "all words, any case"
+        );
+        assert_eq!(hit("10"), ["Chapter 10: Finale"], "by number");
+        assert_eq!(hit("note"), ["Author's note"]);
+        assert!(hit("nothing like this").is_empty());
+        assert_eq!(hit("   ").len(), 4, "a blank filter shows everything");
+    }
+
+    #[test]
+    fn a_chapter_with_several_sources_shows_its_newest_upload() {
+        let m = merged_list();
+        let two = m.iter().find(|c| c.name == "Chapter 2: Middle").unwrap();
+        assert_eq!(latest_upload(two), 1_600_000_000_000);
+        let ten = m.iter().find(|c| c.name == "Chapter 10: Finale").unwrap();
+        assert_eq!(latest_upload(ten), 0);
+    }
+
+    #[test]
+    fn clicking_a_header_picks_a_sensible_direction() {
+        // New column: numbers and dates start newest/biggest first, names A to Z.
+        assert_eq!(
+            next_sort((SortKey::Name, false), SortKey::Number),
+            (SortKey::Number, true)
+        );
+        assert_eq!(
+            next_sort((SortKey::Number, true), SortKey::Date),
+            (SortKey::Date, true)
+        );
+        assert_eq!(
+            next_sort((SortKey::Number, true), SortKey::Name),
+            (SortKey::Name, false)
+        );
+        // Same column: flip.
+        assert_eq!(
+            next_sort((SortKey::Number, true), SortKey::Number),
+            (SortKey::Number, false)
+        );
+        assert_eq!(
+            next_sort((SortKey::Number, false), SortKey::Number),
+            (SortKey::Number, true)
+        );
+    }
+
+    #[test]
+    fn numbers_and_dates_are_shown_plainly() {
+        assert_eq!(format_number(12.0), "12");
+        assert_eq!(format_number(12.5), "12.5");
+        assert_eq!(format_number(0.01), "0.01");
+        assert_eq!(format_number(3.10), "3.1");
+        assert_eq!(format_date(0), "");
+        assert_eq!(format_date(-5), "");
+        assert_eq!(format_date(1_700_000_000_000), "2023-11-14");
+        assert_eq!(format_date(951_782_400_000), "2000-02-29", "leap day");
+        assert_eq!(format_date(1_000_000_000_000), "2001-09-09");
     }
 
     fn member(source: &str, manga_id: i64, score: f32) -> ScoredMember {

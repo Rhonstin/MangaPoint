@@ -1,6 +1,6 @@
 //! Searching every installed source at once.
 
-use super::widgets::{cover_key, load_cover, Chip, Cover};
+use super::widgets::{cover_key, load_cover, Chip, Cover, Icon};
 use crate::state::now_secs;
 use crate::state::spawn_forever;
 use crate::state::{AppState, Page, SearchView};
@@ -32,15 +32,21 @@ pub fn SearchPage() -> Element {
                     run_search(state, q);
                 }
             },
-            input {
-                r#type: "search",
-                placeholder: "Title, for example Berserk",
-                value: "{text}",
-                autofocus: true,
-                oninput: move |e| text.set(e.value()),
+            div { class: "input-icon",
+                Icon { name: "search", size: 18 }
+                input {
+                    r#type: "search",
+                    placeholder: "Title, for example Berserk",
+                    value: "{text}",
+                    autofocus: true,
+                    oninput: move |e| text.set(e.value()),
+                }
             }
             // Submitting the form (this button or Enter) starts the search; no separate click handler.
-            button { class: "btn primary", r#type: "submit", disabled: view.searching, "Search" }
+            button { class: "btn primary", r#type: "submit", disabled: view.searching,
+                if view.searching { Icon { name: "loader-circle", size: 17 } } else { Icon { name: "search", size: 17 } }
+                "Search"
+            }
         }
 
         if view.no_sources {

@@ -1,6 +1,6 @@
 //! Running exports, and the history of past ones.
 
-use super::widgets::{show_in_folder, Chip};
+use super::widgets::{show_in_folder, Chip, Icon};
 use crate::logic::{ago, JobProgress};
 use crate::state::spawn_forever;
 use crate::state::{now_secs, paths, AppState, JobView};
@@ -203,7 +203,7 @@ pub fn JobsPage() -> Element {
                                                 span { class: "grow muted", style: "word-break: break-all", "{file}" }
                                                 {
                                                     let f = file.clone();
-                                                    rsx! { button { class: "btn small", onclick: move |_| show_in_folder(&f), "Show" } }
+                                                    rsx! { button { class: "btn small", onclick: move |_| show_in_folder(&f), Icon { name: "folder-open", size: 14 } "Show" } }
                                                 }
                                             }
                                         }
@@ -215,6 +215,7 @@ pub fn JobsPage() -> Element {
                                         button {
                                             class: "btn primary small",
                                             onclick: move |_| start_job(state, spec.clone()),
+                                            Icon { name: "rotate-ccw", size: 14 }
                                             "Retry"
                                         }
                                     }

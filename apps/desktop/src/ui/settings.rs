@@ -1,6 +1,7 @@
 //! Preferences.
 
 use super::ask_enable_browser;
+use super::widgets::Icon;
 use crate::logic::human_bytes;
 use crate::state::{paths, AppState, BootState, Modal, ModalAction};
 use catalog::browser;
@@ -33,7 +34,7 @@ pub fn SettingsPage() -> Element {
         h1 { "Settings" }
 
         div { class: "card",
-            h2 { "Your reader" }
+            h2 { Icon { name: "hard-drive", size: 17 } "Your reader" }
             div { class: "field",
                 label { "Device" }
                 select {
@@ -55,7 +56,7 @@ pub fn SettingsPage() -> Element {
         }
 
         div { class: "card",
-            h2 { "How pages look" }
+            h2 { Icon { name: "sliders-horizontal", size: 17 } "How pages look" }
             div { class: "field",
                 label { "Quality" }
                 select {
@@ -113,7 +114,7 @@ pub fn SettingsPage() -> Element {
         }
 
         div { class: "card",
-            h2 { "Where files go" }
+            h2 { Icon { name: "folder-open", size: 17 } "Where files go" }
             div { class: "field",
                 label { "Save to folder" }
                 input {
@@ -142,7 +143,7 @@ pub fn SettingsPage() -> Element {
         }
 
         div { class: "card",
-            h2 { "Browser support" }
+            h2 { Icon { name: "globe", size: 17 } "Browser support" }
             p { class: "muted",
                 "A few sources need a real web browser to download chapters. Turning this on downloads about 270 MB once. It is off by default."
             }
@@ -170,7 +171,7 @@ pub fn SettingsPage() -> Element {
         }
 
         div { class: "card",
-            h2 { "About" }
+            h2 { Icon { name: "info", size: 17 } "About" }
             p { class: "muted small",
                 "Catalog engine: Suwayomi {catalog::release::VERSION_TAG}"
                 if let Some(sv) = &services { ", running on this computer only (port {sv.port})" }
