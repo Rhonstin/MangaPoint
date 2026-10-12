@@ -234,7 +234,7 @@ pub fn PreviewTab() -> Element {
     let view = p.view;
     let current = p.chapter_key.clone().unwrap_or_default();
     let total = p.pages.len();
-    let device_name = state.settings.read().device.profile().name;
+    let device_name = state.settings.read().device_profile().name;
     let overlap = series.settings.overlap_percent;
 
     let rows: Vec<Element> = p
@@ -243,7 +243,7 @@ pub fn PreviewTab() -> Element {
         .enumerate()
         .map(
             |(index, page): (usize, &Option<Rc<PreviewPage>>)| match page {
-                Some(page) => page_row(index, page, view, overlap, device_name),
+                Some(page) => page_row(index, page, view, overlap, &device_name),
                 None => skeleton(index, view),
             },
         )

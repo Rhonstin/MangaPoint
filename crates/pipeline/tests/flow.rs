@@ -5,7 +5,6 @@
 use catalog::fake::FakeCatalog;
 use converter::decode::{decode_to_gray, image_dimensions};
 use converter::xtc::{Format, ReadDirection, XtcFile};
-use device_profiles::Device;
 use image::{ImageEncoder, Rgba, RgbaImage};
 use library::{ConversionSettings, DownloadLimits, DownloadedSeries, LibraryDb, LibraryFiles};
 use pipeline::{
@@ -134,7 +133,7 @@ fn job(lib: &Library, series: &DownloadedSeries, grouping: Grouping) -> ExportJo
     let mut j = ExportJob::new(
         series.clone(),
         series.chapters.iter().map(|c| c.key.clone()).collect(),
-        Device::XteinkX4Pro,
+        device_profiles::x4_pro(),
         ExportTarget::Folder { path: lib.out() },
         lib.work(),
     );
@@ -578,7 +577,7 @@ async fn the_preview_shows_exactly_the_pixels_the_export_writes() {
     let gray = decode_to_gray(&saved).unwrap();
     let levels = render_levels(
         &gray,
-        &process_options_for(Device::XteinkX4Pro, &series.settings),
+        &process_options_for(&device_profiles::x4_pro(), &series.settings),
     );
     assert_eq!(levels.len(), 1);
     // Chapter 2 starts at page 3 of the file.

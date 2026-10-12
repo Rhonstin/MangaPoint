@@ -5,8 +5,9 @@ use converter::process::{
 };
 use converter::xtc::{Format, ReadDirection};
 use converter::Dither;
-use device_profiles::{Device, Firmware};
-use serde::{Deserialize, Serialize};
+use device_profiles::{DeviceProfile, Firmware};
+use serde::{Deserialize, Deserializer, Serialize};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -173,7 +174,15 @@ impl Default for ExportSettings {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
-    pub device: Device,
+    /// Id of the device pages are made for: a built-in or one of
+    /// `custom_devices`. Files from before devices were data hold the old
+    /// enum's name, which is mapped on load.
+    #[serde(deserialize_with = "device_id")]
+    pub device: String,
+    /// Devices the user added.
+    pub custom_devices: Vec<DeviceProfile>,
+    /// The preset a device starts from, by device id.
+    pub device_presets: BTreeMap<String, String>,
     pub firmware: Firmware,
     pub conversion: ConversionSettings,
     pub export: ExportSettings,
@@ -198,7 +207,9 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            device: Device::XteinkX4Pro,
+            device: device_profiles::X4_PRO_ID.into(),
+            custom_devices: Vec::new(),
+            device_presets: BTreeMap::new(),
             firmware: Firmware::CrossPoint,
             conversion: ConversionSettings::default(),
             export: ExportSettings::default(),
@@ -213,6 +224,25 @@ impl Default for Settings {
     }
 }
 
+fn device_id<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    let raw = String::deserialize(d)?;
+    Ok(device_profiles::legacy_id(&raw).map_or(raw, str::to_string))
+}
+
+impl Settings {
+    /// The chosen device. A device that has since been removed falls back to
+    /// the X4 Pro, so export never fails over a stale id.
+    pub fn device_profile(&self) -> DeviceProfile {
+        device_profiles::find(&self.device, &self.custom_devices)
+            .unwrap_or_else(device_profiles::x4_pro)
+    }
+
+    /// Every device the user can pick.
+    pub fn devices(&self) -> Vec<DeviceProfile> {
+        device_profiles::all(&self.custom_devices)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -220,7 +250,7 @@ mod tests {
     #[test]
     fn defaults_follow_the_plan() {
         let s = Settings::default();
-        assert_eq!(s.device, Device::XteinkX4Pro);
+        assert_eq!(s.device, device_profiles::X4_PRO_ID);
         assert_eq!(s.conversion.direction, ReadDirection::RightToLeft);
         assert_eq!(s.conversion.contrast, 55);
         assert_eq!(s.conversion.overlap_percent, 8);
@@ -304,6 +334,30 @@ mod tests {
         assert_eq!(s.conversion.contrast, 70);
         assert_eq!(s.conversion.overlap_percent, 8);
         assert_eq!(s.export.device_folder, "Manga");
+    }
+
+    #[test]
+    fn old_device_names_and_missing_devices_are_handled() {
+        let s: Settings = serde_json::from_str(r#"{"device":"XteinkX4"}"#).unwrap();
+        assert_eq!(s.device, device_profiles::X4_ID);
+        assert_eq!(s.device_profile().width, 480);
+        let gone: Settings = serde_json::from_str(r#"{"device":"custom-removed"}"#).unwrap();
+        assert_eq!(gone.device_profile().id, device_profiles::X4_PRO_ID);
+    }
+
+    #[test]
+    fn custom_devices_round_trip_and_are_selectable() {
+        let mut s = Settings::default();
+        let dev = DeviceProfile::custom(&s.devices(), "Kobo Nia", 758, 1024).unwrap();
+        s.device = dev.id.clone();
+        s.custom_devices.push(dev);
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(back, s);
+        assert_eq!(
+            (back.device_profile().width, back.device_profile().height),
+            (758, 1024)
+        );
+        assert!(!back.device_profile().builtin);
     }
 
     #[test]

@@ -1,17 +1,19 @@
 //! Mapping saved settings onto the converter's options.
 
 use converter::ProcessOptions;
-use device_profiles::Device;
+use device_profiles::DeviceProfile;
 use library::{ConversionSettings, Settings};
 
 /// Everything the converter needs for pages shown on `device`, converted the
 /// way `conversion` says. Previews and exports both call this, so what you
 /// see is what gets written.
-pub fn process_options_for(device: Device, conversion: &ConversionSettings) -> ProcessOptions {
-    let profile = device.profile();
+pub fn process_options_for(
+    device: &DeviceProfile,
+    conversion: &ConversionSettings,
+) -> ProcessOptions {
     ProcessOptions {
-        width: profile.width,
-        height: profile.height,
+        width: device.width,
+        height: device.height,
         layout: conversion.layout,
         crop: conversion.crop,
         margins: conversion.margins,
@@ -29,7 +31,7 @@ pub fn process_options_for(device: Device, conversion: &ConversionSettings) -> P
 
 /// The same, using the saved defaults.
 pub fn process_options(settings: &Settings) -> ProcessOptions {
-    process_options_for(settings.device, &settings.conversion)
+    process_options_for(&settings.device_profile(), &settings.conversion)
 }
 
 #[cfg(test)]
@@ -57,7 +59,7 @@ mod tests {
             format: Format::Xtc,
             ..Default::default()
         };
-        let o = process_options_for(Device::XteinkX4, &conversion);
+        let o = process_options_for(&device_profiles::x4(), &conversion);
         assert_eq!(o.contrast, 80);
         assert_eq!(o.depth, Depth::One);
     }

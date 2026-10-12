@@ -1088,8 +1088,8 @@ pub fn schedule_lab(state: AppState, delay_ms: u64) {
             let l = state.preset_lab.peek();
             (l.draft.clone(), l.sample_series.clone(), l.page)
         };
-        let device = state.settings.peek().device;
-        let opts = pipeline::process_options_for(device, &draft);
+        let device = state.settings.peek().device_profile();
+        let opts = pipeline::process_options_for(&device, &draft);
 
         // The page to try: from the library, or drawn from scratch.
         let mut total_pages = 0;
@@ -1243,7 +1243,7 @@ pub fn schedule_preview(state: AppState, delay_ms: u64) {
         let Some(series) = state.library.peek().find(&ws.series_id).cloned() else {
             return fail("This series is not in your library.".into());
         };
-        let device = state.settings.peek().device;
+        let device = state.settings.peek().device_profile();
         let pages = library_files().page_files(&ws.series_id, &key);
         if pages.is_empty() {
             return fail("This chapter has no saved pages. Download it again.".into());
@@ -1258,7 +1258,7 @@ pub fn schedule_preview(state: AppState, delay_ms: u64) {
         }
 
         // The same conversion the export runs, on background threads.
-        let opts = pipeline::process_options_for(device, &series.settings);
+        let opts = pipeline::process_options_for(&device, &series.settings);
         let mut drawn = stream::iter(pages.into_iter().enumerate())
             .map(|(index, path)| {
                 let opts = opts.clone();
@@ -1361,7 +1361,7 @@ pub fn start_export(state: AppState) {
     let mut export = ExportJob::new(
         series.clone(),
         keys.clone(),
-        settings.device,
+        settings.device_profile(),
         target.clone(),
         paths().spool_dir(),
     );
@@ -1517,7 +1517,7 @@ pub fn export_series_many(state: AppState, series_ids: Vec<String>) {
             let mut export = ExportJob::new(
                 series.clone(),
                 keys,
-                settings.device,
+                settings.device_profile(),
                 target.clone(),
                 paths().spool_dir(),
             );

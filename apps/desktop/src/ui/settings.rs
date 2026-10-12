@@ -2,12 +2,13 @@
 
 use super::ask_enable_browser;
 
+use super::devices::DevicesEditor;
 use super::presets_lab::PresetsLab;
 use super::widgets::Icon;
 use crate::logic::{human_bytes, plural};
 use crate::state::{paths, AppState, BootState, Modal, ModalAction, Page, SettingsSection};
 use catalog::browser;
-use device_profiles::{Device, Firmware};
+use device_profiles::Firmware;
 use dioxus::prelude::*;
 use library::{DownloadLimits, DownloadSpeed};
 
@@ -71,14 +72,9 @@ pub fn SettingsPage() -> Element {
                 {match section {
                     SettingsSection::Reader => rsx! {
                         h1 { class: "sx-title", "Your reader" }
-                        Row { label: "Device",
-                            select {
-                                value: if s.device == Device::XteinkX4 { "x4" } else { "x4pro" },
-                                onchange: move |e| update(|s, v| s.device = if v == "x4" { Device::XteinkX4 } else { Device::XteinkX4Pro }, e.value()),
-                                option { value: "x4pro", selected: s.device == Device::XteinkX4Pro, "Xteink X4 Pro" }
-                                option { value: "x4", selected: s.device == Device::XteinkX4, "Xteink X4" }
-                            }
-                        }
+                        Group { title: "Device" }
+                        DevicesEditor {}
+                        Group { title: "Firmware" }
                         Row { label: "Firmware", desc: "What the reader runs. It decides which file types it can open.",
                             select {
                                 value: if s.firmware == Firmware::CrossPoint { "cross" } else { "stock" },

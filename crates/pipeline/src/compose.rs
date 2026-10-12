@@ -12,7 +12,7 @@ use crate::preview::{decode_page, render_levels};
 use crate::types::{CancelFlag, JobEvent};
 use converter::xtc::{Chapter as XtcChapter, Metadata, WriteError, XtcBuilder};
 use converter::{LevelImage, ProcessOptions};
-use device_profiles::Device;
+use device_profiles::DeviceProfile;
 use futures_util::stream::{self, StreamExt};
 use library::{DownloadedChapter, DownloadedSeries, LibraryFiles};
 use std::fs::{self, File};
@@ -44,7 +44,7 @@ pub struct ExportJob {
     /// Which downloaded chapters to include (any order; the series' own
     /// reading order is used).
     pub chapter_keys: Vec<String>,
-    pub device: Device,
+    pub device: DeviceProfile,
     /// Language tag stored in the file, e.g. "en".
     pub language: String,
     pub grouping: Grouping,
@@ -59,7 +59,7 @@ impl ExportJob {
     pub fn new(
         series: DownloadedSeries,
         chapter_keys: Vec<String>,
-        device: Device,
+        device: DeviceProfile,
         target: ExportTarget,
         work_dir: PathBuf,
     ) -> Self {
@@ -151,7 +151,7 @@ pub async fn export_series(
     fs::create_dir_all(&job.work_dir).map_err(|e| PipelineError::Io(job.work_dir.clone(), e))?;
 
     let settings = &job.series.settings;
-    let opts = process_options_for(job.device, settings);
+    let opts = process_options_for(&job.device, settings);
     let format = settings.format;
     let mut scratch = Scratch::default();
     let mut volumes: Vec<Volume> = Vec::new();

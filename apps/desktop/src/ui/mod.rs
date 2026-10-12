@@ -3,6 +3,7 @@
 pub mod cat;
 mod chapter_table;
 mod conversion;
+mod devices;
 mod downloads_page;
 mod hang;
 mod icons;
