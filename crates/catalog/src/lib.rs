@@ -8,14 +8,18 @@
 //!
 //! Nothing here knows about the UI or the converter.
 
+pub mod api;
 pub mod browser;
 pub mod client;
 pub mod error;
+#[cfg(feature = "fake")]
+pub mod fake;
 pub mod provision;
 pub mod release;
 pub mod server;
 
-pub use client::{Browse, Chapter, Extension, MangaSummary, Source, SuwayomiClient};
+pub use api::Catalog;
+pub use client::{Browse, BrowsePage, Chapter, Extension, MangaSummary, Source, SuwayomiClient};
 pub use error::{CatalogError, Result};
 pub use provision::{provision, Install, Progress};
 pub use server::{RunningServer, ServerConfig};
