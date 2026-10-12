@@ -3,6 +3,29 @@
 Native desktop (Rust) + Next.js website · Xteink X4 Pro · Fully open source
 Status: **draft for editing**. Items marked `[VERIFY]` are unconfirmed assumptions; `[DECISION]` needs your call.
 
+## 0. Build status (2026-10-12)
+
+Stages 1-6 are built on branch `feature/converter-and-catalog`; stage 7 (website, installers, CI) is not started.
+
+| Stage | Crate(s) | State |
+|---|---|---|
+| 1 Converter | `converter`, `device-profiles` | Built. XTG/XTH encoders, XTC/XTCH container, firmware-style parser, test patterns, image pipeline (margin trim, area resize, spreads, webtoon slices, contrast, dithering). |
+| 2 Suwayomi manager | `catalog` | Built. Verified download, loopback + password, GraphQL client, browser-support helpers. |
+| 3 Sources | `library`, `sources` | Built. First-run install/skip, custom stores, source test + Retest, health history. |
+| 4 Desktop app | `apps/desktop` (Dioxus) | Built. Setup, Search, Series, Exports, Sources, Settings. First-run screen checked on screen; the other screens are compiled and logic-tested but not clicked through. |
+| 5 Search | `search` | Built. Fan-out, conservative dedupe, best-source scoring, chapter merge with gap detection. |
+| 6 Export | `pipeline` | Built. Retry, page cache and resume, source fallback, XTC/XTCH output, folder / SD card / WebDAV targets, job history. |
+
+**Verified live (2026-10-12):** search across 4 sources in 1.5 s; 59 results grouped into 36 series; 550 chapters merged from 4 sources; 187 real pages converted to a 480x800 XTCH file that the firmware-style parser accepts.
+
+**Not verified (needs hardware or more testing):** gray-level mapping and pixel polarity on a real X4/X4 Pro; stock X4 Pro firmware reading XTC; CrossPoint's WebDAV transfer; opt-in browser support end to end (enable, download, remove); macOS and Linux builds; clicking through the series/export screens in the app.
+
+**Deviations from the plan above:**
+- Persistence is JSON files (atomic writes), not SQLite. Simpler, and enough for settings, source choices, health history and the job list.
+- `sysinfo` is pinned to 0.37 because 0.39 needs Rust 1.95 and this machine has 1.90.
+- Search ranking does not use cover hashes yet; the hook exists (`cover_hash`) and is covered by tests.
+- Smart cropping is deterministic margin trimming. There is no panel detector.
+
 ## 1. Goal and UX principles
 
 Search a huge catalog easily, pick chapters, convert to the e-reader format, export. Nothing else for the user to do.

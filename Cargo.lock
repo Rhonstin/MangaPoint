@@ -3382,6 +3382,7 @@ dependencies = [
  "search",
  "serde",
  "serde_json",
+ "sources",
  "sysinfo",
  "thiserror 2.0.21",
  "tokio",

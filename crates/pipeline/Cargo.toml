@@ -20,5 +20,6 @@ sysinfo = { version = "0.37", default-features = false, features = ["disk"] }
 
 [dev-dependencies]
 catalog = { path = "../catalog", features = ["fake"] }
+sources = { path = "../sources" }
 image = { version = "0.25", default-features = false, features = ["png"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "fs", "io-util", "net"] }
