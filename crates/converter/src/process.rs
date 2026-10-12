@@ -222,7 +222,7 @@ fn webtoon_slices(img: &GrayImage, opts: &ProcessOptions) -> Vec<GrayImage> {
     out
 }
 
-fn finish(mut screen: GrayImage, opts: &ProcessOptions) -> LevelImage {
+pub(crate) fn finish(mut screen: GrayImage, opts: &ProcessOptions) -> LevelImage {
     if opts.auto_levels {
         stretch_levels(&mut screen);
     }
@@ -235,7 +235,7 @@ fn finish(mut screen: GrayImage, opts: &ProcessOptions) -> LevelImage {
 /// Gray-level difference from the background that counts as content.
 /// Sensitivity 50 is the long-standing default (28); lower ignores faint
 /// marks, higher notices them.
-fn trim_threshold(sensitivity: u8) -> i16 {
+pub(crate) fn trim_threshold(sensitivity: u8) -> i16 {
     let s = sensitivity.min(100) as i16;
     if s <= 50 {
         80 - (80 - 28) * s / 50
@@ -259,7 +259,7 @@ pub fn trim_margins(img: &GrayImage) -> GrayImage {
 }
 
 /// Where the content is, or `None` to leave the image alone.
-fn trim_bounds(img: &GrayImage, threshold: i16, pad: u8) -> Option<(u32, u32, u32, u32)> {
+pub(crate) fn trim_bounds(img: &GrayImage, threshold: i16, pad: u8) -> Option<(u32, u32, u32, u32)> {
     let (w, h) = (img.width, img.height);
     let bg = border_median(img);
     let differs = |x: u32, y: u32| (img.get(x, y) as i16 - bg as i16).abs() > threshold;
@@ -284,7 +284,7 @@ fn trim_bounds(img: &GrayImage, threshold: i16, pad: u8) -> Option<(u32, u32, u3
     Some((x0, y0, x1 - x0, y1 - y0))
 }
 
-fn border_median(img: &GrayImage) -> u8 {
+pub(crate) fn border_median(img: &GrayImage) -> u8 {
     let (w, h) = (img.width, img.height);
     let mut samples = Vec::new();
     for x in 0..w {
@@ -341,7 +341,7 @@ fn letterbox(img: &GrayImage, w: u32, h: u32) -> GrayImage {
     canvas
 }
 
-fn letterbox_top(img: &GrayImage, w: u32, h: u32) -> GrayImage {
+pub(crate) fn letterbox_top(img: &GrayImage, w: u32, h: u32) -> GrayImage {
     let mut canvas = GrayImage::new(w, h, 255).expect("non-zero size");
     blit(&mut canvas, img, (w - img.width.min(w)) / 2, 0);
     canvas
