@@ -62,6 +62,13 @@ pub fn SearchPage() -> Element {
         .cloned()
         .collect();
     let filtered = included.len() != total;
+    let sources_label = if total == 0 {
+        "Sources".to_string()
+    } else if filtered {
+        format!("{} of {total} Sources", included.len())
+    } else {
+        format!("{total} Sources")
+    };
 
     // Searching again with the sources as they are now, if there is a search.
     let search_again = move || {
@@ -92,7 +99,7 @@ pub fn SearchPage() -> Element {
         p { class: "muted", "Searches the sources you choose at once and shows each series once, with the best source chosen for you." }
         div { class: "searchwrap",
             form {
-                class: "searchbar",
+                class: if open() { "searchbox open" } else { "searchbox" },
                 onsubmit: move |e| {
                     e.prevent_default();
                     let q = text.read().trim().to_string();
@@ -100,29 +107,72 @@ pub fn SearchPage() -> Element {
                         run_search(state, q);
                     }
                 },
-                div { class: "input-icon",
-                    Icon { name: "search", size: 18 }
-                    input {
-                        r#type: "search",
-                        placeholder: "Title, for example Berserk",
-                        value: "{text}",
-                        autofocus: true,
-                        oninput: move |e| text.set(e.value()),
+                input {
+                    class: "searchbox-input",
+                    r#type: "search",
+                    placeholder: "Type a manga, manhua, or manhwa here…",
+                    value: "{text}",
+                    autofocus: true,
+                    oninput: move |e| text.set(e.value()),
+                }
+                div { class: "searchbox-row",
+                    div { class: "sort-pill",
+                        select {
+                            value: "{sort.key()}",
+                            title: "How the results are ordered",
+                            onchange: move |e| { let mut s = state.search_sort; s.set(SearchSort::from_key(&e.value())); },
+                            for option_sort in SearchSort::ALL {
+                                option { key: "{option_sort.key()}", value: "{option_sort.key()}", selected: option_sort == sort, "Sort: {option_sort.label()}" }
+                            }
+                        }
+                        span { class: "chev", Icon { name: "chevron-down", size: 14 } }
                     }
-                }
-                button {
-                    class: if open() || filtered { "icon-btn on" } else { "icon-btn" },
-                    r#type: "button",
-                    title: "Choose which sources to search",
-                    disabled: total == 0,
-                    onclick: move |_| { if open() { close_panel() } else { open.set(true) } },
-                    Icon { name: "funnel", size: 18 }
-                    if filtered { span { class: "badge", "{included.len()}/{total}" } }
-                }
-                // Submitting the form (this button or Enter) starts the search; no separate click handler.
-                button { class: "btn primary", r#type: "submit", disabled: view.searching,
-                    if view.searching { Icon { name: "loader-circle", size: 17 } } else { Icon { name: "search", size: 17 } }
-                    "Search"
+                    // Two versions of the sources, stacked in the same place so
+                    // the box never changes height: one pill per source while
+                    // the pointer is away, and a single dropdown while it is
+                    // over the box, being typed in, or the panel is open.
+                    div { class: "sources-area",
+                        div { class: "layer compact",
+                            button {
+                                class: "pill-btn", r#type: "button",
+                                title: "Choose which sources to search",
+                                disabled: total == 0,
+                                onclick: move |_| { if open() { close_panel() } else { open.set(true) } },
+                                "{sources_label}"
+                                Icon { name: "chevron-down", size: 14 }
+                            }
+                        }
+                        div { class: "layer full",
+                            for source in included.iter() {
+                                {
+                                    let id = source.id.clone();
+                                    let current = excluded.clone();
+                                    rsx! {
+                                        span { class: "src-pill", key: "{source.id}",
+                                            "{source.name}"
+                                            button {
+                                                class: "x", r#type: "button", title: "Do not search {source.name}",
+                                                onclick: move |_| {
+                                                    let mut next = current.clone();
+                                                    if !next.contains(&id) { next.push(id.clone()); }
+                                                    set_excluded(next);
+                                                    search_again();
+                                                },
+                                                Icon { name: "x", size: 12 }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            if total > 0 && included.is_empty() {
+                                span { class: "muted small", style: "padding: 5px 4px", "No source is chosen. Hover here and open the sources list." }
+                            }
+                        }
+                    }
+                    // Submitting the form (this button or Enter) starts the search.
+                    button { class: "search-circle", r#type: "submit", title: "Search", disabled: view.searching,
+                        if view.searching { Icon { name: "loader-circle", size: 18 } } else { Icon { name: "search", size: 18 } }
+                    }
                 }
             }
             if open() {
@@ -133,46 +183,6 @@ pub fn SearchPage() -> Element {
                     on_change: move |list: Vec<String>| { set_excluded(list); let mut changed = changed; changed.set(true); },
                     on_close: move |()| close_panel(),
                 }
-            }
-        }
-
-        // The sort, and one pill for each source being searched. Hover a source
-        // to remove it; the sort is always there.
-        div { class: "pill-row",
-            div { class: "sort-pill",
-                select {
-                    value: "{sort.key()}",
-                    title: "How the results are ordered",
-                    onchange: move |e| { let mut s = state.search_sort; s.set(SearchSort::from_key(&e.value())); },
-                    for option_sort in SearchSort::ALL {
-                        option { key: "{option_sort.key()}", value: "{option_sort.key()}", selected: option_sort == sort, "Sort: {option_sort.label()}" }
-                    }
-                }
-                span { class: "chev", Icon { name: "chevron-down", size: 14 } }
-            }
-            for source in included.iter() {
-                {
-                    let id = source.id.clone();
-                    let current = excluded.clone();
-                    rsx! {
-                        span { class: "src-pill", key: "{source.id}",
-                            "{source.name}"
-                            button {
-                                class: "x", r#type: "button", title: "Do not search {source.name}",
-                                onclick: move |_| {
-                                    let mut next = current.clone();
-                                    if !next.contains(&id) { next.push(id.clone()); }
-                                    set_excluded(next);
-                                    search_again();
-                                },
-                                Icon { name: "x", size: 12 }
-                            }
-                        }
-                    }
-                }
-            }
-            if total > 0 && included.is_empty() {
-                span { class: "muted small", "No source is chosen. Use the filter button to pick some." }
             }
         }
 

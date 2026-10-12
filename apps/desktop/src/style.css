@@ -418,3 +418,49 @@ td.status, th.status { width: 170px; }
 }
 .src-pill:hover .x, .src-pill .x:focus-visible { opacity: 1; }
 .src-pill .x:hover { background: var(--line-strong); color: var(--text); }
+
+/* ---- the search box: text on top, pills along the bottom ---- */
+.searchbox {
+  display: flex; flex-direction: column; gap: 14px; padding: 18px 20px 16px 24px;
+  background: var(--panel); border: 1px solid var(--line-strong); border-radius: 28px;
+  transition: border-color 0.15s;
+}
+.searchbox:hover, .searchbox:focus-within, .searchbox.open { border-color: #4a4a4a; }
+.searchbox-input {
+  width: 100%; border: 0; outline: 0; background: transparent; color: var(--text);
+  font: inherit; font-size: 1.15rem; padding: 4px 0; box-shadow: none;
+}
+.searchbox-input::placeholder { color: #4d4d4d; }
+.searchbox-input::-webkit-search-cancel-button { display: none; }
+.searchbox-row { display: flex; align-items: flex-end; gap: 10px; }
+.searchbox .sort-pill { flex: none; }
+.searchbox .sort-pill select { border-color: var(--line-strong); color: var(--muted); background: transparent; }
+.searchbox .sort-pill select:hover { border-color: var(--accent); color: var(--text); }
+.sources-area { flex: 1; min-width: 0; display: grid; }
+.sources-area .layer { grid-area: 1 / 1; display: flex; flex-wrap: wrap; align-items: flex-start; align-content: flex-start; gap: 8px; transition: opacity 0.14s; }
+.searchbox .src-pill { background: transparent; color: var(--muted); }
+.searchbox .src-pill:hover { color: var(--text); }
+.pill-btn {
+  display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px 5px 14px; font: inherit; font-size: 0.88rem;
+  border: 1px solid var(--line-strong); border-radius: 999px; background: transparent; color: var(--muted); cursor: pointer;
+}
+.pill-btn:hover { border-color: var(--accent); color: var(--text); }
+.pill-btn:disabled { opacity: 0.45; cursor: default; }
+/* Pointer away: every source as a pill. Pointer over the box, typing, or the
+   panel open: the single dropdown. Both occupy the same place. */
+.sources-area .layer.compact { opacity: 0; visibility: hidden; }
+.searchbox:hover .layer.compact, .searchbox:focus-within .layer.compact, .searchbox.open .layer.compact { opacity: 1; visibility: visible; }
+.searchbox:hover .layer.full, .searchbox:focus-within .layer.full, .searchbox.open .layer.full { opacity: 0; visibility: hidden; }
+.search-circle {
+  flex: none; width: 40px; height: 40px; border-radius: 50%; border: 0; display: flex; align-items: center; justify-content: center;
+  background: var(--accent); color: var(--accent-text); cursor: pointer; margin-left: auto; transition: background 0.15s, transform 0.1s;
+}
+.search-circle:hover { background: var(--accent-hover); }
+.search-circle:active { transform: scale(0.94); }
+.search-circle:disabled { opacity: 0.6; cursor: default; }
+
+/* the search box: no border of its own on the text, pills start at the top */
+.searchbox .searchbox-input { border: 0; background: transparent; box-shadow: none; border-radius: 0; padding: 4px 0; }
+.searchbox .searchbox-input:focus { border: 0; box-shadow: none; outline: 0; }
+.searchbox-row { align-items: flex-start; }
+.searchbox .search-circle { align-self: flex-end; }
