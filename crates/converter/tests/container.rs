@@ -198,3 +198,41 @@ fn a_full_size_book_builds_and_reads_back() {
     assert_eq!(file.page_count(), 300);
     assert_eq!(file.decode_page(299).unwrap().image, img);
 }
+
+/// Whatever the device's screen, a planned chapter encodes to a file that
+/// reads back page for page at exactly that size, in both formats.
+#[test]
+fn planned_chapters_round_trip_for_every_device_size() {
+    use converter::plan::convert_chapter;
+    use converter::{Layout, PageEdits, ProcessOptions};
+
+    let images: Vec<GrayImage> = (0..4)
+        .map(|i| {
+            GrayImage::from_fn(700, 1400, |x, y| ((x / 7 + y / 9 + i * 40) % 256) as u8).unwrap()
+        })
+        .collect();
+    for (w, h) in [(480, 800), (528, 792), (758, 1024), (300, 200)] {
+        for format in [Format::Xtc, Format::Xtch] {
+            let mut opts = ProcessOptions::manga_default(w, h, format.depth());
+            opts.layout = Layout::Webtoon;
+            let pages = convert_chapter(&images, &opts, &PageEdits::default());
+            assert!(pages.len() >= 2, "{w}x{h}");
+            let mut b = XtcBuilder::new(format);
+            for page in &pages {
+                b.add_page(page).unwrap();
+            }
+            let bytes = b.build().unwrap();
+            let file = XtcFile::parse(&bytes).unwrap();
+            assert_eq!(file.page_count(), pages.len());
+            for (i, expected) in pages.iter().enumerate() {
+                let info = file.page_info(i).unwrap();
+                assert_eq!((info.width as u32, info.height as u32), (w, h));
+                assert_eq!(
+                    &file.decode_page(i).unwrap().image,
+                    expected,
+                    "{w}x{h} {format:?} page {i}"
+                );
+            }
+        }
+    }
+}
