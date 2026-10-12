@@ -453,9 +453,66 @@ pub fn original_rows(prepared: &Prepared, page: &PlannedPage) -> Option<GrayImag
 pub fn convert_chapter(images: &[GrayImage], opts: &ProcessOptions) -> Vec<LevelImage> {
     let prepared = prepare(images, opts);
     let plan = plan(&prepared, opts);
-    plan.pages
+    render_all(&prepared, &plan.pages, opts)
+}
+
+/// Render pages, using every core of the machine: each page is independent,
+/// and resizing, contrast and dithering are most of an export's time. The
+/// pages come back in order.
+#[cfg(not(target_arch = "wasm32"))]
+fn render_all(
+    prepared: &Prepared,
+    pages: &[PlannedPage],
+    opts: &ProcessOptions,
+) -> Vec<LevelImage> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let workers = std::thread::available_parallelism()
+        .map_or(1, |n| n.get())
+        .min(pages.len());
+    if workers <= 1 {
+        return pages
+            .iter()
+            .map(|page| render_page(prepared, page, opts))
+            .collect();
+    }
+    let next = AtomicUsize::new(0);
+    let mut slots: Vec<Option<LevelImage>> = (0..pages.len()).map(|_| None).collect();
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..workers)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut done = Vec::new();
+                    loop {
+                        let i = next.fetch_add(1, Ordering::Relaxed);
+                        let Some(page) = pages.get(i) else { break };
+                        done.push((i, render_page(prepared, page, opts)));
+                    }
+                    done
+                })
+            })
+            .collect();
+        for handle in handles {
+            for (i, image) in handle.join().expect("a page renderer panicked") {
+                slots[i] = Some(image);
+            }
+        }
+    });
+    slots
+        .into_iter()
+        .map(|slot| slot.expect("every page was rendered"))
+        .collect()
+}
+
+/// The website runs on one thread.
+#[cfg(target_arch = "wasm32")]
+fn render_all(
+    prepared: &Prepared,
+    pages: &[PlannedPage],
+    opts: &ProcessOptions,
+) -> Vec<LevelImage> {
+    pages
         .iter()
-        .map(|page| render_page(&prepared, page, opts))
+        .map(|page| render_page(prepared, page, opts))
         .collect()
 }
 

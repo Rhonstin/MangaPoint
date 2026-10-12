@@ -22,8 +22,15 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc::UnboundedSender;
 
-/// Pages converted at the same time within one chapter.
-const PAGE_CONCURRENCY: usize = 4;
+/// Pages decoded at the same time within one chapter: one for each core, but
+/// not so many that tall pages fill the memory.
+fn page_concurrency() -> usize {
+    std::thread::available_parallelism()
+        .map_or(4, |n| n.get())
+        .clamp(2, 12)
+}
+/// Chapters converted ahead of the one being written.
+const CHAPTER_LOOKAHEAD: usize = 2;
 /// Just under the format's limit of 65,535 pages per file.
 const DEFAULT_MAX_PAGES_PER_FILE: usize = 60_000;
 
@@ -158,76 +165,109 @@ pub async fn export_series(
     let mut total_pages = 0usize;
     let total = chapters.len();
 
-    for (group, range) in group_ranges(total, job.grouping).into_iter().enumerate() {
-        let mut open: Option<(XtcBuilder, Volume)> = None;
-
-        for ci in range {
-            if cancel.is_cancelled() {
-                return Err(PipelineError::Cancelled);
-            }
+    // Chapters are converted a little ahead of the one being written, so the
+    // cores stay busy while a finished chapter is added to its book. They come
+    // out of the stream in order.
+    let order: Vec<(usize, usize)> = group_ranges(total, job.grouping)
+        .into_iter()
+        .enumerate()
+        .flat_map(|(group, range)| range.map(move |ci| (group, ci)))
+        .collect();
+    let mut converted = stream::iter(order)
+        .map(|(group, ci)| {
             let chapter = chapters[ci];
-            emit(JobEvent::ChapterStarted {
-                index: ci,
-                total,
-                name: chapter.name.clone(),
-            });
-            let images =
-                convert_chapter(files, &job.series.id, chapter, &opts, ci, &events, cancel).await?;
-            emit(JobEvent::ChapterDone { index: ci });
-
-            // Start a new file if this chapter would not fit in the open one.
-            if let Some((builder, _)) = &open {
-                if builder.page_count() + images.len() > job.max_pages_per_file {
-                    let (builder, volume) = open.take().expect("checked above");
-                    volumes.push(finish_volume(builder, volume, &job.work_dir, &mut scratch)?);
+            let (series_id, opts, events) = (&job.series.id, &opts, &events);
+            async move {
+                if cancel.is_cancelled() {
+                    return (group, ci, Err(PipelineError::Cancelled));
                 }
+                if let Some(tx) = events {
+                    let _ = tx.send(JobEvent::ChapterStarted {
+                        index: ci,
+                        total,
+                        name: chapter.name.clone(),
+                    });
+                }
+                let images =
+                    convert_chapter(files, series_id, chapter, opts, ci, events, cancel).await;
+                if images.is_ok() {
+                    if let Some(tx) = events {
+                        let _ = tx.send(JobEvent::ChapterDone { index: ci });
+                    }
+                }
+                (group, ci, images)
             }
-            if open.is_none() {
-                let spool = job.work_dir.join(unique_name("spool"));
-                scratch.0.push(spool.clone());
-                let builder = XtcBuilder::new(format)
-                    .direction(settings.direction)
-                    .metadata(Metadata {
-                        title: job.series.title.clone(),
-                        language: job.language.clone(),
-                        create_time: now_secs() as u32,
-                        cover_page: Some(0),
-                        ..Default::default()
-                    })
-                    .spool_to(&spool)?;
-                open = Some((
-                    builder,
-                    Volume {
-                        temp: PathBuf::new(),
-                        group,
-                        chapter_names: Vec::new(),
-                        first_number: None,
-                        last_number: None,
-                    },
-                ));
-            }
-            let (builder, volume) = open.as_mut().expect("opened above");
-            let start = builder.page_count();
-            for image in &images {
-                builder.add_page(image)?;
-            }
-            builder.push_chapter(XtcChapter {
-                name: chapter.name.clone(),
-                start_page: start as u16,
-                end_page: (builder.page_count() - 1) as u16,
-            });
-            volume.chapter_names.push(chapter.name.clone());
-            if volume.first_number.is_none() {
-                volume.first_number = chapter.number;
-            }
-            if chapter.number.is_some() {
-                volume.last_number = chapter.number;
-            }
-            total_pages += images.len();
+        })
+        .buffered(CHAPTER_LOOKAHEAD);
+
+    let mut open: Option<(XtcBuilder, Volume)> = None;
+    let mut open_group = usize::MAX;
+    while let Some((group, ci, images)) = converted.next().await {
+        let images = images?;
+        if cancel.is_cancelled() {
+            return Err(PipelineError::Cancelled);
         }
-        if let Some((builder, volume)) = open.take() {
-            volumes.push(finish_volume(builder, volume, &job.work_dir, &mut scratch)?);
+        let chapter = chapters[ci];
+
+        // A new group starts a new file.
+        if group != open_group {
+            if let Some((builder, volume)) = open.take() {
+                volumes.push(finish_volume(builder, volume, &job.work_dir, &mut scratch)?);
+            }
+            open_group = group;
         }
+        // Start a new file if this chapter would not fit in the open one.
+        if let Some((builder, _)) = &open {
+            if builder.page_count() + images.len() > job.max_pages_per_file {
+                let (builder, volume) = open.take().expect("checked above");
+                volumes.push(finish_volume(builder, volume, &job.work_dir, &mut scratch)?);
+            }
+        }
+        if open.is_none() {
+            let spool = job.work_dir.join(unique_name("spool"));
+            scratch.0.push(spool.clone());
+            let builder = XtcBuilder::new(format)
+                .direction(settings.direction)
+                .metadata(Metadata {
+                    title: job.series.title.clone(),
+                    language: job.language.clone(),
+                    create_time: now_secs() as u32,
+                    cover_page: Some(0),
+                    ..Default::default()
+                })
+                .spool_to(&spool)?;
+            open = Some((
+                builder,
+                Volume {
+                    temp: PathBuf::new(),
+                    group,
+                    chapter_names: Vec::new(),
+                    first_number: None,
+                    last_number: None,
+                },
+            ));
+        }
+        let (builder, volume) = open.as_mut().expect("opened above");
+        let start = builder.page_count();
+        for image in &images {
+            builder.add_page(image)?;
+        }
+        builder.push_chapter(XtcChapter {
+            name: chapter.name.clone(),
+            start_page: start as u16,
+            end_page: (builder.page_count() - 1) as u16,
+        });
+        volume.chapter_names.push(chapter.name.clone());
+        if volume.first_number.is_none() {
+            volume.first_number = chapter.number;
+        }
+        if chapter.number.is_some() {
+            volume.last_number = chapter.number;
+        }
+        total_pages += images.len();
+    }
+    if let Some((builder, volume)) = open.take() {
+        volumes.push(finish_volume(builder, volume, &job.work_dir, &mut scratch)?);
     }
 
     // Now that every file exists, name them (part numbers need the count) and
@@ -358,7 +398,7 @@ async fn convert_chapter(
             }
             Ok(gray)
         })
-        .buffered(PAGE_CONCURRENCY)
+        .buffered(page_concurrency())
         .collect()
         .await;
 
