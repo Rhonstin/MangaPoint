@@ -1,9 +1,8 @@
 //! Conversion presets: choosing, saving, updating and managing them.
 
-use super::widgets::{Chip, Icon};
+use super::widgets::Icon;
 use super::work::schedule_preview;
-use crate::logic::describe_settings;
-use crate::state::{AppState, Modal, ModalAction, Page};
+use crate::state::{AppState, Page};
 use dioxus::prelude::*;
 use library::{ConversionSettings, Deleted};
 
@@ -188,120 +187,6 @@ pub fn PresetPicker(
                     }
                     button { class: "btn ghost small", onclick: move |_| state.go(Page::Settings),
                         "Manage presets"
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// The list of presets in Settings: use one for new series, rename, delete.
-#[component]
-pub fn PresetsCard() -> Element {
-    let state = use_context::<AppState>();
-    let mut renaming = use_signal(|| None::<(String, String)>);
-    let mut error = use_signal(|| None::<String>);
-    let entries = state.presets.read().all();
-    let defaults = state.settings.read().conversion.clone();
-
-    rsx! {
-        div { class: "card",
-            h2 { Icon { name: "layers", size: 17 } "Presets" }
-            p { class: "muted small",
-                "A preset is a saved set of page settings. Manga, manhwa and manhua are made differently, so each has its own to start from. "
-                "Choose one while previewing a series, or save your own there."
-            }
-            if let Some(message) = error() {
-                div { class: "banner bad small", Icon { name: "circle-x", size: 16 } "{message}" }
-            }
-            for e in entries.iter() {
-                {
-                    let id = e.preset.id.clone();
-                    let is_start = e.preset.settings == defaults;
-                    let editing = renaming().filter(|(rid, _)| rid == &id);
-                    let summary = describe_settings(&e.preset.settings);
-                    let settings = e.preset.settings.clone();
-                    let (use_id, rename_id, delete_id, save_id) = (id.clone(), id.clone(), id.clone(), id.clone());
-                    let (current_name, builtin, modified) = (e.preset.name.clone(), e.builtin, e.modified);
-                    let delete_name = e.preset.name.clone();
-                    rsx! {
-                        div { class: "list-row", key: "{id}", style: "align-items: flex-start",
-                            div { class: "grow",
-                                if let Some((_, draft)) = editing {
-                                    div { class: "row",
-                                        input {
-                                            r#type: "text", class: "grow", maxlength: "40", autofocus: true, value: "{draft}",
-                                            oninput: move |ev| {
-                                                let v = ev.value();
-                                                renaming.set(Some((rename_id.clone(), v)));
-                                            },
-                                        }
-                                        button { class: "btn primary small",
-                                            onclick: move |_| {
-                                                let draft = renaming().map(|(_, d)| d).unwrap_or_default();
-                                                let result = state.edit_presets(|p| p.rename(&save_id, &draft));
-                                                match result {
-                                                    Ok(()) => { state.save_presets(); renaming.set(None); error.set(None); }
-                                                    Err(err) => error.set(Some(err.to_string())),
-                                                }
-                                            },
-                                            "Save"
-                                        }
-                                        button { class: "btn ghost small", onclick: move |_| { renaming.set(None); error.set(None); }, "Cancel" }
-                                    }
-                                } else {
-                                    div { class: "row wrap",
-                                        strong { "{current_name}" }
-                                        if builtin { Chip { text: "built in" } }
-                                        if modified { Chip { text: "changed by you", kind: Some("warn".to_string()) } }
-                                        if is_start { Chip { text: "starting point", kind: Some("ok".to_string()) } }
-                                    }
-                                }
-                                if !e.preset.description.is_empty() {
-                                    div { class: "muted small", "{e.preset.description}" }
-                                }
-                                div { class: "muted small", "{summary}" }
-                            }
-                            if !is_start {
-                                button { class: "btn small", title: "New series start with these settings",
-                                    onclick: move |_| {
-                                        let mut settings_sig = state.settings;
-                                        {
-                                            let mut s = settings_sig.write();
-                                            s.conversion = settings.clone();
-                                            s.default_preset_id = Some(use_id.clone());
-                                        }
-                                        state.save_settings();
-                                    },
-                                    "Use for new series"
-                                }
-                            }
-                            if !builtin {
-                                button { class: "btn small", title: "Rename",
-                                    onclick: move |_| { error.set(None); renaming.set(Some((delete_id.clone(), current_name.clone()))); },
-                                    Icon { name: "pencil", size: 14 }
-                                }
-                            }
-                            if !builtin || modified {
-                                button {
-                                    class: "btn small danger",
-                                    title: if builtin { "Put back the original settings" } else { "Delete this preset" },
-                                    onclick: move |_| state.ask(Modal {
-                                        title: if builtin { format!("Reset {delete_name}?") } else { format!("Delete {delete_name}?") },
-                                        body: if builtin {
-                                            "Your changes to this preset are discarded and it goes back to how it came. Series that use it keep their current settings.".to_string()
-                                        } else {
-                                            "The preset is deleted. Series that used it keep their current settings.".to_string()
-                                        },
-                                        confirm: if builtin { "Reset".into() } else { "Delete".into() },
-                                        cancel: "Keep".into(),
-                                        danger: true,
-                                        action: ModalAction::DeletePreset { id: id.clone() },
-                                    }),
-                                    if builtin { Icon { name: "rotate-ccw", size: 14 } } else { Icon { name: "trash", size: 14 } }
-                                }
-                            }
-                        }
                     }
                 }
             }

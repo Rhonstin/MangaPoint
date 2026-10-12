@@ -1,11 +1,11 @@
 //! Everything the screens share.
 
-use crate::logic::{JobProgress, SortKey, TargetChoice};
+use crate::logic::{JobProgress, SearchSort, SortKey, TargetChoice};
 use catalog::SuwayomiClient;
 use dioxus::prelude::*;
 use library::{
-    AppPaths, ExportsDb, HealthDb, JsonFile, LibraryDb, LibraryFiles, PresetsDb, Settings,
-    SourceState, SpeedDb,
+    AppPaths, ConversionSettings, ExportsDb, HealthDb, JsonFile, LibraryDb, LibraryFiles,
+    PresetsDb, Settings, SourceState, SpeedDb,
 };
 use pipeline::{CancelFlag, SourceChoice};
 use search::{MergedChapter, RankedSeries};
@@ -41,6 +41,41 @@ pub enum Page {
     Library,
     Sources,
     Settings,
+}
+
+/// The parts of the Settings page, shown in its own sidebar.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum SettingsSection {
+    #[default]
+    Reader,
+    Pages,
+    Presets,
+    Downloads,
+    Files,
+    Browser,
+    About,
+}
+
+/// The Presets page: the preset being edited, and the test page it is tried on.
+#[derive(Clone, Default)]
+pub struct PresetLab {
+    /// The preset being edited.
+    pub selected: Option<String>,
+    /// Its settings as they are now, saved or not.
+    pub draft: ConversionSettings,
+    /// The series whose pages supply the test page; `None` uses the built-in
+    /// sample page.
+    pub sample_series: Option<String>,
+    /// Which page of that series' first chapter (0-based).
+    pub page: usize,
+    pub total_pages: usize,
+    pub original: Option<Shot>,
+    pub kept: Option<[f32; 4]>,
+    pub converted: Vec<Shot>,
+    pub busy: bool,
+    pub error: Option<String>,
+    /// Bumped on every change so an older drawing never replaces a newer one.
+    pub generation: u64,
 }
 
 /// The steps within an open series.
@@ -125,6 +160,8 @@ pub struct SearchView {
     /// Sources that did not answer, by name.
     pub failed: Vec<String>,
     pub no_sources: bool,
+    /// Every installed source is turned off for searching.
+    pub none_selected: bool,
     /// Which search these results belong to. A newer search bumps it, and an
     /// older one still running then stops publishing.
     pub generation: u64,
@@ -316,6 +353,10 @@ pub struct AppState {
     pub health: Signal<HealthDb>,
     pub page: Signal<Page>,
     pub search: Signal<SearchView>,
+    /// How the search results are ordered.
+    pub search_sort: Signal<SearchSort>,
+    pub settings_section: Signal<SettingsSection>,
+    pub preset_lab: Signal<PresetLab>,
     /// Cover images as data URLs, keyed by `source:manga`.
     pub covers: Signal<HashMap<String, String>>,
     pub notice: Signal<Option<Notice>>,
@@ -382,6 +423,9 @@ impl AppState {
             health: sig(JsonFile::<HealthDb>::new(paths().health_file()).load()),
             page: sig(first_page),
             search: sig(SearchView::default()),
+            search_sort: sig(SearchSort::default()),
+            settings_section: sig(SettingsSection::default()),
+            preset_lab: sig(PresetLab::default()),
             covers: sig(HashMap::new()),
             notice: sig(None),
             modal: sig(None),

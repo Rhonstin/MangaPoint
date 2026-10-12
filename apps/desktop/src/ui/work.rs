@@ -586,6 +586,108 @@ async fn order_sources(
 /// export runs (about seven times a second).
 const PROGRESS_REFRESH: Duration = Duration::from_millis(140);
 
+// ---- The Presets page ---------------------------------------------------------
+
+/// Start editing a preset: its settings become the draft, and the test page is
+/// drawn with them.
+pub fn select_lab_preset(state: AppState, id: &str) {
+    let Some(entry) = state.presets.peek().find(id) else {
+        return;
+    };
+    let mut lab = state.preset_lab;
+    {
+        let mut l = lab.write();
+        l.selected = Some(entry.preset.id.clone());
+        l.draft = entry.preset.settings.clone();
+    }
+    schedule_lab(state, 0);
+}
+
+/// Choose the test page: a downloaded series' pages, or the built-in sample.
+pub fn choose_lab_sample(state: AppState, series_id: Option<String>) {
+    let mut lab = state.preset_lab;
+    {
+        let mut l = lab.write();
+        l.sample_series = series_id;
+        // Early pages are often a banner or credits; the third usually has art.
+        l.page = 2;
+        l.total_pages = 0;
+    }
+    schedule_lab(state, 0);
+}
+
+/// Draw the test page with the draft settings. Changes call this with a short
+/// delay, so dragging a slider draws once it settles.
+pub fn schedule_lab(state: AppState, delay_ms: u64) {
+    let mut lab = state.preset_lab;
+    let generation = {
+        let mut l = lab.write();
+        l.generation += 1;
+        l.busy = true;
+        l.error = None;
+        l.generation
+    };
+    spawn_forever(async move {
+        if delay_ms > 0 {
+            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+        }
+        let current = |state: AppState| state.preset_lab.peek().generation == generation;
+        if !current(state) {
+            return;
+        }
+        let (draft, sample, wanted_page) = {
+            let l = state.preset_lab.peek();
+            (l.draft.clone(), l.sample_series.clone(), l.page)
+        };
+        let device = state.settings.peek().device;
+        let opts = pipeline::process_options_for(device, &draft);
+
+        // The page to try: from the library, or drawn from scratch.
+        let mut total_pages = 0;
+        let mut page_index = 0;
+        let mut file = None;
+        if let Some(series_id) = &sample {
+            let first = state
+                .library
+                .peek()
+                .find(series_id)
+                .and_then(|s| s.chapters.first().map(|c| c.key.clone()));
+            if let Some(key) = first {
+                let pages = library_files().page_files(series_id, &key);
+                if !pages.is_empty() {
+                    total_pages = pages.len();
+                    page_index = wanted_page.min(pages.len() - 1);
+                    file = Some(pages[page_index].clone());
+                }
+            }
+        }
+        let rendered = tokio::task::spawn_blocking(move || match file {
+            Some(path) => std::fs::read(&path)
+                .map_err(|e| format!("Could not read the page: {e}"))
+                .and_then(|bytes| pipeline::render_page(&bytes, &opts).map_err(|e| e.to_string())),
+            None => Ok(pipeline::render_gray(&pipeline::sample_page(), &opts)),
+        })
+        .await;
+        if !current(state) {
+            return;
+        }
+        let mut lab = state.preset_lab;
+        let mut l = lab.write();
+        l.busy = false;
+        match rendered {
+            Ok(Ok(page)) => {
+                l.converted = page.converted.iter().map(shot).collect();
+                l.original = Some(shot(&page.original.image));
+                l.kept = Some(page.original.kept);
+                l.total_pages = total_pages;
+                l.page = page_index;
+            }
+            Ok(Err(message)) => l.error = Some(message),
+            Err(e) => l.error = Some(e.to_string()),
+        }
+    });
+}
+
 /// Stop the running download or export. The screen says so at once; the job
 /// itself ends as soon as the pages already on their way are dropped.
 pub fn cancel_job(state: AppState) {

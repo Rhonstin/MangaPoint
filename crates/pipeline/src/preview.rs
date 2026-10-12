@@ -125,11 +125,95 @@ pub struct RenderedPage {
 /// Decode a saved page and run the export's conversion on it. Meant for a
 /// background thread; a chapter's pages can be rendered independently.
 pub fn render_page(bytes: &[u8], opts: &ProcessOptions) -> Result<RenderedPage> {
-    let gray = decode_page(bytes)?;
-    Ok(RenderedPage {
-        converted: levels_to_previews(&render_levels(&gray, opts)),
-        original: render_original(&gray, opts),
-    })
+    Ok(render_gray(&decode_page(bytes)?, opts))
+}
+
+/// The same, for a page that is already decoded.
+pub fn render_gray(gray: &GrayImage, opts: &ProcessOptions) -> RenderedPage {
+    RenderedPage {
+        converted: levels_to_previews(&render_levels(gray, opts)),
+        original: render_original(gray, opts),
+    }
+}
+
+/// A page drawn from scratch to try settings on when there is nothing
+/// downloaded: panels with borders and white margins, a smooth screentone
+/// sky, halftone dots, speed lines, a dark scene and a speech bubble. It
+/// exercises what the settings change: trimming, contrast and shading.
+pub fn sample_page() -> GrayImage {
+    const W: u32 = 900;
+    const H: u32 = 1400;
+    let mut img = GrayImage::new(W, H, 255).expect("constant size");
+    // A panel: black border, then its contents drawn by `paint(x, y) -> gray`.
+    let mut panel = |x0: u32, y0: u32, w: u32, h: u32, paint: &dyn Fn(u32, u32, u32, u32) -> u8| {
+        img.fill_rect(x0, y0, w, h, 0);
+        for y in 0..h - 12 {
+            for x in 0..w - 12 {
+                img.set(x0 + 6 + x, y0 + 6 + y, paint(x, y, w - 12, h - 12));
+            }
+        }
+    };
+    // Top: a sky that fades from dark to light, with a sun of dots.
+    panel(70, 70, 760, 380, &|x, y, w, h| {
+        let sky = 70.0 + 170.0 * (y as f32 / h as f32);
+        let (dx, dy) = (x as f32 - w as f32 * 0.72, y as f32 - h as f32 * 0.34);
+        let d = (dx * dx + dy * dy).sqrt();
+        // The sun: solid in the middle, a ring of dots around it.
+        if d < 62.0 || (d < 90.0 && (x / 6 + y / 6) % 2 == 0) {
+            255
+        } else {
+            sky as u8
+        }
+    });
+    // Middle left: a dark scene crossed by light speed lines.
+    panel(70, 480, 360, 400, &|x, y, w, h| {
+        let (cx, cy) = (w as f32 / 2.0, h as f32 / 2.0);
+        let angle = (y as f32 - cy).atan2(x as f32 - cx);
+        let ray = ((angle * 38.0).sin() > 0.55) as u8;
+        let near = ((x as f32 - cx).powi(2) + (y as f32 - cy).powi(2)).sqrt() < 54.0;
+        if near {
+            235
+        } else if ray == 1 {
+            205
+        } else {
+            45
+        }
+    });
+    // Middle right: halftone dots that grow toward the bottom.
+    panel(470, 480, 360, 400, &|x, y, _w, h| {
+        let (cell_x, cell_y) = (x % 12, y % 12);
+        let r = 1.0 + 5.2 * (y as f32 / h as f32);
+        let d = (((cell_x as f32 - 5.5).powi(2)) + ((cell_y as f32 - 5.5).powi(2))).sqrt();
+        if d < r {
+            25
+        } else {
+            245
+        }
+    });
+    // Bottom: a mid-gray wash with a speech bubble full of lines of "text".
+    panel(70, 910, 760, 420, &|x, y, w, h| {
+        let wash = 150.0 + 60.0 * (x as f32 / w as f32);
+        let (dx, dy) = (
+            (x as f32 - w as f32 * 0.5) / 270.0,
+            (y as f32 - h as f32 * 0.46) / 120.0,
+        );
+        let inside = dx * dx + dy * dy;
+        if inside < 1.0 {
+            // Text lines inside the bubble.
+            let line = (y as i32 - (h as f32 * 0.46) as i32 + 70).rem_euclid(34);
+            let margin = ((x as f32 - w as f32 * 0.5).abs() < 200.0) as u8;
+            if line < 9 && margin == 1 && inside < 0.72 && (x / 17) % 5 != 0 {
+                20
+            } else {
+                255
+            }
+        } else if inside < 1.08 {
+            0
+        } else {
+            wash as u8
+        }
+    });
+    img
 }
 
 fn encode_png(gray: &[u8], width: u32, height: u32) -> Vec<u8> {
@@ -261,6 +345,38 @@ mod tests {
         assert_eq!(rendered.converted[0].mime, "image/png");
         assert_eq!(rendered.original.image.mime, "image/jpeg");
         assert!(render_page(b"junk", &opts(Depth::Two)).is_err());
+    }
+
+    #[test]
+    fn the_sample_page_has_what_the_settings_act_on() {
+        let page = sample_page();
+        assert_eq!((page.width, page.height), (900, 1400));
+        // White margins all round: there is something for the trimming to cut.
+        assert!((0..900).all(|x| page.get(x, 10) == 255 && page.get(x, 1390) == 255));
+        // A wide spread of tones, so contrast and shading show.
+        let mut seen = std::collections::HashSet::new();
+        for y in (0..1400).step_by(3) {
+            for x in (0..900).step_by(3) {
+                seen.insert(page.get(x, y) / 16);
+            }
+        }
+        assert!(seen.len() >= 12, "only {} tone bands", seen.len());
+    }
+
+    #[test]
+    fn the_sample_page_converts_to_one_screen_in_four_grays() {
+        let rendered = render_gray(&sample_page(), &opts(Depth::Two));
+        assert_eq!(rendered.converted.len(), 1);
+        let decoded = image::load_from_memory(&rendered.converted[0].bytes)
+            .unwrap()
+            .to_luma8();
+        let mut shades: Vec<u8> = decoded.pixels().map(|p| p.0[0]).collect();
+        shades.sort_unstable();
+        shades.dedup();
+        assert_eq!(shades, vec![0, 85, 170, 255], "all four levels are used");
+        // The margins were trimmed away by the default settings.
+        let kept = rendered.original.kept;
+        assert!(kept[2] < 0.95 && kept[3] < 0.95, "{kept:?}");
     }
 
     #[test]

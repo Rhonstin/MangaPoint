@@ -59,7 +59,7 @@ pub fn LibraryPage() -> Element {
                 EmptyState {
                     title: "Nothing downloaded yet",
                     message: "Search for a series, tick the chapters you want and download them. They'll live here.",
-                    compact: true,
+                    shelf: true,
                 }
                 div { style: "text-align: center",
                     button { class: "btn", onclick: move |_| state.go(Page::Search), Icon { name: "search", size: 16 } "Find a series" }

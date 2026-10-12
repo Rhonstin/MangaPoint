@@ -31,7 +31,13 @@ pub fn Icon(name: &'static str, size: Option<u32>) -> Element {
 
 /// A screen with nothing on it yet: the cat napping, and a friendly line.
 #[component]
-pub fn EmptyState(title: String, message: String, compact: Option<bool>) -> Element {
+pub fn EmptyState(
+    title: String,
+    message: String,
+    compact: Option<bool>,
+    /// Show the cat asleep on an empty bookshelf instead of on its own.
+    shelf: Option<bool>,
+) -> Element {
     let class = if compact.unwrap_or(false) {
         "empty compact"
     } else {
@@ -39,7 +45,11 @@ pub fn EmptyState(title: String, message: String, compact: Option<bool>) -> Elem
     };
     rsx! {
         div { class: "{class}",
-            super::cat::RestingCat {}
+            if shelf.unwrap_or(false) {
+                super::shelf::ShelfCat {}
+            } else {
+                super::cat::RestingCat {}
+            }
             h2 { "{title}" }
             p { "{message}" }
         }

@@ -191,6 +191,9 @@ pub struct Settings {
     pub language: String,
     /// Source ids the user prefers when the same series exists in several.
     pub preferred_sources: Vec<String>,
+    /// Sources turned off for searching. Everything not listed is searched,
+    /// so a source installed later is searched too.
+    pub search_excluded_sources: Vec<String>,
 }
 
 impl Default for Settings {
@@ -206,6 +209,7 @@ impl Default for Settings {
             default_preset_id: None,
             language: "en".into(),
             preferred_sources: Vec::new(),
+            search_excluded_sources: Vec::new(),
         }
     }
 }
@@ -223,6 +227,10 @@ mod tests {
         assert_eq!(s.conversion.overlap_percent, 8);
         assert_eq!(s.conversion.dither, Dither::FloydSteinberg);
         assert!(!s.browser_support, "browser support is opt-in");
+        assert!(
+            s.search_excluded_sources.is_empty(),
+            "every source is searched until the user says otherwise"
+        );
         assert!(
             !s.shrink_downloads,
             "pages are kept at full quality by default"

@@ -249,6 +249,12 @@ fn rest_markup() -> &'static str {
     })
 }
 
+/// The sleeping sprite as rectangles in its own 32x32 space, for scenes that
+/// place it somewhere (see `shelf.rs`).
+pub(super) fn rest_frame_markup(breathe: bool) -> String {
+    rects(&rest_frame(breathe))
+}
+
 /// The cat asleep, for screens with nothing on them yet.
 #[component]
 pub fn RestingCat() -> Element {

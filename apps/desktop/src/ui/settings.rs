@@ -2,14 +2,29 @@
 
 use super::ask_enable_browser;
 use super::conversion::ConversionControls;
-use super::presets::{PresetPicker, PresetsCard};
+use super::presets_lab::PresetsLab;
 use super::widgets::Icon;
 use crate::logic::human_bytes;
-use crate::state::{paths, AppState, BootState, Modal, ModalAction, Page};
+use crate::state::{paths, AppState, BootState, Modal, ModalAction, Page, SettingsSection};
 use catalog::browser;
 use device_profiles::{Device, Firmware};
 use dioxus::prelude::*;
 use library::{DownloadLimits, DownloadSpeed};
+
+/// The sections, in the order the sidebar lists them.
+const SECTIONS: [(SettingsSection, &str, &str); 7] = [
+    (SettingsSection::Reader, "hard-drive", "Your reader"),
+    (
+        SettingsSection::Pages,
+        "sliders-horizontal",
+        "How pages look",
+    ),
+    (SettingsSection::Presets, "layers", "Presets"),
+    (SettingsSection::Downloads, "download", "Downloads"),
+    (SettingsSection::Files, "folder-open", "Files"),
+    (SettingsSection::Browser, "globe", "Browser support"),
+    (SettingsSection::About, "info", "About"),
+];
 
 #[component]
 pub fn SettingsPage() -> Element {
@@ -42,9 +57,25 @@ pub fn SettingsPage() -> Element {
         state.save_settings();
     };
 
+    let section = *state.settings_section.read();
+
     rsx! {
         h1 { "Settings" }
-
+        div { class: "settings",
+            nav { class: "settings-nav",
+                for (sec, icon, label) in SECTIONS {
+                    button {
+                        key: "{label}",
+                        class: if sec == section { "nav-item on" } else { "nav-item" },
+                        onclick: move |_| { let mut current = state.settings_section; current.set(sec); },
+                        Icon { name: icon, size: 17 }
+                        "{label}"
+                    }
+                }
+            }
+            div { class: "settings-content",
+                {match section {
+                    SettingsSection::Reader => rsx! {
         div { class: "card",
             h2 { Icon { name: "hard-drive", size: 17 } "Your reader" }
             div { class: "field",
@@ -67,25 +98,9 @@ pub fn SettingsPage() -> Element {
             }
         }
 
-        PresetPicker {
-            value: s.conversion.clone(),
-            preset_id: s.default_preset_id.clone(),
-            on_pick: move |(id, settings)| {
-                let mut st = state.settings;
-                {
-                    let mut w = st.write();
-                    w.conversion = settings;
-                    w.default_preset_id = Some(id);
-                }
-                state.save_settings();
-            },
-            on_saved: move |id| {
-                let mut st = state.settings;
-                st.write().default_preset_id = Some(id);
-                state.save_settings();
-            },
-        }
 
+                    },
+                    SettingsSection::Pages => rsx! {
         div { class: "card",
             h2 { Icon { name: "sliders-horizontal", size: 17 } "How pages look" }
             p { class: "muted small", "Your starting point for every new series. Each series can be fine-tuned while you preview it." }
@@ -99,8 +114,18 @@ pub fn SettingsPage() -> Element {
             }
         }
 
-        PresetsCard {}
 
+                        div { class: "banner small",
+                            Icon { name: "layers", size: 16 }
+                            div {
+                                "Presets (manga, manhwa, manhua and your own) are on their own page, where you can try them on a test page."
+                                " "
+                                button { class: "btn small", onclick: move |_| { let mut current = state.settings_section; current.set(SettingsSection::Presets); }, "Open presets" }
+                            }
+                        }
+                    },
+                    SettingsSection::Presets => rsx! { PresetsLab {} },
+                    SettingsSection::Downloads => rsx! {
         div { class: "card",
             h2 { Icon { name: "download", size: 17 } "Download speed" }
             p { class: "muted small",
@@ -215,6 +240,9 @@ pub fn SettingsPage() -> Element {
             }
         }
 
+
+                    },
+                    SettingsSection::Files => rsx! {
         div { class: "card",
             h2 { Icon { name: "folder-open", size: 17 } "Where files go" }
             div { class: "field",
@@ -244,6 +272,9 @@ pub fn SettingsPage() -> Element {
             }
         }
 
+
+                    },
+                    SettingsSection::Browser => rsx! {
         div { class: "card",
             h2 { Icon { name: "globe", size: 17 } "Browser support" }
             p { class: "muted",
@@ -272,6 +303,9 @@ pub fn SettingsPage() -> Element {
             }
         }
 
+
+                    },
+                    SettingsSection::About => rsx! {
         div { class: "card",
             h2 { Icon { name: "info", size: 17 } "About" }
             p { class: "muted small",
@@ -279,6 +313,10 @@ pub fn SettingsPage() -> Element {
                 if let Some(sv) = &services { ", running on this computer only (port {sv.port})" }
                 br {}
                 "Your data: {paths().root().display()}"
+            }
+        }
+                    },
+                }}
             }
         }
     }
