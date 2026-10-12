@@ -127,6 +127,8 @@ pub enum XtcError {
     DepthMismatch { expected: Depth, found: Depth },
     #[error("an XTC file holds at most 65535 pages (got {0})")]
     TooManyPages(usize),
+    #[error("could not use the temporary page file: {0}")]
+    Spool(String),
     #[error("a file needs at least one page")]
     NoPages,
     #[error("chapter '{name}' covers pages {start}..={end} but the file has {pages} pages")]

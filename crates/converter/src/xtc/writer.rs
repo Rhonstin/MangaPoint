@@ -6,7 +6,9 @@ use super::{
     PAGE_TABLE_ENTRY_SIZE,
 };
 use crate::gray::LevelImage;
-use std::io::{self, Write};
+use std::fs::File;
+use std::io::{self, BufReader, Seek, SeekFrom, Write};
+use std::path::{Path, PathBuf};
 
 /// Book-level information shown by the reader. Strings are truncated to fit
 /// their fixed-size fields.
@@ -32,23 +34,47 @@ pub struct Chapter {
     pub end_page: u16,
 }
 
-struct EncodedPage {
-    bytes: Vec<u8>,
+/// What the page table needs to know about each encoded page.
+struct PageEntry {
+    len: u32,
     width: u16,
     height: u16,
 }
 
+/// Encoded pages written to a temporary file as they arrive, so a book of
+/// thousands of pages does not have to fit in memory. The file is deleted
+/// when the builder is finished or dropped.
+struct Spool {
+    path: PathBuf,
+    file: Option<File>,
+}
+
+impl Drop for Spool {
+    fn drop(&mut self) {
+        // Close the file first: Windows cannot delete an open file.
+        drop(self.file.take());
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+enum PageData {
+    Memory(Vec<Vec<u8>>),
+    Spool(Spool),
+}
+
 /// Collects pages and writes them out as one file.
 ///
-/// Pages are held in encoded form until [`XtcBuilder::build`], because the
-/// page table precedes the data and needs every size. A 1000-page XTCH book
-/// is about 96 MB in memory.
+/// The page table precedes the data and needs every page's size, so pages
+/// are held back until the file is written. By default they stay in memory
+/// (a 1000-page XTCH book is about 96 MB); [`XtcBuilder::spool_to`] keeps
+/// them in a temporary file instead.
 pub struct XtcBuilder {
     format: Format,
     direction: ReadDirection,
     metadata: Option<Metadata>,
     chapters: Vec<Chapter>,
-    pages: Vec<EncodedPage>,
+    entries: Vec<PageEntry>,
+    data: PageData,
 }
 
 impl XtcBuilder {
@@ -58,8 +84,30 @@ impl XtcBuilder {
             direction: ReadDirection::LeftToRight,
             metadata: None,
             chapters: Vec::new(),
-            pages: Vec::new(),
+            entries: Vec::new(),
+            data: PageData::Memory(Vec::new()),
         }
+    }
+
+    /// Keep encoded pages in a temporary file at `path` instead of memory.
+    /// Call before adding pages.
+    pub fn spool_to(mut self, path: impl AsRef<Path>) -> Result<Self, XtcError> {
+        if !self.entries.is_empty() {
+            return Err(XtcError::Spool("pages were already added".into()));
+        }
+        let path = path.as_ref().to_path_buf();
+        let file = File::options()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&path)
+            .map_err(|e| XtcError::Spool(e.to_string()))?;
+        self.data = PageData::Spool(Spool {
+            path,
+            file: Some(file),
+        });
+        Ok(self)
     }
 
     pub fn direction(mut self, direction: ReadDirection) -> Self {
@@ -78,7 +126,7 @@ impl XtcBuilder {
     }
 
     pub fn page_count(&self) -> usize {
-        self.pages.len()
+        self.entries.len()
     }
 
     /// Add a chapter entry after the builder was created, for callers that
@@ -95,15 +143,25 @@ impl XtcBuilder {
                 found: page.depth,
             });
         }
-        if self.pages.len() >= u16::MAX as usize {
-            return Err(XtcError::TooManyPages(self.pages.len() + 1));
+        if self.entries.len() >= u16::MAX as usize {
+            return Err(XtcError::TooManyPages(self.entries.len() + 1));
         }
         let bytes = encode_page(page)?;
-        self.pages.push(EncodedPage {
-            bytes,
+        let entry = PageEntry {
+            len: bytes.len() as u32,
             width: page.width as u16,
             height: page.height as u16,
-        });
+        };
+        match &mut self.data {
+            PageData::Memory(pages) => pages.push(bytes),
+            PageData::Spool(spool) => spool
+                .file
+                .as_mut()
+                .expect("the spool file is open until the builder is finished")
+                .write_all(&bytes)
+                .map_err(|e| XtcError::Spool(e.to_string()))?,
+        }
+        self.entries.push(entry);
         Ok(())
     }
 
@@ -118,8 +176,8 @@ impl XtcBuilder {
     }
 
     /// Write the finished file to any `Write`.
-    pub fn write_to<W: Write>(self, w: &mut W) -> Result<(), WriteError> {
-        let count = self.pages.len();
+    pub fn write_to<W: Write>(mut self, w: &mut W) -> Result<(), WriteError> {
+        let count = self.entries.len();
         if count == 0 {
             return Err(XtcError::NoPages.into());
         }
@@ -191,18 +249,31 @@ impl XtcBuilder {
 
         // Page table (16 bytes each).
         let mut offset = data_offset as u64;
-        for p in &self.pages {
+        for p in &self.entries {
             head.extend_from_slice(&offset.to_le_bytes());
-            head.extend_from_slice(&(p.bytes.len() as u32).to_le_bytes());
+            head.extend_from_slice(&p.len.to_le_bytes());
             head.extend_from_slice(&p.width.to_le_bytes());
             head.extend_from_slice(&p.height.to_le_bytes());
-            offset += p.bytes.len() as u64;
+            offset += p.len as u64;
         }
         debug_assert_eq!(head.len(), data_offset);
 
         w.write_all(&head)?;
-        for p in &self.pages {
-            w.write_all(&p.bytes)?;
+        match &mut self.data {
+            PageData::Memory(pages) => {
+                for bytes in pages.iter() {
+                    w.write_all(bytes)?;
+                }
+            }
+            PageData::Spool(spool) => {
+                let file = spool
+                    .file
+                    .as_mut()
+                    .expect("the spool file is open until the builder is finished");
+                file.flush()?;
+                file.seek(SeekFrom::Start(0))?;
+                io::copy(&mut BufReader::new(&*file), w)?;
+            }
         }
         Ok(())
     }
@@ -274,6 +345,80 @@ mod tests {
         }]);
         b.add_page(&blank(Depth::One)).unwrap();
         assert!(matches!(b.build(), Err(XtcError::BadChapter { .. })));
+    }
+
+    fn varied(depth: Depth, seed: u32) -> LevelImage {
+        let max = depth.max_level() as u32 + 1;
+        LevelImage {
+            width: 12,
+            height: 20,
+            depth,
+            levels: (0..240).map(|i| ((i * 7 + seed) % max) as u8).collect(),
+        }
+    }
+
+    fn book(format: Format, spool: Option<&Path>) -> XtcBuilder {
+        let depth = format.depth();
+        let mut b = XtcBuilder::new(format)
+            .direction(ReadDirection::RightToLeft)
+            .metadata(Metadata {
+                title: "Spool test".into(),
+                ..Default::default()
+            });
+        if let Some(path) = spool {
+            b = b.spool_to(path).unwrap();
+        }
+        for seed in 0..5 {
+            b.add_page(&varied(depth, seed)).unwrap();
+        }
+        b.push_chapter(Chapter {
+            name: "One".into(),
+            start_page: 0,
+            end_page: 4,
+        });
+        b
+    }
+
+    #[test]
+    fn a_spooled_book_is_byte_identical_to_one_built_in_memory() {
+        for format in [Format::Xtc, Format::Xtch] {
+            let path = std::env::temp_dir().join(format!(
+                "mangapoint-spool-{}-{}.tmp",
+                format.extension(),
+                std::process::id()
+            ));
+            let in_memory = book(format, None).build().unwrap();
+            let mut spooled = Vec::new();
+            book(format, Some(&path)).write_to(&mut spooled).unwrap();
+            assert_eq!(in_memory, spooled, "{format:?}");
+        }
+    }
+
+    #[test]
+    fn the_spool_file_is_deleted_when_the_builder_is_done_or_dropped() {
+        let dir = std::env::temp_dir();
+        let finished = dir.join(format!("mangapoint-spool-done-{}.tmp", std::process::id()));
+        let mut sink = Vec::new();
+        book(Format::Xtc, Some(&finished))
+            .write_to(&mut sink)
+            .unwrap();
+        assert!(!finished.exists(), "removed after writing");
+
+        let abandoned = dir.join(format!("mangapoint-spool-drop-{}.tmp", std::process::id()));
+        let b = book(Format::Xtc, Some(&abandoned));
+        assert!(abandoned.exists(), "present while the book is being built");
+        drop(b);
+        assert!(!abandoned.exists(), "removed when dropped without writing");
+    }
+
+    #[test]
+    fn spooling_must_start_before_the_first_page() {
+        let path =
+            std::env::temp_dir().join(format!("mangapoint-spool-late-{}.tmp", std::process::id()));
+        let mut b = XtcBuilder::new(Format::Xtc);
+        b.add_page(&blank(Depth::One)).unwrap();
+        assert!(matches!(b.spool_to(&path), Err(XtcError::Spool(_))));
+        assert!(!path.exists());
     }
 
     #[test]
