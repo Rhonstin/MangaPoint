@@ -86,6 +86,9 @@ pub struct DownloadedSeries {
     pub chapters: Vec<DownloadedChapter>,
     /// How pages of this series are converted (set while previewing).
     pub settings: ConversionSettings,
+    /// The preset these settings started from, if any. The settings may have
+    /// been changed since.
+    pub preset_id: Option<String>,
     pub updated_at: u64,
 }
 
@@ -133,6 +136,7 @@ impl LibraryDb {
                     title: title.to_string(),
                     chapters: Vec::new(),
                     settings: defaults.clone(),
+                    preset_id: None,
                     updated_at: now,
                 });
                 self.series.len() - 1
@@ -173,6 +177,28 @@ impl LibraryDb {
     pub fn set_settings(&mut self, series_id: &str, settings: ConversionSettings) {
         if let Some(s) = self.series.iter_mut().find(|s| s.id == series_id) {
             s.settings = settings;
+        }
+    }
+
+    /// A series still on the default settings, with no preset of its own yet,
+    /// takes the preset those defaults came from.
+    pub fn adopt_default_preset(
+        &mut self,
+        series_id: &str,
+        defaults: &ConversionSettings,
+        preset_id: &Option<String>,
+    ) {
+        if let Some(s) = self.series.iter_mut().find(|s| s.id == series_id) {
+            if s.preset_id.is_none() && s.settings == *defaults {
+                s.preset_id = preset_id.clone();
+            }
+        }
+    }
+
+    /// Remember which preset a series started from.
+    pub fn set_preset(&mut self, series_id: &str, preset_id: Option<String>) {
+        if let Some(s) = self.series.iter_mut().find(|s| s.id == series_id) {
+            s.preset_id = preset_id;
         }
     }
 

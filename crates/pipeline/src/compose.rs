@@ -173,6 +173,7 @@ pub async fn export_series(
             });
             let images =
                 convert_chapter(files, &job.series.id, chapter, &opts, ci, &events, cancel).await?;
+            emit(JobEvent::ChapterDone { index: ci });
 
             // Start a new file if this chapter would not fit in the open one.
             if let Some((builder, _)) = &open {

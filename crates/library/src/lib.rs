@@ -12,6 +12,7 @@ pub mod exports;
 pub mod health;
 pub mod json;
 pub mod paths;
+pub mod presets;
 pub mod settings;
 pub mod sources;
 
@@ -23,5 +24,10 @@ pub use exports::{delete_exported_file, ExportRecord, ExportedFileRecord, Export
 pub use health::{HealthDb, StepTiming, TestRecord, Verdict};
 pub use json::{JsonError, JsonFile};
 pub use paths::AppPaths;
-pub use settings::{ConversionSettings, ExportSettings, Settings};
+pub use presets::{
+    builtin_presets, ConversionPreset, Deleted, PresetEntry, PresetError, PresetsDb,
+};
+pub use settings::{
+    ConversionSettings, DownloadLimits, DownloadSettings, DownloadSpeed, ExportSettings, Settings,
+};
 pub use sources::{Choice, SourceState};

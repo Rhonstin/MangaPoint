@@ -75,7 +75,10 @@ pub fn DownloadsTab() -> Element {
     let running = job.as_ref().is_some_and(|j| j.result.is_none());
     let plan: Vec<String> = job.as_ref().map(|j| j.plan.clone()).unwrap_or_default();
     let failed: Vec<String> = job.as_ref().map(|j| j.failed.clone()).unwrap_or_default();
-    let current = job.as_ref().map_or(0, |j| j.progress.chapter_index);
+    let active: Vec<usize> = job
+        .as_ref()
+        .map(|j| j.progress.active_indexes())
+        .unwrap_or_default();
     let waiting = rows.iter().filter(|r| !saved_keys.contains(&r.key)).count();
     let shrink = state.settings.read().shrink_downloads;
 
@@ -94,7 +97,7 @@ pub fn DownloadsTab() -> Element {
     let table_rows: Vec<Element> = rows
         .iter()
         .map(|r| {
-            let status = logic::download_status(&r.key, &saved_keys, &plan, current, running, &failed);
+            let status = logic::download_status(&r.key, &saved_keys, &plan, &active, running, &failed);
             let number = r.number.map(logic::format_number).unwrap_or_else(|| "–".to_string());
             let size = r.bytes.map(logic::human_bytes).unwrap_or_default();
             let pages = r.pages.map(|p| p.to_string()).unwrap_or_default();
@@ -103,7 +106,10 @@ pub fn DownloadsTab() -> Element {
             let key = r.key.clone();
             let series_id = ws.series_id.clone();
             let title = ws.title.clone();
-            let progress = job.as_ref().map(|j| j.progress.clone()).unwrap_or_default();
+            let own = job.as_ref().and_then(|j| {
+                let index = plan.iter().position(|k| *k == r.key)?;
+                j.progress.active.get(&index).cloned()
+            });
             rsx! {
                 tr { key: "{r.key}",
                     td { class: "num", "{number}" }
@@ -112,7 +118,7 @@ pub fn DownloadsTab() -> Element {
                         {match status {
                             ChapterStatus::Saved => rsx! { Chip { text: "downloaded", kind: Some("ok".to_string()) } },
                             ChapterStatus::Downloading => rsx! {
-                                Chip { text: if progress.pages_total > 0 { format!("{} / {} pages", progress.pages_done, progress.pages_total) } else { "starting…".to_string() }, kind: Some("accent".to_string()) }
+                                Chip { text: match &own { Some(c) if c.pages_total > 0 => format!("{} / {} pages", c.pages_done, c.pages_total), _ => "starting…".to_string() }, kind: Some("accent".to_string()) }
                             },
                             ChapterStatus::Waiting => rsx! { Chip { text: if running { "waiting" } else { "not downloaded" } } },
                             ChapterStatus::Failed => rsx! { Chip { text: "couldn't download", kind: Some("bad".to_string()) } },

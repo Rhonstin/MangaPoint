@@ -77,6 +77,16 @@ pub enum JobEvent {
     ChapterSaved {
         chapter: DownloadedChapter,
     },
+    /// A chapter is finished with: saved, skipped, or (for an export) read.
+    ChapterDone {
+        index: usize,
+    },
+    /// A source pushed back (or recovered), so the number of requests allowed
+    /// at once changed.
+    PagesAtOnce {
+        now: usize,
+        chosen: usize,
+    },
     Writing {
         file: String,
     },

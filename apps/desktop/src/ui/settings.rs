@@ -2,17 +2,20 @@
 
 use super::ask_enable_browser;
 use super::conversion::ConversionControls;
+use super::presets::{PresetPicker, PresetsCard};
 use super::widgets::Icon;
 use crate::logic::human_bytes;
 use crate::state::{paths, AppState, BootState, Modal, ModalAction, Page};
 use catalog::browser;
 use device_profiles::{Device, Firmware};
 use dioxus::prelude::*;
+use library::{DownloadLimits, DownloadSpeed};
 
 #[component]
 pub fn SettingsPage() -> Element {
     let state = use_context::<AppState>();
     let s = state.settings.read().clone();
+    let limits = s.download.limits();
     let services = state.services.read().clone();
     let browser_size = services
         .as_ref()
@@ -64,6 +67,25 @@ pub fn SettingsPage() -> Element {
             }
         }
 
+        PresetPicker {
+            value: s.conversion.clone(),
+            preset_id: s.default_preset_id.clone(),
+            on_pick: move |(id, settings)| {
+                let mut st = state.settings;
+                {
+                    let mut w = st.write();
+                    w.conversion = settings;
+                    w.default_preset_id = Some(id);
+                }
+                state.save_settings();
+            },
+            on_saved: move |id| {
+                let mut st = state.settings;
+                st.write().default_preset_id = Some(id);
+                state.save_settings();
+            },
+        }
+
         div { class: "card",
             h2 { Icon { name: "sliders-horizontal", size: 17 } "How pages look" }
             p { class: "muted small", "Your starting point for every new series. Each series can be fine-tuned while you preview it." }
@@ -74,6 +96,61 @@ pub fn SettingsPage() -> Element {
                     settings.write().conversion = v;
                     state.save_settings();
                 },
+            }
+        }
+
+        PresetsCard {}
+
+        div { class: "card",
+            h2 { Icon { name: "download", size: 17 } "Download speed" }
+            p { class: "muted small",
+                "Faster downloads ask a source for several pages at once. Some sources hardly get faster, and a source that is pushed too hard can block your internet address for a while."
+            }
+            div { class: "seg", style: "max-width: 520px",
+                for (speed, label) in [
+                    (DownloadSpeed::Gentle, "Gentle"),
+                    (DownloadSpeed::Normal, "Normal"),
+                    (DownloadSpeed::Fast, "Fast"),
+                    (DownloadSpeed::Custom, "Advanced"),
+                ] {
+                    button {
+                        key: "{label}",
+                        class: if s.download.speed == speed { "on" } else { "" },
+                        onclick: move |_| { let mut st = state.settings; st.write().download.speed = speed; state.save_settings(); },
+                        "{label}"
+                    }
+                }
+            }
+            p { class: "muted small", style: "margin: 8px 0 0",
+                {match s.download.speed {
+                    DownloadSpeed::Gentle => "Slow and careful. Best for sources that block easily.",
+                    DownloadSpeed::Normal => "A good balance of speed and care. Recommended.",
+                    DownloadSpeed::Fast => "As quick as it goes. Some sources may start refusing requests.",
+                    DownloadSpeed::Custom => "Choose the numbers yourself.",
+                }}
+                " Right now: {limits.chapters} chapter(s) at a time, {limits.pages} pages at once."
+            }
+            if s.download.speed == DownloadSpeed::Custom {
+                div { class: "field",
+                    label { "Chapters at a time" }
+                    input {
+                        r#type: "number", min: "1", max: "{DownloadLimits::MAX_CHAPTERS}", value: "{s.download.custom_chapters}",
+                        oninput: move |e| update(|s, v| s.download.custom_chapters = v.trim().parse().unwrap_or(1), e.value()),
+                    }
+                    span { class: "hint muted small", "1 to {DownloadLimits::MAX_CHAPTERS}" }
+                }
+                div { class: "field",
+                    label { "Pages at once" }
+                    input {
+                        r#type: "number", min: "1", max: "{DownloadLimits::MAX_PAGES}", value: "{s.download.custom_pages}",
+                        oninput: move |e| update(|s, v| s.download.custom_pages = v.trim().parse().unwrap_or(1), e.value()),
+                    }
+                    span { class: "hint muted small", "1 to {DownloadLimits::MAX_PAGES}, shared by all the chapters downloading together." }
+                }
+                div { class: "banner warn small",
+                    Icon { name: "triangle-alert", size: 16 }
+                    "High numbers can get you blocked. If a source starts refusing requests, MangaPoint slows down by itself and speeds up again after a while."
+                }
             }
         }
 

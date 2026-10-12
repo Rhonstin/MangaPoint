@@ -1,5 +1,6 @@
 //! Downloading page images reliably.
 
+use crate::limiter::Limiter;
 use catalog::{Catalog, CatalogError};
 use std::future::Future;
 use std::time::Duration;
@@ -49,6 +50,65 @@ where
                 attempt += 1;
             }
             Err(e) => return Err(e),
+        }
+    }
+}
+
+/// Did the source ask us to ease off (as opposed to simply failing)?
+pub fn is_throttle(err: &CatalogError) -> bool {
+    match err {
+        CatalogError::SourceHttp(code) => matches!(code, 403 | 429 | 503),
+        CatalogError::Http(e) => e.is_timeout(),
+        _ => false,
+    }
+}
+
+/// Fetch a page within the limiter's allowance, retrying like [`with_retry`].
+/// A "slow down" answer lowers the allowance; `on_limit` is told the new
+/// number whenever it changes.
+pub async fn fetch_page_limited<C: Catalog>(
+    catalog: &C,
+    path: &str,
+    policy: &RetryPolicy,
+    limiter: &Limiter,
+    on_limit: &(dyn Fn(usize) + Sync),
+) -> Result<Vec<u8>, CatalogError> {
+    let attempts = policy.attempts.max(1);
+    let mut delay = policy.base_delay;
+    let mut attempt = 1;
+    loop {
+        // The permit is held only while the request runs, not while waiting to retry.
+        let result = {
+            let _permit = limiter.acquire().await;
+            catalog.get_bytes(path).await
+        };
+        match result {
+            Ok(bytes) => {
+                if let Some(limit) = limiter.succeeded() {
+                    on_limit(limit);
+                }
+                return Ok(bytes);
+            }
+            Err(e) => {
+                let throttled = is_throttle(&e);
+                if throttled {
+                    if let Some(limit) = limiter.slow_down() {
+                        on_limit(limit);
+                    }
+                }
+                if attempt >= attempts || !is_retryable(&e) {
+                    return Err(e);
+                }
+                // A source that is pushing back gets a longer rest.
+                let rest = if throttled {
+                    delay.max(Duration::from_secs(1))
+                } else {
+                    delay
+                };
+                tokio::time::sleep(rest).await;
+                delay = (delay * 2).min(Duration::from_secs(5));
+                attempt += 1;
+            }
         }
     }
 }

@@ -4,6 +4,7 @@ pub mod cat;
 mod conversion;
 mod icons;
 mod library_page;
+mod presets;
 mod search;
 mod settings;
 mod setup;
@@ -275,6 +276,7 @@ fn run_action(state: AppState, action: ModalAction) {
             ModalAction::DeleteDownloadedChapter { series_id, key } => {
                 work::delete_downloaded_chapter(state, series_id, key)
             }
+            ModalAction::DeletePreset { id } => presets::delete_preset(state, id),
             ModalAction::DeleteExportedFile { record_id, path } => {
                 work::delete_exported_file(state, record_id, path)
             }

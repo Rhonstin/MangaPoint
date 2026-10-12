@@ -12,6 +12,7 @@ pub mod download;
 pub mod error;
 pub mod export;
 pub mod fetch;
+pub mod limiter;
 pub mod options;
 pub mod preview;
 pub mod types;
@@ -21,8 +22,11 @@ pub use download::{download_chapters, DownloadOutcome};
 pub use error::PipelineError;
 pub use export::{ExportTarget, ExportedFile};
 pub use fetch::RetryPolicy;
+pub use limiter::Limiter;
 pub use options::{process_options, process_options_for};
-pub use preview::{decode_page, levels_to_previews, render_levels, render_original, PreviewImage};
+pub use preview::{
+    decode_page, levels_to_previews, render_levels, render_original, OriginalPreview, PreviewImage,
+};
 pub use types::{
     requests_from_merged, CancelFlag, ChapterRef, ChapterRequest, JobEvent, SkippedChapter,
     SourceUse,

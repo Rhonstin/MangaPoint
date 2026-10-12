@@ -4,7 +4,8 @@ use crate::logic::{JobProgress, SortKey, TargetChoice};
 use catalog::SuwayomiClient;
 use dioxus::prelude::*;
 use library::{
-    AppPaths, ExportsDb, HealthDb, JsonFile, LibraryDb, LibraryFiles, Settings, SourceState,
+    AppPaths, ExportsDb, HealthDb, JsonFile, LibraryDb, LibraryFiles, PresetsDb, Settings,
+    SourceState,
 };
 use pipeline::CancelFlag;
 use search::{MergedChapter, RankedSeries};
@@ -91,6 +92,10 @@ pub enum ModalAction {
     DeleteDownloadedChapter {
         series_id: String,
         key: String,
+    },
+    /// Delete one of the user's presets, or put a changed built-in back.
+    DeletePreset {
+        id: String,
     },
     /// Delete an exported file from disk.
     DeleteExportedFile {
@@ -180,6 +185,42 @@ pub struct Shot {
     pub height: u32,
 }
 
+/// How big the pages are drawn.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Zoom {
+    /// As large as fits without scrolling.
+    #[default]
+    Fit,
+    /// As wide as the space allows; scroll down for the rest.
+    Width,
+    /// One screen pixel per device pixel.
+    Actual,
+    Double,
+}
+
+/// Preview display choices that are not conversion settings.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct PreviewView {
+    pub zoom: Zoom,
+    /// Hide the settings panel to give the pages the whole width.
+    pub focus: bool,
+    /// Show the downloaded page beside the converted one.
+    pub show_original: bool,
+    /// Draw the cropped-away area on the original.
+    pub show_crop: bool,
+}
+
+impl Default for PreviewView {
+    fn default() -> Self {
+        Self {
+            zoom: Zoom::Fit,
+            focus: false,
+            show_original: true,
+            show_crop: true,
+        }
+    }
+}
+
 /// What the Preview tab is showing.
 #[derive(Clone, Default)]
 pub struct PreviewState {
@@ -192,6 +233,10 @@ pub struct PreviewState {
     pub converted: Vec<Shot>,
     /// The downloaded page, unconverted, for comparison.
     pub original: Option<Shot>,
+    /// The part of the original the conversion keeps: left, top, width, height
+    /// as fractions of the image.
+    pub kept: Option<[f32; 4]>,
+    pub view: PreviewView,
     pub busy: bool,
     pub error: Option<String>,
     /// Bumped on every change so an older render never overwrites a newer one.
@@ -271,6 +316,8 @@ pub struct AppState {
     pub library: Signal<LibraryDb>,
     /// Files exported so far.
     pub exports: Signal<ExportsDb>,
+    /// The user's conversion presets (and changes to the built-in ones).
+    pub presets: Signal<PresetsDb>,
     pub workspace: Signal<Option<Workspace>>,
     pub chapters: Signal<ChaptersState>,
     /// Chapters ticked in the table, by position in the merged list.
@@ -326,6 +373,7 @@ impl AppState {
             modal: sig(None),
             library: sig(JsonFile::<LibraryDb>::new(paths().library_file()).load()),
             exports: sig(JsonFile::<ExportsDb>::new(paths().exports_file()).load()),
+            presets: sig(JsonFile::<PresetsDb>::new(paths().presets_file()).load()),
             workspace: sig(None),
             chapters: sig(ChaptersState::Idle),
             selected: sig(HashSet::new()),
@@ -389,6 +437,18 @@ impl AppState {
 
     pub fn save_library(&self) {
         let _ = JsonFile::new(paths().library_file()).save(&*self.library.read());
+    }
+
+    /// Change the presets. (A signal can only be written through a mutable
+    /// binding, which `&self` does not give.)
+    pub fn edit_presets<R>(&self, edit: impl FnOnce(&mut PresetsDb) -> R) -> R {
+        let mut presets = self.presets;
+        let mut guard = presets.write();
+        edit(&mut guard)
+    }
+
+    pub fn save_presets(&self) {
+        let _ = JsonFile::new(paths().presets_file()).save(&*self.presets.read());
     }
 
     pub fn save_exports(&self) {

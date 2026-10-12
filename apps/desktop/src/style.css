@@ -233,7 +233,7 @@ table.chapters td.name { overflow: hidden; text-overflow: ellipsis; max-width: 0
 .preview-stage.busy { opacity: 0.55; }
 .device { margin: 0; text-align: center; }
 .device img { display: block; max-height: calc(100vh - 360px); max-width: 100%; border: 1px solid var(--line-strong); border-radius: 6px; background: #fff; }
-.device.small img { max-height: calc(100vh - 420px); opacity: 0.9; }
+
 .device figcaption { color: var(--muted); font-size: 0.82rem; margin-bottom: 6px; }
 
 .action-bar {
@@ -244,3 +244,28 @@ table.chapters td.name { overflow: hidden; text-overflow: ellipsis; max-width: 0
 .controls.compact .field .hint { grid-column: 1; }
 th.saved, td.saved { width: 120px; }
 td.status, th.status { width: 170px; }
+
+/* ---- preview: wide stage, settings panel, crop guide ---- */
+:root { --stage-height: calc(100vh - 345px); }
+.preview-layout { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 18px; align-items: start; }
+.preview-layout.focus { grid-template-columns: minmax(0, 1fr); }
+.preview-main { min-width: 0; }
+.preview-stage {
+  container-type: inline-size; display: flex; gap: 16px; align-items: flex-start; justify-content: center;
+  overflow-x: auto; padding-bottom: 4px; outline: none;
+}
+.preview-stage .device img { display: block; max-width: none; border: 0; border-radius: 0; opacity: 1; image-rendering: auto; }
+.preview-stage .device .shot { position: relative; line-height: 0; border: 1px solid var(--line-strong); border-radius: 6px; overflow: hidden; background: #fff; }
+.preview-stage .kept { position: absolute; border: 2px solid var(--accent); box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.62); pointer-events: none; }
+.side.panel { max-height: calc(100vh - 150px); overflow-y: auto; padding-right: 4px; }
+.side.panel .card + .card { margin-top: 14px; }
+.side.panel > .card { margin-bottom: 14px; }
+.btn.on { background: var(--panel-3); border-color: var(--accent); color: var(--text); }
+.toolbar .grow { flex: 1; }
+.controls h3.group { margin: 16px 0 2px; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); font-weight: 600; }
+.controls h3.group:first-child { margin-top: 0; }
+.check-line { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.margins { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.controls.compact .margins { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.margins label { display: flex; flex-direction: column; gap: 3px; color: var(--muted); font-size: 0.8rem; }
+.margins input { width: 100%; }

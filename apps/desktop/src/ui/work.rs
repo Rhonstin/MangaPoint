@@ -18,7 +18,7 @@ use pipeline::{
     Grouping, JobEvent, PipelineError, PreviewImage, RetryPolicy,
 };
 use search::{merge_chapters, RankedSeries, ScoredMember};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc::unbounded_channel;
@@ -246,7 +246,9 @@ pub fn start_download(state: AppState) {
         let started = Instant::now();
         let files = library_files();
         let defaults = state.settings.peek().conversion.clone();
+        let default_preset = state.settings.peek().default_preset_id.clone();
         let policy = RetryPolicy::default();
+        let limits = state.settings.peek().download.limits();
         let (tx, mut rx) = unbounded_channel();
         let run = download_chapters(
             &*client,
@@ -254,24 +256,25 @@ pub fn start_download(state: AppState) {
             &ws.series_id,
             &requests,
             shrink,
+            limits,
             &policy,
             Some(tx),
             &cancel,
         );
         let watch = async {
-            let mut logged = 0;
+            let mut logged = HashMap::new();
             while let Some(event) = rx.recv().await {
                 log_event(&event, &mut logged);
                 if let JobEvent::ChapterSaved { chapter } = &event {
                     // Record each chapter as soon as it is safe on disk, so
                     // cancelling or failing later never loses it.
                     let mut library = state.library;
-                    library.write().record_chapter(
-                        &ws.title,
-                        &defaults,
-                        chapter.clone(),
-                        now_secs(),
-                    );
+                    {
+                        let mut db = library.write();
+                        let id =
+                            db.record_chapter(&ws.title, &defaults, chapter.clone(), now_secs());
+                        db.adopt_default_preset(&id, &defaults, &default_preset);
+                    }
                     state.save_library();
                 }
                 if let Some(view) = job.write().as_mut() {
@@ -415,6 +418,7 @@ pub fn schedule_preview(state: AppState, delay_ms: u64) {
                 w.error = Some(message);
                 w.converted.clear();
                 w.original = None;
+                w.kept = None;
             }
         };
         let Some(ws) = state.workspace.peek().clone() else {
@@ -482,7 +486,8 @@ pub fn schedule_preview(state: AppState, delay_ms: u64) {
         }
         let mut w = p.write();
         w.converted = converted.iter().map(shot).collect();
-        w.original = Some(shot(&original));
+        w.original = Some(shot(&original.image));
+        w.kept = Some(original.kept);
         w.total_pages = pages.len();
         w.page = page;
         w.decoded = Some((key, page, gray));
@@ -577,7 +582,7 @@ pub fn start_export(state: AppState) {
         let (tx, mut rx) = unbounded_channel();
         let run = export_series(&files, &export, Some(tx), &cancel);
         let watch = async {
-            let mut logged = 0;
+            let mut logged = HashMap::new();
             while let Some(event) = rx.recv().await {
                 log_event(&event, &mut logged);
                 if let Some(view) = job.write().as_mut() {
@@ -654,18 +659,24 @@ pub fn describe_target(target: &ExportTarget) -> String {
     }
 }
 
-/// One readable line per meaningful step; page progress every 25 pages.
-fn log_event(event: &JobEvent, logged_pages: &mut usize) {
+/// One readable line per meaningful step; page progress every 25 pages of
+/// each chapter (chapters can download together, so progress is kept per chapter).
+fn log_event(event: &JobEvent, logged_pages: &mut HashMap<usize, usize>) {
     match event {
         JobEvent::ChapterStarted { index, total, name } => {
-            *logged_pages = 0;
+            logged_pages.insert(*index, 0);
             info!("Chapter {}/{}: {name}", index + 1, total);
         }
-        JobEvent::PageDone { done, total, .. } => {
-            if done / 25 > *logged_pages / 25 || done == total {
-                info!("  {done}/{total} pages");
+        JobEvent::PageDone {
+            chapter_index,
+            done,
+            total,
+        } => {
+            let last = logged_pages.entry(*chapter_index).or_insert(0);
+            if done / 25 > *last / 25 || done == total {
+                info!("  chapter {}: {done}/{total} pages", chapter_index + 1);
             }
-            *logged_pages = *done;
+            *last = *done;
         }
         JobEvent::UsedFallback {
             from, to, reason, ..
@@ -682,6 +693,14 @@ fn log_event(event: &JobEvent, logged_pages: &mut usize) {
                 chapter.pages,
                 logic::human_bytes(chapter.bytes)
             );
+        }
+        JobEvent::ChapterDone { .. } => {}
+        JobEvent::PagesAtOnce { now, chosen } => {
+            if now < chosen {
+                warn!("  the source is pushing back: {now} requests at once instead of {chosen}");
+            } else {
+                info!("  the source recovered: back to {chosen} requests at once");
+            }
         }
         JobEvent::Writing { file } => info!("Writing {file}"),
     }

@@ -79,6 +79,9 @@ impl AppPaths {
     pub fn exports_file(&self) -> PathBuf {
         self.root.join("exports.json")
     }
+    pub fn presets_file(&self) -> PathBuf {
+        self.root.join("presets.json")
+    }
     /// Scratch space for files being assembled.
     pub fn spool_dir(&self) -> PathBuf {
         self.root.join("cache").join("spool")
@@ -111,6 +114,7 @@ mod tests {
             p.library_dir(),
             p.library_file(),
             p.exports_file(),
+            p.presets_file(),
             p.spool_dir(),
         ] {
             assert!(f.starts_with("/r"), "{f:?}");

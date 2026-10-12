@@ -7,7 +7,7 @@ use converter::decode::{decode_to_gray, image_dimensions};
 use converter::xtc::{Format, ReadDirection, XtcFile};
 use device_profiles::Device;
 use image::{ImageEncoder, Rgba, RgbaImage};
-use library::{ConversionSettings, DownloadedSeries, LibraryDb, LibraryFiles};
+use library::{ConversionSettings, DownloadLimits, DownloadedSeries, LibraryDb, LibraryFiles};
 use pipeline::{
     download_chapters, export_series, process_options_for, render_levels, CancelFlag, ChapterRef,
     ChapterRequest, ExportJob, ExportTarget, Grouping, JobEvent, PipelineError, RetryPolicy,
@@ -110,6 +110,7 @@ async fn download(
         &lib.id,
         reqs,
         shrink,
+        DownloadLimits::default(),
         &quick(),
         None,
         &CancelFlag::new(),
@@ -180,6 +181,7 @@ async fn download_saves_every_page_and_reports_each_finished_chapter() {
         &lib.id,
         &[request(1.0, &[("s", 1)]), request(2.0, &[("s", 2)])],
         false,
+        DownloadLimits::default(),
         &quick(),
         Some(tx),
         &CancelFlag::new(),
@@ -273,6 +275,7 @@ async fn a_failing_source_falls_back_and_its_partial_pages_are_discarded() {
         &lib.id,
         &[request(1.0, &[("bad", 10), ("good", 20)])],
         false,
+        DownloadLimits::default(),
         &quick(),
         Some(tx),
         &CancelFlag::new(),
@@ -375,6 +378,7 @@ async fn cancelling_stops_before_fetching_anything() {
         &lib.id,
         &[request(1.0, &[("s", 1)])],
         false,
+        DownloadLimits::default(),
         &quick(),
         None,
         &cancel,
@@ -701,5 +705,209 @@ async fn a_lone_unnumbered_chapter_is_named_after_itself() {
         .await
         .unwrap();
     assert_eq!(names(&exported), ["Test Series - Author's note.xtch"]);
+    let _ = fs::remove_dir_all(lib.root);
+}
+
+// ---- Parallel downloads ----------------------------------------------------
+
+fn limits(chapters: usize, pages: usize) -> DownloadLimits {
+    DownloadLimits { chapters, pages }
+}
+
+async fn download_with(
+    c: &FakeCatalog,
+    lib: &Library,
+    reqs: &[ChapterRequest],
+    limits: DownloadLimits,
+    events: Option<tokio::sync::mpsc::UnboundedSender<JobEvent>>,
+) -> Result<pipeline::DownloadOutcome, PipelineError> {
+    download_chapters(
+        c,
+        &lib.files,
+        &lib.id,
+        reqs,
+        false,
+        limits,
+        &quick(),
+        events,
+        &CancelFlag::new(),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn pages_download_at_once_up_to_the_chosen_number_and_no_more() {
+    for pages in [1, 2, 4] {
+        let lib = library(&format!("par-pages-{pages}"));
+        let c = FakeCatalog::new();
+        c.set_latency_ms(15);
+        add_chapter(&c, 1, 12);
+        let out = download_with(
+            &c,
+            &lib,
+            &[request(1.0, &[("s", 1)])],
+            limits(1, pages),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.chapters[0].pages, 12);
+        assert_eq!(c.max_in_flight(), pages, "pages at once = {pages}");
+        let _ = fs::remove_dir_all(lib.root);
+    }
+}
+
+#[tokio::test]
+async fn the_page_allowance_is_shared_by_chapters_downloading_together() {
+    let lib = library("par-shared");
+    let c = FakeCatalog::new();
+    c.set_latency_ms(15);
+    for id in 1..=3 {
+        add_chapter(&c, id, 8);
+    }
+    let reqs = [
+        request(1.0, &[("s", 1)]),
+        request(2.0, &[("s", 2)]),
+        request(3.0, &[("s", 3)]),
+    ];
+    let (tx, mut rx) = unbounded_channel();
+    let out = download_with(&c, &lib, &reqs, limits(3, 6), Some(tx))
+        .await
+        .unwrap();
+    assert_eq!(
+        c.max_in_flight(),
+        6,
+        "six requests in all, not six per chapter"
+    );
+    let keys: Vec<_> = out.chapters.iter().map(|c| c.key.as_str()).collect();
+    assert_eq!(
+        keys,
+        ["c1", "c2", "c3"],
+        "reading order, however they finished"
+    );
+
+    let mut events = Vec::new();
+    while let Ok(e) = rx.try_recv() {
+        events.push(e);
+    }
+    let first_saved = events
+        .iter()
+        .position(|e| matches!(e, JobEvent::ChapterSaved { .. }))
+        .unwrap();
+    let started_before = events[..first_saved]
+        .iter()
+        .filter(|e| matches!(e, JobEvent::ChapterStarted { .. }))
+        .count();
+    assert_eq!(
+        started_before, 3,
+        "all three chapters were under way together"
+    );
+    let done = events
+        .iter()
+        .filter(|e| matches!(e, JobEvent::ChapterDone { .. }))
+        .count();
+    assert_eq!(done, 3);
+    let _ = fs::remove_dir_all(lib.root);
+}
+
+#[tokio::test]
+async fn one_chapter_at_a_time_means_one_at_a_time() {
+    let lib = library("par-serial");
+    let c = FakeCatalog::new();
+    c.set_latency_ms(10);
+    add_chapter(&c, 1, 4);
+    add_chapter(&c, 2, 4);
+    let (tx, mut rx) = unbounded_channel();
+    download_with(
+        &c,
+        &lib,
+        &[request(1.0, &[("s", 1)]), request(2.0, &[("s", 2)])],
+        limits(1, 4),
+        Some(tx),
+    )
+    .await
+    .unwrap();
+    let mut order = Vec::new();
+    while let Ok(e) = rx.try_recv() {
+        match e {
+            JobEvent::ChapterStarted { index, .. } => order.push(format!("start {index}")),
+            JobEvent::ChapterDone { index } => order.push(format!("done {index}")),
+            _ => {}
+        }
+    }
+    assert_eq!(order, ["start 0", "done 0", "start 1", "done 1"]);
+    let _ = fs::remove_dir_all(lib.root);
+}
+
+#[tokio::test]
+async fn a_source_that_pushes_back_makes_the_download_ease_off_and_still_finish() {
+    let lib = library("par-throttle");
+    let c = FakeCatalog::new();
+    c.set_latency_ms(5);
+    add_chapter(&c, 1, 10);
+    // Several pages answer "overloaded" once before working.
+    for i in [0, 1, 2, 3] {
+        c.flaky_path(&format!("/c1/p{i}"), 1);
+    }
+    let (tx, mut rx) = unbounded_channel();
+    let out = download_with(
+        &c,
+        &lib,
+        &[request(1.0, &[("s", 1)])],
+        limits(1, 8),
+        Some(tx),
+    )
+    .await
+    .unwrap();
+    assert_eq!(out.chapters[0].pages, 10, "every page still arrived");
+
+    let mut lowest = usize::MAX;
+    while let Ok(e) = rx.try_recv() {
+        if let JobEvent::PagesAtOnce { now, chosen } = e {
+            assert_eq!(chosen, 8);
+            lowest = lowest.min(now);
+        }
+    }
+    assert!(lowest < 8, "the download eased off (lowest was {lowest})");
+    let _ = fs::remove_dir_all(lib.root);
+}
+
+#[tokio::test]
+async fn a_cancel_during_parallel_downloads_keeps_what_finished() {
+    let lib = library("par-cancel");
+    let c = FakeCatalog::new();
+    c.set_latency_ms(10);
+    add_chapter(&c, 1, 3);
+    add_chapter(&c, 2, 30);
+    let cancel = CancelFlag::new();
+    let (tx, mut rx) = unbounded_channel();
+    let reqs = [request(1.0, &[("s", 1)]), request(2.0, &[("s", 2)])];
+    let stopper = cancel.clone();
+    let watch = async move {
+        // Cancel as soon as the first chapter is saved.
+        while let Some(e) = rx.recv().await {
+            if matches!(e, JobEvent::ChapterSaved { .. }) {
+                stopper.cancel();
+            }
+        }
+    };
+    let policy = quick();
+    let run = download_chapters(
+        &c,
+        &lib.files,
+        &lib.id,
+        &reqs,
+        false,
+        limits(2, 4),
+        &policy,
+        Some(tx),
+        &cancel,
+    );
+    let (result, ()) = tokio::join!(run, watch);
+    assert!(matches!(result, Err(PipelineError::Cancelled)));
+    assert!(
+        lib.files.page_files(&lib.id, "c1").len() == 3,
+        "the chapter that finished is on disk"
+    );
     let _ = fs::remove_dir_all(lib.root);
 }

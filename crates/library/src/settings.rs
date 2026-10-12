@@ -1,6 +1,8 @@
 //! User preferences.
 
-use converter::process::{CropMode, Layout, SpreadMode};
+use converter::process::{
+    CropMode, Layout, Margins, SpreadMode, DEFAULT_TRIM_PADDING, DEFAULT_TRIM_SENSITIVITY,
+};
 use converter::xtc::{Format, ReadDirection};
 use converter::Dither;
 use device_profiles::{Device, Firmware};
@@ -13,7 +15,14 @@ pub struct ConversionSettings {
     pub format: Format,
     pub direction: ReadDirection,
     pub layout: Layout,
+    /// Trim blank borders automatically.
     pub crop: CropMode,
+    /// Fixed margins cut from every page before the automatic trim.
+    pub margins: Margins,
+    /// 0..=100: higher notices fainter marks, so trims less.
+    pub trim_sensitivity: u8,
+    /// Pixels kept around the content after trimming.
+    pub trim_padding: u8,
     pub spread: SpreadMode,
     /// 0..=100, 50 = unchanged.
     pub contrast: u8,
@@ -31,11 +40,91 @@ impl Default for ConversionSettings {
             direction: ReadDirection::RightToLeft,
             layout: Layout::Auto,
             crop: CropMode::Margins,
+            margins: Margins::default(),
+            trim_sensitivity: DEFAULT_TRIM_SENSITIVITY,
+            trim_padding: DEFAULT_TRIM_PADDING,
             spread: SpreadMode::Split,
             contrast: 55,
             auto_levels: true,
             overlap_percent: 8,
             dither: Dither::FloydSteinberg,
+        }
+    }
+}
+
+/// How hard downloads push on a source.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DownloadSpeed {
+    /// Careful: for sources that block easily.
+    Gentle,
+    #[default]
+    Normal,
+    Fast,
+    /// The user's own numbers.
+    Custom,
+}
+
+/// What a download may do at once.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DownloadLimits {
+    /// Chapters being downloaded at the same time.
+    pub chapters: usize,
+    /// Page requests in flight at the same time, across all chapters.
+    pub pages: usize,
+}
+
+impl DownloadLimits {
+    pub const MAX_CHAPTERS: u8 = 4;
+    pub const MAX_PAGES: u8 = 16;
+}
+
+impl Default for DownloadLimits {
+    fn default() -> Self {
+        DownloadSettings::default().limits()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DownloadSettings {
+    pub speed: DownloadSpeed,
+    /// Used when `speed` is Custom.
+    pub custom_chapters: u8,
+    pub custom_pages: u8,
+}
+
+impl Default for DownloadSettings {
+    fn default() -> Self {
+        Self {
+            speed: DownloadSpeed::Normal,
+            custom_chapters: 2,
+            custom_pages: 6,
+        }
+    }
+}
+
+impl DownloadSettings {
+    /// The numbers behind the choice. The three named speeds were picked from
+    /// measuring real sources: gains level off around 8 to 12 requests at
+    /// once, and some sources gain nothing at all.
+    pub fn limits(&self) -> DownloadLimits {
+        match self.speed {
+            DownloadSpeed::Gentle => DownloadLimits {
+                chapters: 1,
+                pages: 2,
+            },
+            DownloadSpeed::Normal => DownloadLimits {
+                chapters: 2,
+                pages: 6,
+            },
+            DownloadSpeed::Fast => DownloadLimits {
+                chapters: 3,
+                pages: 12,
+            },
+            DownloadSpeed::Custom => DownloadLimits {
+                chapters: self.custom_chapters.clamp(1, DownloadLimits::MAX_CHAPTERS) as usize,
+                pages: self.custom_pages.clamp(1, DownloadLimits::MAX_PAGES) as usize,
+            },
         }
     }
 }
@@ -73,6 +162,10 @@ pub struct Settings {
     /// Shrink downloaded pages to save disk space. Off by default: pages are
     /// kept exactly as downloaded, for the best quality.
     pub shrink_downloads: bool,
+    /// How many chapters and pages to download at once.
+    pub download: DownloadSettings,
+    /// The preset the default conversion settings started from, if any.
+    pub default_preset_id: Option<String>,
     /// Preferred source language for search and ranking.
     pub language: String,
     /// Source ids the user prefers when the same series exists in several.
@@ -88,6 +181,8 @@ impl Default for Settings {
             export: ExportSettings::default(),
             browser_support: false,
             shrink_downloads: false,
+            download: DownloadSettings::default(),
+            default_preset_id: None,
             language: "en".into(),
             preferred_sources: Vec::new(),
         }
@@ -110,6 +205,53 @@ mod tests {
         assert!(
             !s.shrink_downloads,
             "pages are kept at full quality by default"
+        );
+    }
+
+    #[test]
+    fn download_speeds_map_to_limits_and_custom_numbers_are_held_in_range() {
+        let mut d = DownloadSettings::default();
+        assert_eq!(
+            d.limits(),
+            DownloadLimits {
+                chapters: 2,
+                pages: 6
+            }
+        );
+        d.speed = DownloadSpeed::Gentle;
+        assert_eq!(
+            d.limits(),
+            DownloadLimits {
+                chapters: 1,
+                pages: 2
+            }
+        );
+        d.speed = DownloadSpeed::Fast;
+        assert_eq!(
+            d.limits(),
+            DownloadLimits {
+                chapters: 3,
+                pages: 12
+            }
+        );
+        d.speed = DownloadSpeed::Custom;
+        d.custom_chapters = 0;
+        d.custom_pages = 200;
+        assert_eq!(
+            d.limits(),
+            DownloadLimits {
+                chapters: 1,
+                pages: 16
+            }
+        );
+        d.custom_chapters = 9;
+        d.custom_pages = 0;
+        assert_eq!(
+            d.limits(),
+            DownloadLimits {
+                chapters: 4,
+                pages: 1
+            }
         );
     }
 

@@ -127,12 +127,8 @@ fn Tab(
             class: "{class}",
             disabled: blocked.is_some(),
             title: "{hint}",
-            onclick: move |_| {
-                state.open_tab(tab);
-                if tab == SeriesTab::Preview {
-                    super::work::prepare_preview(state);
-                }
-            },
+            // The Preview tab prepares itself when it opens.
+            onclick: move |_| state.open_tab(tab),
             Icon { name: icon, size: 16 }
             span { "{label}" }
             if let Some(b) = badge { span { class: "badge", "{b}" } }

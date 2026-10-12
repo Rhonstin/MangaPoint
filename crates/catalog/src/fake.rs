@@ -44,6 +44,10 @@ struct State {
     /// Fail the first N calls to each path in `get_bytes`.
     flaky_paths: HashMap<String, u32>,
     calls: Vec<String>,
+    /// How long each `get_bytes` takes.
+    latency_ms: u64,
+    in_flight: usize,
+    max_in_flight: usize,
 }
 
 #[derive(Default)]
@@ -126,6 +130,16 @@ impl FakeCatalog {
     }
 
     /// Make the next `times` fetches of `path` fail.
+    /// Make every `get_bytes` take this long, so tests can overlap requests.
+    pub fn set_latency_ms(&self, ms: u64) {
+        self.state.lock().unwrap().latency_ms = ms;
+    }
+
+    /// The most `get_bytes` calls that were ever running at the same moment.
+    pub fn max_in_flight(&self) -> usize {
+        self.state.lock().unwrap().max_in_flight
+    }
+
     pub fn flaky_path(&self, path: &str, times: u32) {
         self.state
             .lock()
@@ -266,7 +280,17 @@ impl Catalog for FakeCatalog {
 
     async fn get_bytes(&self, path: &str) -> Result<Vec<u8>> {
         self.record(format!("get {path}"));
+        let latency = {
+            let mut s = self.state.lock().unwrap();
+            s.in_flight += 1;
+            s.max_in_flight = s.max_in_flight.max(s.in_flight);
+            s.latency_ms
+        };
+        if latency > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(latency)).await;
+        }
         let mut s = self.state.lock().unwrap();
+        s.in_flight -= 1;
         if let Some(n) = s.flaky_paths.get_mut(path) {
             if *n > 0 {
                 *n -= 1;

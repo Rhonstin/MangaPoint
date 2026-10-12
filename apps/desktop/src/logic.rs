@@ -283,13 +283,14 @@ pub enum ChapterStatus {
     Failed,
 }
 
-/// `plan` is the order the running download works through chapters, and
-/// `current` its position now; `failed` lists chapters no source could supply.
+/// `plan` is the order the running download was asked for chapters, and
+/// `active` the positions being downloaded right now (several, when chapters
+/// download together); `failed` lists chapters no source could supply.
 pub fn download_status(
     key: &str,
     saved: &HashSet<String>,
     plan: &[String],
-    current: usize,
+    active: &[usize],
     running: bool,
     failed: &[String],
 ) -> ChapterStatus {
@@ -297,7 +298,11 @@ pub fn download_status(
         ChapterStatus::Saved
     } else if failed.iter().any(|k| k == key) {
         ChapterStatus::Failed
-    } else if running && plan.get(current).is_some_and(|k| k == key) {
+    } else if running
+        && active
+            .iter()
+            .any(|&i| plan.get(i).is_some_and(|k| k == key))
+    {
         ChapterStatus::Downloading
     } else {
         ChapterStatus::Waiting
@@ -306,14 +311,23 @@ pub fn download_status(
 
 // ---- Progress --------------------------------------------------------------
 
-/// What the progress bar shows.
+/// One chapter being worked on right now.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct JobProgress {
-    pub chapter_index: usize,
-    pub chapter_total: usize,
-    pub chapter_name: String,
+pub struct ActiveChapter {
+    pub name: String,
     pub pages_done: usize,
     pub pages_total: usize,
+}
+
+/// What the progress bar shows. Chapters can download together, so it keeps
+/// every chapter in progress, not just one.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct JobProgress {
+    pub chapter_total: usize,
+    /// Chapters completely dealt with.
+    pub finished: usize,
+    /// Chapters under way, by their position in the job.
+    pub active: std::collections::BTreeMap<usize, ActiveChapter>,
     pub note: Option<String>,
 }
 
@@ -321,16 +335,24 @@ impl JobProgress {
     pub fn apply(&mut self, event: &JobEvent) {
         match event {
             JobEvent::ChapterStarted { index, total, name } => {
-                self.chapter_index = *index;
                 self.chapter_total = *total;
-                self.chapter_name = name.clone();
-                self.pages_done = 0;
-                self.pages_total = 0;
+                self.active.insert(
+                    *index,
+                    ActiveChapter {
+                        name: name.clone(),
+                        ..Default::default()
+                    },
+                );
                 self.note = None;
             }
-            JobEvent::PageDone { done, total, .. } => {
-                self.pages_done = *done;
-                self.pages_total = *total;
+            JobEvent::PageDone {
+                chapter_index,
+                done,
+                total,
+            } => {
+                let chapter = self.active.entry(*chapter_index).or_default();
+                chapter.pages_done = *done;
+                chapter.pages_total = *total;
             }
             JobEvent::UsedFallback { to, .. } => {
                 self.note = Some(format!("That source failed, trying {to}."));
@@ -339,12 +361,29 @@ impl JobProgress {
                 self.note = Some(format!("Skipped {name}: no source could supply it."));
             }
             JobEvent::ChapterSaved { .. } => {}
+            JobEvent::ChapterDone { index } => {
+                if self.active.remove(index).is_some() {
+                    self.finished += 1;
+                }
+            }
+            JobEvent::PagesAtOnce { now, chosen } => {
+                self.note = (now < chosen).then(|| {
+                    format!(
+                        "The source is pushing back, so downloads are slowed to {now} at a time."
+                    )
+                });
+            }
             JobEvent::Writing { .. } => {
-                self.pages_done = 0;
-                self.pages_total = 0;
+                self.active.clear();
+                self.finished = self.chapter_total;
                 self.note = Some("Writing the file…".into());
             }
         }
+    }
+
+    /// The positions of the chapters under way.
+    pub fn active_indexes(&self) -> Vec<usize> {
+        self.active.keys().copied().collect()
     }
 
     /// Overall progress, 0.0 to 1.0.
@@ -352,28 +391,36 @@ impl JobProgress {
         if self.chapter_total == 0 {
             return 0.0;
         }
-        let within = if self.pages_total > 0 {
-            self.pages_done as f32 / self.pages_total as f32
-        } else {
-            0.0
-        };
-        ((self.chapter_index as f32 + within) / self.chapter_total as f32).clamp(0.0, 1.0)
+        let partial: f32 = self
+            .active
+            .values()
+            .filter(|c| c.pages_total > 0)
+            .map(|c| c.pages_done as f32 / c.pages_total as f32)
+            .sum();
+        ((self.finished as f32 + partial) / self.chapter_total as f32).clamp(0.0, 1.0)
     }
 
     pub fn label(&self) -> String {
         if self.chapter_total == 0 {
             return "Starting…".into();
         }
-        let pages = if self.pages_total > 0 {
-            format!(", page {} of {}", self.pages_done, self.pages_total)
-        } else {
-            String::new()
-        };
-        format!(
-            "Chapter {} of {}{pages}",
-            self.chapter_index + 1,
-            self.chapter_total
-        )
+        match self.active.len() {
+            0 if self.finished == 0 => "Starting…".into(),
+            0 => format!("{} of {} chapters done", self.finished, self.chapter_total),
+            1 => {
+                let (index, chapter) = self.active.iter().next().expect("one entry");
+                let pages = if chapter.pages_total > 0 {
+                    format!(", page {} of {}", chapter.pages_done, chapter.pages_total)
+                } else {
+                    String::new()
+                };
+                format!("Chapter {} of {}{pages}", index + 1, self.chapter_total)
+            }
+            n => format!(
+                "{} of {} chapters done, {n} in progress",
+                self.finished, self.chapter_total
+            ),
+        }
     }
 }
 
@@ -428,6 +475,36 @@ pub fn ago(now_secs: u64, then_secs: u64) -> String {
         _ => (s / 86_400, "day"),
     };
     format!("{n} {unit}{} ago", if n == 1 { "" } else { "s" })
+}
+
+/// One line saying what a set of conversion settings does, for preset lists.
+pub fn describe_settings(c: &library::ConversionSettings) -> String {
+    use converter::process::{CropMode, Layout};
+    use converter::xtc::{Format, ReadDirection};
+    let direction = match c.direction {
+        ReadDirection::RightToLeft => "right to left",
+        ReadDirection::LeftToRight => "left to right",
+        ReadDirection::TopToBottom => "top to bottom",
+    };
+    let layout = match c.layout {
+        Layout::Auto => "automatic layout",
+        Layout::Manga => "pages",
+        Layout::Webtoon => "long strips",
+    };
+    let format = match c.format {
+        Format::Xtch => "4 grays",
+        Format::Xtc => "black & white",
+    };
+    let trim = match (c.crop, c.margins.is_none()) {
+        (CropMode::Full, true) => "no cropping".to_string(),
+        (CropMode::Full, false) => "fixed margins".to_string(),
+        (CropMode::Margins, true) => "auto trim".to_string(),
+        (CropMode::Margins, false) => "auto trim + fixed margins".to_string(),
+    };
+    format!(
+        "{direction} · {layout} · {trim} · {format} · contrast {}",
+        c.contrast
+    )
 }
 
 #[cfg(test)]
@@ -585,24 +662,29 @@ mod tests {
         let saved: HashSet<String> = ["c1".to_string()].into();
         let plan: Vec<String> = ["c2", "c3", "c4"].map(String::from).to_vec();
         let failed = vec!["c4".to_string()];
-        let status = |key: &str, current, running| {
-            download_status(key, &saved, &plan, current, running, &failed)
+        let status = |key: &str, active: &[usize], running| {
+            download_status(key, &saved, &plan, active, running, &failed)
         };
         assert_eq!(
-            status("c1", 0, true),
+            status("c1", &[0], true),
             ChapterStatus::Saved,
             "downloaded wins"
         );
-        assert_eq!(status("c2", 0, true), ChapterStatus::Downloading);
-        assert_eq!(status("c3", 0, true), ChapterStatus::Waiting);
-        assert_eq!(status("c3", 1, true), ChapterStatus::Downloading);
+        assert_eq!(status("c2", &[0], true), ChapterStatus::Downloading);
+        assert_eq!(status("c3", &[0], true), ChapterStatus::Waiting);
+        assert_eq!(status("c3", &[1], true), ChapterStatus::Downloading);
         assert_eq!(
-            status("c4", 2, true),
+            status("c3", &[0, 1], true),
+            ChapterStatus::Downloading,
+            "chapters can download together"
+        );
+        assert_eq!(
+            status("c4", &[2], true),
             ChapterStatus::Failed,
             "a failure is not 'downloading'"
         );
         assert_eq!(
-            status("c2", 0, false),
+            status("c2", &[0], false),
             ChapterStatus::Waiting,
             "nothing is downloading once it ends"
         );
@@ -727,23 +809,31 @@ mod tests {
         );
     }
 
+    fn started(index: usize, total: usize) -> JobEvent {
+        JobEvent::ChapterStarted {
+            index,
+            total,
+            name: format!("Ch {}", index + 1),
+        }
+    }
+
+    fn pages(chapter_index: usize, done: usize, total: usize) -> JobEvent {
+        JobEvent::PageDone {
+            chapter_index,
+            done,
+            total,
+        }
+    }
+
     #[test]
     fn progress_combines_chapter_and_page_position() {
         let mut p = JobProgress::default();
         assert_eq!(p.fraction(), 0.0);
         assert_eq!(p.label(), "Starting…");
-        p.apply(&JobEvent::ChapterStarted {
-            index: 1,
-            total: 4,
-            name: "Ch 2".into(),
-        });
-        assert_eq!(p.fraction(), 0.25);
-        p.apply(&JobEvent::PageDone {
-            chapter_index: 1,
-            done: 5,
-            total: 10,
-        });
-        assert!((p.fraction() - 0.375).abs() < 1e-6);
+        p.apply(&started(1, 4));
+        assert_eq!(p.fraction(), 0.0);
+        p.apply(&pages(1, 5, 10));
+        assert!((p.fraction() - 0.125).abs() < 1e-6);
         assert_eq!(p.label(), "Chapter 2 of 4, page 5 of 10");
         p.apply(&JobEvent::UsedFallback {
             chapter_index: 1,
@@ -752,22 +842,56 @@ mod tests {
             reason: String::new(),
         });
         assert!(p.note.as_deref().unwrap().contains('b'));
-        p.apply(&JobEvent::ChapterStarted {
-            index: 2,
-            total: 4,
-            name: "Ch 3".into(),
-        });
+        p.apply(&JobEvent::ChapterDone { index: 1 });
+        assert_eq!(p.fraction(), 0.25);
+        p.apply(&started(2, 4));
         assert_eq!(p.note, None, "the note clears with the next chapter");
-        assert_eq!(p.pages_done, 0);
+        assert_eq!(p.label(), "Chapter 3 of 4");
+    }
+
+    #[test]
+    fn chapters_downloading_together_share_the_bar() {
+        let mut p = JobProgress::default();
+        for i in 0..3 {
+            p.apply(&started(i, 6));
+        }
+        p.apply(&pages(0, 5, 10));
+        p.apply(&pages(1, 10, 10));
+        p.apply(&pages(2, 0, 10));
+        assert_eq!(p.active_indexes(), [0, 1, 2]);
+        assert_eq!(p.label(), "0 of 6 chapters done, 3 in progress");
+        assert!((p.fraction() - 1.5 / 6.0).abs() < 1e-6);
+
+        p.apply(&JobEvent::ChapterDone { index: 1 });
+        assert_eq!(p.active_indexes(), [0, 2]);
+        assert_eq!(p.label(), "1 of 6 chapters done, 2 in progress");
+        assert!(
+            (p.fraction() - 1.5 / 6.0).abs() < 1e-6,
+            "one chapter's 100% moved from partial to finished"
+        );
+        // A second "done" for the same chapter is not counted twice.
+        p.apply(&JobEvent::ChapterDone { index: 1 });
+        assert_eq!(p.finished, 1);
+    }
+
+    #[test]
+    fn easing_off_is_explained_and_clears_when_the_source_recovers() {
+        let mut p = JobProgress::default();
+        p.apply(&started(0, 1));
+        p.apply(&JobEvent::PagesAtOnce { now: 3, chosen: 12 });
+        assert!(p.note.as_deref().unwrap().contains('3'));
+        p.apply(&JobEvent::PagesAtOnce {
+            now: 12,
+            chosen: 12,
+        });
+        assert_eq!(p.note, None);
     }
 
     #[test]
     fn progress_never_leaves_zero_to_one() {
         let p = JobProgress {
-            chapter_index: 9,
             chapter_total: 2,
-            pages_done: 50,
-            pages_total: 10,
+            finished: 9,
             ..Default::default()
         };
         assert_eq!(p.fraction(), 1.0);
@@ -804,6 +928,36 @@ mod tests {
             ago(5, 50),
             "just now",
             "a clock set back is not a negative time"
+        );
+    }
+}
+
+#[cfg(test)]
+mod preset_tests {
+    use super::*;
+    use library::ConversionSettings;
+
+    #[test]
+    fn settings_are_described_in_one_plain_line() {
+        let manga = describe_settings(&ConversionSettings::default());
+        assert_eq!(
+            manga,
+            "right to left · automatic layout · auto trim · 4 grays · contrast 55"
+        );
+        let c = ConversionSettings {
+            crop: converter::process::CropMode::Full,
+            margins: converter::process::Margins {
+                top: 5,
+                ..Default::default()
+            },
+            layout: converter::process::Layout::Webtoon,
+            direction: converter::xtc::ReadDirection::LeftToRight,
+            format: converter::xtc::Format::Xtc,
+            ..Default::default()
+        };
+        assert_eq!(
+            describe_settings(&c),
+            "left to right · long strips · fixed margins · black & white · contrast 55"
         );
     }
 }
