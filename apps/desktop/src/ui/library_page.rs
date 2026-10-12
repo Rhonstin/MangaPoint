@@ -18,6 +18,7 @@ pub fn LibraryPage() -> Element {
     let mut sort = use_signal(LibrarySort::default);
     let mut filter = use_signal(String::new);
     let mut picked = use_signal(HashSet::<String>::new);
+    let mut more = use_signal(|| false);
     // Fetch the details and covers of series that do not have them yet, and
     // show the saved covers. Runs again when the catalog comes up or the
     // library changes.
@@ -274,11 +275,12 @@ pub fn LibraryPage() -> Element {
                     strong { "{chosen.len()} selected" }
                     span { class: "muted small", "{human_bytes(chosen_bytes)} on this computer" }
                 }
-                button { class: "btn ghost", onclick: move |_| {
+                button { class: "btn ghost small", onclick: move |_| {
                         if all_ticked { picked.write().clear(); } else { picked.set(all_shown.iter().cloned().collect()); }
                     },
                     if all_ticked { "Select none" } else { "Select all" }
                 }
+                span { class: "grow" }
                 button { class: "btn primary", onclick: {
                         let ids = chosen_ids.clone();
                         move |_| { picked.write().clear(); open_plan(state, ids.clone()); }
@@ -300,15 +302,25 @@ pub fn LibraryPage() -> Element {
                         Icon { name: "file-down", size: 15 } "Export…"
                     }
                 }
-                if !chosen_with_downloads.is_empty() {
-                    button { class: "btn danger", title: "Delete the downloaded chapters but keep the series",
-                        onclick: move |_| { state.ask(delete_modal.clone()); picked.write().clear(); },
-                        Icon { name: "trash", size: 15 } "Delete downloads"
+                div { class: "bar-menu",
+                    button { class: "btn", title: "More actions", onclick: move |_| more.set(!more()),
+                        Icon { name: "ellipsis", size: 18 }
                     }
-                }
-                button { class: "btn danger", title: "Take the series out of your library",
-                    onclick: move |_| { state.ask(remove_modal.clone()); picked.write().clear(); },
-                    Icon { name: "x", size: 15 } "Remove"
+                    if more() {
+                        div { class: "menu-scrim", onclick: move |_| more.set(false) }
+                        div { class: "menu up",
+                            if !chosen_with_downloads.is_empty() {
+                                button { class: "menu-item danger", title: "Delete the downloaded chapters but keep the series",
+                                    onclick: move |_| { more.set(false); state.ask(delete_modal.clone()); picked.write().clear(); },
+                                    Icon { name: "trash", size: 15 } "Delete downloads"
+                                }
+                            }
+                            button { class: "menu-item danger", title: "Take the series out of your library",
+                                onclick: move |_| { more.set(false); state.ask(remove_modal.clone()); picked.write().clear(); },
+                                Icon { name: "x", size: 15 } "Remove from library"
+                            }
+                        }
+                    }
                 }
             }
         }

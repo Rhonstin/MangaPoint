@@ -616,6 +616,8 @@ pub fn open_plan(state: AppState, series_ids: Vec<String>) {
             chapters: PlanChapters::Loading,
             picked: HashSet::new(),
             open: series_ids.len() == 1,
+            filter: String::new(),
+            sort: (logic::SortKey::Number, true),
         })
         .collect();
     let ids: Vec<String> = entries.iter().map(|e| e.series_id.clone()).collect();

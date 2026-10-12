@@ -1,11 +1,28 @@
 //! Choosing what to download from one or more library series, before it goes
-//! to the download queue: each series has its own list of chapters to tick.
+//! to the download queue. Each series has its own chapter table, with a
+//! filter, sorting and tick boxes.
 
+use super::chapter_table::{ChapterGrid, GridRow};
 use super::widgets::{Cover, EmptyState, Icon};
 use super::work::{commit_plan, downloaded_keys, load_saved_cover, merged_key, saved_cover_key};
 use crate::logic::{self, plural};
-use crate::state::{AppState, Page, PlanChapters};
+use crate::state::{AppState, Page, PlanChapters, PlanEntry};
 use dioxus::prelude::*;
+
+/// Change one series' entry in the planner.
+fn with_entry(state: AppState, series_id: &str, change: impl FnOnce(&mut PlanEntry)) {
+    let mut plan = state.plan;
+    let mut entries = plan.write();
+    if let Some(entry) = entries.iter_mut().find(|e| e.series_id == series_id) {
+        change(entry);
+    }
+}
+
+fn leave(state: AppState) {
+    let mut plan = state.plan;
+    plan.set(Vec::new());
+    state.go(Page::Library);
+}
 
 #[component]
 pub fn PlanPage() -> Element {
@@ -41,11 +58,7 @@ pub fn PlanPage() -> Element {
     }
 
     rsx! {
-        button { class: "btn ghost small back", onclick: move |_| {
-                let mut plan = state.plan;
-                plan.set(Vec::new());
-                state.go(Page::Library);
-            },
+        button { class: "btn ghost small back", onclick: move |_| leave(state),
             Icon { name: "arrow-left", size: 14 } "Library"
         }
         h1 { "Choose what to download" }
@@ -64,13 +77,8 @@ pub fn PlanPage() -> Element {
                     if with_picks == 0 && loading == 0 { "Tick some chapters" }
                 }
             }
-            button { class: "btn", onclick: move |_| {
-                    let mut plan = state.plan;
-                    plan.set(Vec::new());
-                    state.go(Page::Library);
-                },
-                "Cancel"
-            }
+            span { class: "grow" }
+            button { class: "btn", onclick: move |_| leave(state), "Cancel" }
             button { class: "btn primary", disabled: chapters == 0, onclick: move |_| commit_plan(state),
                 Icon { name: "download", size: 16 } "Add to downloads"
             }
@@ -99,54 +107,74 @@ fn PlanSection(series_id: String) -> Element {
     let have = downloaded_keys(state, &series_id);
     let queue = state.queue.read().clone();
 
-    // Every chapter: its text, and whether it can still be picked.
     let loaded = match &entry.chapters {
         PlanChapters::Ready(loaded) => Some(loaded.clone()),
         _ => None,
     };
-    let rows: Vec<(usize, String, String, &'static str)> = loaded
+    let is_locked =
+        |key: &str| have.contains(key) || queue.chapter_state(&series_id, key).is_some();
+
+    // Everything that can still be picked, oldest to newest.
+    let open_positions: Vec<usize> = loaded
         .as_ref()
         .map(|l| {
             l.merged
                 .iter()
                 .enumerate()
-                .map(|(i, c)| {
-                    let key = merged_key(c);
-                    let tag = if have.contains(&key) {
-                        "downloaded"
-                    } else if queue.chapter_state(&series_id, &key).is_some() {
-                        "in the queue"
-                    } else {
-                        ""
-                    };
-                    (
-                        i,
-                        c.number
-                            .map(logic::format_number)
-                            .unwrap_or_else(|| "–".into()),
-                        c.name.clone(),
-                        tag,
-                    )
-                })
+                .filter(|(_, c)| !is_locked(&merged_key(c)))
+                .map(|(i, _)| i)
                 .collect()
         })
         .unwrap_or_default();
-    let open_positions: Vec<usize> = rows
-        .iter()
-        .filter(|(_, _, _, tag)| tag.is_empty())
-        .map(|(i, ..)| *i)
-        .collect();
     let new_count = open_positions.len();
-    let total = rows.len();
+    let total = loaded.as_ref().map_or(0, |l| l.merged.len());
     let picked = entry.picked.len();
 
-    let id_all = series_id.clone();
-    let id_none = series_id.clone();
-    let id_latest = series_id.clone();
-    let id_toggle = series_id.clone();
-    let all_positions = open_positions.clone();
-    let latest_positions: Vec<usize> = open_positions.iter().rev().take(10).copied().collect();
+    // The rows the table shows: filtered and sorted.
+    let rows: Vec<GridRow> = match &loaded {
+        Some(l) if entry.open => {
+            logic::visible_chapters(&l.merged, &entry.filter, entry.sort.0, entry.sort.1)
+                .into_iter()
+                .map(|i| {
+                    let c = &l.merged[i];
+                    let key = merged_key(c);
+                    GridRow {
+                        index: i,
+                        number: c
+                            .number
+                            .map(logic::format_number)
+                            .unwrap_or_else(|| "–".into()),
+                        name: c.name.clone(),
+                        sources: c.options.len(),
+                        tip: c
+                            .options
+                            .iter()
+                            .filter_map(|o| l.member_names.get(o.member).cloned())
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                        date: logic::format_date(logic::latest_upload(c)),
+                        saved: have.contains(&key),
+                        queued: !have.contains(&key)
+                            && queue.chapter_state(&series_id, &key).is_some(),
+                    }
+                })
+                .collect()
+        }
+        _ => Vec::new(),
+    };
 
+    let latest: Vec<usize> = open_positions.iter().rev().take(10).copied().collect();
+    let all_new = open_positions.clone();
+    let (id_a, id_b, id_c, id_d, id_e, id_f, id_g, id_h) = (
+        series_id.clone(),
+        series_id.clone(),
+        series_id.clone(),
+        series_id.clone(),
+        series_id.clone(),
+        series_id.clone(),
+        series_id.clone(),
+        series_id.clone(),
+    );
     let toggle_title = if entry.open {
         "Hide the chapters"
     } else {
@@ -157,15 +185,8 @@ fn PlanSection(series_id: String) -> Element {
     } else {
         "chevron-down"
     };
-    let set_picks = move |id: &str, picks: Vec<usize>| {
-        let mut plan = state.plan;
-        let mut entries = plan.write();
-        if let Some(e) = entries.iter_mut().find(|e| e.series_id == id) {
-            e.picked = picks.into_iter().collect();
-        }
-    };
-    let set_picks_all = set_picks;
-    let set_picks_none = set_picks;
+    let filter_text = entry.filter.clone();
+    let empty_message = format!("Nothing matches “{}”. Try fewer words.", entry.filter);
 
     rsx! {
         div { class: "plan-section",
@@ -186,68 +207,63 @@ fn PlanSection(series_id: String) -> Element {
                         }
                     }
                 }
-                if loaded.is_some() && new_count > 0 {
-                    button { class: "btn small", onclick: move |_| set_picks_all(&id_all, all_positions.clone()), "All new" }
-                    button { class: "btn small", onclick: move |_| set_picks(&id_latest, latest_positions.clone()), "Latest 10" }
-                    button { class: "btn small ghost", onclick: move |_| set_picks_none(&id_none, Vec::new()), "None" }
-                }
                 if loaded.is_some() {
                     button {
                         class: "btn small ghost", title: toggle_title,
-                        onclick: move |_| {
-                            let mut plan = state.plan;
-                            let mut entries = plan.write();
-                            if let Some(e) = entries.iter_mut().find(|e| e.series_id == id_toggle) {
-                                e.open = !e.open;
-                            }
-                        },
+                        onclick: move |_| with_entry(state, &id_a, |e| e.open = !e.open),
                         Icon { name: toggle_icon, size: 16 }
                     }
                 }
             }
             if entry.open && loaded.is_some() {
-                div { class: "plan-list",
-                    for (index, number, name, tag) in rows.iter().cloned() {
-                        PlanRow {
-                            key: "{index}", series_id: series_id.clone(), index,
-                            on: entry.picked.contains(&index), number, name, tag,
+                div { class: "toolbar",
+                    div { class: "input-icon", style: "max-width: 260px",
+                        Icon { name: "list-filter", size: 16 }
+                        input {
+                            r#type: "search", placeholder: "Filter chapters", value: "{filter_text}",
+                            oninput: move |e| with_entry(state, &id_b, |x| x.filter = e.value()),
                         }
                     }
+                    if new_count > 0 {
+                        button { class: "btn small", onclick: move |_| {
+                                let all = all_new.clone();
+                                with_entry(state, &id_c, |e| e.picked = all.into_iter().collect());
+                            },
+                            "All new"
+                        }
+                        button { class: "btn small", onclick: move |_| {
+                                let some = latest.clone();
+                                with_entry(state, &id_d, |e| e.picked = some.into_iter().collect());
+                            },
+                            "Latest 10"
+                        }
+                        button { class: "btn small", onclick: move |_| with_entry(state, &id_e, |e| e.picked.clear()), "None" }
+                    }
                 }
-            }
-        }
-    }
-}
-
-/// One chapter in a series' list; its own component so ticking redraws only it.
-#[component]
-fn PlanRow(
-    series_id: String,
-    index: usize,
-    on: bool,
-    number: String,
-    name: String,
-    tag: &'static str,
-) -> Element {
-    let state = use_context::<AppState>();
-    let disabled = !tag.is_empty();
-    rsx! {
-        label { class: if disabled { "plan-row off" } else { "plan-row" },
-            input {
-                r#type: "checkbox", checked: on, disabled,
-                onchange: move |_| {
-                    let mut plan = state.plan;
-                    let mut entries = plan.write();
-                    if let Some(e) = entries.iter_mut().find(|e| e.series_id == series_id) {
+                ChapterGrid {
+                    rows,
+                    picked: entry.picked.clone(),
+                    sort: entry.sort,
+                    lock_done: true,
+                    on_sort: move |key| with_entry(state, &id_f, |e| e.sort = logic::next_sort(e.sort, key)),
+                    on_toggle: move |index: usize| with_entry(state, &id_g, |e| {
                         if !e.picked.remove(&index) {
                             e.picked.insert(index);
                         }
-                    }
-                },
+                    }),
+                    on_set: move |(indexes, on): (Vec<usize>, bool)| with_entry(state, &id_h, |e| {
+                        for i in indexes {
+                            if on {
+                                e.picked.insert(i);
+                            } else {
+                                e.picked.remove(&i);
+                            }
+                        }
+                    }),
+                    empty_message,
+                    max_height: Some("380px".to_string()),
+                }
             }
-            span { class: "plan-num", "{number}" }
-            span { class: "grow plan-name", "{name}" }
-            if disabled { span { class: "muted small", "{tag}" } }
         }
     }
 }

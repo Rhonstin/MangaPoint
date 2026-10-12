@@ -1,7 +1,8 @@
 //! Tab 1: pick the chapters you want.
 
-use crate::logic::{self, plural, SortKey};
+use crate::logic::{self, plural};
 use crate::state::{AppState, ChaptersState, Modal, ModalAction, Page, SeriesTab};
+use crate::ui::chapter_table::{ChapterGrid, GridRow};
 use crate::ui::search::run_search;
 use crate::ui::widgets::{Chip, EmptyState, Icon};
 use crate::ui::work::{downloaded_keys, merged_key, queue_download};
@@ -9,17 +10,6 @@ use dioxus::prelude::*;
 use pipeline::SourceChoice;
 use search::missing_numbers;
 use std::collections::HashSet;
-
-/// The arrow shown in a column header.
-fn sort_icon(current: (SortKey, bool), column: SortKey) -> &'static str {
-    if current.0 != column {
-        "chevrons-up-down"
-    } else if current.1 {
-        "chevron-down"
-    } else {
-        "chevron-up"
-    }
-}
 
 #[component]
 pub fn ChaptersTab() -> Element {
@@ -168,9 +158,7 @@ pub fn ChaptersTab() -> Element {
             })
             .collect()
     };
-    let all_visible_picked = !order.is_empty() && order.iter().all(|i| selected_now.contains(i));
     let current_sort = (sort_key, sort_desc);
-    let order_for_header = order.clone();
     let numbers_all = numbers.clone();
     let numbers_latest = numbers.clone();
     let numbers_range = numbers.clone();
@@ -183,47 +171,30 @@ pub fn ChaptersTab() -> Element {
         )
     };
 
-    let rows: Vec<Element> = order
+    let grid_rows: Vec<GridRow> = order
         .iter()
         .map(|&i| {
             let ch = &loaded.merged[i];
-            let tip = ch
-                .options
-                .iter()
-                .filter_map(|o| loaded.member_names.get(o.member).cloned())
-                .collect::<Vec<_>>()
-                .join(", ");
-            rsx! {
-                ChapterRow {
-                    key: "{i}",
-                    index: i,
-                    on: selected_now.contains(&i),
-                    saved: have.contains(&merged_key(ch)),
-                    queued: queued(&merged_key(ch)),
-                    number: ch.number.map(logic::format_number).unwrap_or_else(|| "–".to_string()),
-                    name: ch.name.clone(),
-                    sources: ch.options.len(),
-                    tip,
-                    date: logic::format_date(logic::latest_upload(ch)),
-                }
+            GridRow {
+                index: i,
+                number: ch
+                    .number
+                    .map(logic::format_number)
+                    .unwrap_or_else(|| "–".to_string()),
+                name: ch.name.clone(),
+                sources: ch.options.len(),
+                tip: ch
+                    .options
+                    .iter()
+                    .filter_map(|o| loaded.member_names.get(o.member).cloned())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                date: logic::format_date(logic::latest_upload(ch)),
+                saved: have.contains(&merged_key(ch)),
+                queued: queued(&merged_key(ch)),
             }
         })
         .collect();
-
-    let header = |key: SortKey, class: &'static str, label: &'static str| {
-        let mut table = state.table;
-        let sorted = sort_key == key;
-        rsx! {
-            th {
-                class: if sorted { format!("{class} sortable sorted") } else { format!("{class} sortable") },
-                onclick: move |_| {
-                    let cur = table.peek().sort;
-                    table.write().sort = logic::next_sort(cur, key);
-                },
-                span { class: "th", "{label}" Icon { name: sort_icon(current_sort, key), size: 14 } }
-            }
-        }
-    };
 
     let mut selected = state.selected;
     let mut table = state.table;
@@ -267,42 +238,33 @@ pub fn ChaptersTab() -> Element {
         if let Some(msg) = range_error() {
             p { class: "small", style: "color: var(--bad); margin: 0 0 8px", "{msg}" }
         }
-        div { class: "table-wrap",
-            div { class: "table-scroll",
-                table { class: "chapters",
-                    thead {
-                        tr {
-                            th { class: "check",
-                                input {
-                                    r#type: "checkbox", checked: all_visible_picked,
-                                    title: "Select or clear everything shown",
-                                    onclick: move |_| {
-                                        let mut s = selected.write();
-                                        if all_visible_picked {
-                                            for i in &order_for_header { s.remove(i); }
-                                        } else {
-                                            for i in &order_for_header { s.insert(*i); }
-                                        }
-                                    },
-                                }
-                            }
-                            {header(SortKey::Number, "num", "No.")}
-                            {header(SortKey::Name, "", "Title")}
-                            th { class: "saved", title: "Already downloaded" }
-                            {header(SortKey::Sources, "src", "Sources")}
-                            {header(SortKey::Date, "date", "Updated")}
-                        }
-                    }
-                    tbody { {rows.into_iter()} }
+        ChapterGrid {
+            rows: grid_rows,
+            picked: selected_now.clone(),
+            sort: current_sort,
+            lock_done: false,
+            on_sort: move |key| {
+                let current = table.peek().sort;
+                table.write().sort = logic::next_sort(current, key);
+            },
+            on_toggle: move |index: usize| {
+                let mut s = selected.write();
+                if !s.remove(&index) {
+                    s.insert(index);
                 }
-                if order.is_empty() {
-                    EmptyState {
-                        title: "No chapters match",
-                        message: format!("Nothing matches “{filter}”. Try fewer words."),
-                        compact: true,
+            },
+            on_set: move |(indexes, on): (Vec<usize>, bool)| {
+                let mut s = selected.write();
+                for i in indexes {
+                    if on {
+                        s.insert(i);
+                    } else {
+                        s.remove(&i);
                     }
                 }
-            }
+            },
+            empty_message: format!("Nothing matches “{filter}”. Try fewer words."),
+            max_height: None,
         }
         p { class: "muted small", style: "margin: 8px 0 0",
             "Showing {order.len()} of {total} chapters. Click a heading to sort, a row to tick it."
@@ -319,6 +281,7 @@ pub fn ChaptersTab() -> Element {
                         if queued_picked > 0 { "{queued_picked} in the queue" }
                     }
                 }
+                span { class: "grow" }
                 if per_source.len() >= 2 && to_download > 0 {
                     div { class: "bar-source",
                         title: "Adaptive uses the source with the most of your chapters, tests which is fastest, and fills any gaps from the others. Pick one source to use only that one.",
@@ -363,42 +326,6 @@ pub fn ChaptersTab() -> Element {
                     }
                 }
             }
-        }
-    }
-}
-
-/// One row of the chapter table, a component of its own so that ticking a
-/// chapter redraws that row and not the whole table.
-#[component]
-fn ChapterRow(
-    index: usize,
-    on: bool,
-    saved: bool,
-    queued: bool,
-    number: String,
-    name: String,
-    sources: usize,
-    tip: String,
-    date: String,
-) -> Element {
-    let state = use_context::<AppState>();
-    rsx! {
-        tr {
-            class: if on { "on" } else { "" },
-            onclick: move |_| {
-                let mut selected = state.selected;
-                let mut s = selected.write();
-                if !s.remove(&index) { s.insert(index); }
-            },
-            td { class: "check", input { r#type: "checkbox", checked: on, readonly: true, style: "pointer-events: none" } }
-            td { class: "num", "{number}" }
-            td { class: "name", title: "{name}", "{name}" }
-            td { class: "saved",
-                if saved { Icon { name: "circle-check", size: 15 } }
-                else if queued { span { title: "In the download queue", Icon { name: "clock-3", size: 15 } } }
-            }
-            td { class: "src", title: "{tip}", "{sources}" }
-            td { class: "date", "{date}" }
         }
     }
 }

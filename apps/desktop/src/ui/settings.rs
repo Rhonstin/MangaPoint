@@ -4,7 +4,7 @@ use super::ask_enable_browser;
 
 use super::presets_lab::PresetsLab;
 use super::widgets::Icon;
-use crate::logic::human_bytes;
+use crate::logic::{human_bytes, plural};
 use crate::state::{paths, AppState, BootState, Modal, ModalAction, Page, SettingsSection};
 use catalog::browser;
 use device_profiles::{Device, Firmware};
@@ -55,13 +55,12 @@ pub fn SettingsPage() -> Element {
     let section = *state.settings_section.read();
 
     rsx! {
-        h1 { "Settings" }
         div { class: "settings",
             nav { class: "settings-nav",
                 for (sec, icon, label) in SECTIONS {
                     button {
                         key: "{label}",
-                        class: if sec == section { "nav-item on" } else { "nav-item" },
+                        class: if sec == section { "nav-item active" } else { "nav-item" },
                         onclick: move |_| { let mut current = state.settings_section; current.set(sec); },
                         Icon { name: icon, size: 17 }
                         "{label}"
@@ -71,242 +70,239 @@ pub fn SettingsPage() -> Element {
             div { class: "settings-content",
                 {match section {
                     SettingsSection::Reader => rsx! {
-        div { class: "card",
-            h2 { Icon { name: "hard-drive", size: 17 } "Your reader" }
-            div { class: "field",
-                label { "Device" }
-                select {
-                    value: if s.device == Device::XteinkX4 { "x4" } else { "x4pro" },
-                    onchange: move |e| update(|s, v| s.device = if v == "x4" { Device::XteinkX4 } else { Device::XteinkX4Pro }, e.value()),
-                    option { value: "x4pro", selected: s.device == Device::XteinkX4Pro, "Xteink X4 Pro" }
-                    option { value: "x4", selected: s.device == Device::XteinkX4, "Xteink X4" }
-                }
-            }
-            div { class: "field",
-                label { "Firmware" }
-                select {
-                    value: if s.firmware == Firmware::CrossPoint { "cross" } else { "stock" },
-                    onchange: move |e| update(|s, v| s.firmware = if v == "cross" { Firmware::CrossPoint } else { Firmware::Stock }, e.value()),
-                    option { value: "cross", selected: s.firmware == Firmware::CrossPoint, "CrossPoint" }
-                    option { value: "stock", selected: s.firmware == Firmware::Stock, "Stock (the one it came with)" }
-                }
-            }
-        }
-
-
+                        h1 { class: "sx-title", "Your reader" }
+                        Row { label: "Device",
+                            select {
+                                value: if s.device == Device::XteinkX4 { "x4" } else { "x4pro" },
+                                onchange: move |e| update(|s, v| s.device = if v == "x4" { Device::XteinkX4 } else { Device::XteinkX4Pro }, e.value()),
+                                option { value: "x4pro", selected: s.device == Device::XteinkX4Pro, "Xteink X4 Pro" }
+                                option { value: "x4", selected: s.device == Device::XteinkX4, "Xteink X4" }
+                            }
+                        }
+                        Row { label: "Firmware", desc: "What the reader runs. It decides which file types it can open.",
+                            select {
+                                value: if s.firmware == Firmware::CrossPoint { "cross" } else { "stock" },
+                                onchange: move |e| update(|s, v| s.firmware = if v == "cross" { Firmware::CrossPoint } else { Firmware::Stock }, e.value()),
+                                option { value: "cross", selected: s.firmware == Firmware::CrossPoint, "CrossPoint" }
+                                option { value: "stock", selected: s.firmware == Firmware::Stock, "Stock (the one it came with)" }
+                            }
+                        }
                     },
                     SettingsSection::Presets => rsx! { PresetsLab {} },
                     SettingsSection::Downloads => rsx! {
-        div { class: "card",
-            h2 { Icon { name: "download", size: 17 } "Download speed" }
-            p { class: "muted small",
-                "Faster downloads ask a source for several pages at once. Some sources hardly get faster, and a source that is pushed too hard can block your internet address for a while."
-            }
-            div { class: "seg", style: "max-width: 520px",
-                for (speed, label) in [
-                    (DownloadSpeed::Gentle, "Gentle"),
-                    (DownloadSpeed::Normal, "Normal"),
-                    (DownloadSpeed::Fast, "Fast"),
-                    (DownloadSpeed::Ultra, "Ultra"),
-                    (DownloadSpeed::Custom, "Advanced"),
-                ] {
-                    button {
-                        key: "{label}",
-                        class: if s.download.speed == speed { "on" } else { "" },
-                        onclick: move |_| { let mut st = state.settings; st.write().download.speed = speed; state.save_settings(); },
-                        "{label}"
-                    }
-                }
-            }
-            p { class: "muted small", style: "margin: 8px 0 0",
-                {match s.download.speed {
-                    DownloadSpeed::Gentle => "Slow and careful. Best for sources that block easily.",
-                    DownloadSpeed::Normal => "A good balance of speed and care.",
-                    DownloadSpeed::Fast => "Quick. Some sources may start refusing requests.",
-                    DownloadSpeed::Ultra => "The fastest: many chapters and pages at once. Every chapter comes from the same source (unless you turn on mixing below), so the translation stays consistent. Recommended.",
-                    DownloadSpeed::Custom => "Choose the numbers yourself.",
-                }}
-                " Right now: {limits.chapters} chapter(s) at a time, {limits.pages} pages in flight."
-            }
-            p { class: "muted small", style: "margin: 4px 0 0",
-                "If a source starts refusing requests, MangaPoint slows down by itself and speeds up again after a while. Some sources cap their own speed (MangaFire gives about 2 pages a second however you ask)."
-            }
-            if s.download.speed == DownloadSpeed::Custom {
-                div { class: "field",
-                    label { "Chapters at a time" }
-                    input {
-                        r#type: "number", min: "1", max: "{DownloadLimits::MAX_CHAPTERS}", value: "{s.download.custom_chapters}",
-                        oninput: move |e| update(|s, v| s.download.custom_chapters = v.trim().parse().unwrap_or(1), e.value()),
-                    }
-                    span { class: "hint muted small", "1 to {DownloadLimits::MAX_CHAPTERS}" }
-                }
-                div { class: "field",
-                    label { "Pages in flight" }
-                    input {
-                        r#type: "number", min: "1", max: "{DownloadLimits::MAX_PAGES}", value: "{s.download.custom_pages}",
-                        oninput: move |e| update(|s, v| s.download.custom_pages = v.trim().parse().unwrap_or(1), e.value()),
-                    }
-                    span { class: "hint muted small", "1 to {DownloadLimits::MAX_PAGES}, shared by all the chapters downloading together. In the tests, going past about 50 made no difference." }
-                }
-                div { class: "banner warn small",
-                    Icon { name: "triangle-alert", size: 16 }
-                    "High numbers can get you blocked."
-                }
-            }
-            h3 { class: "group", style: "margin: 18px 0 4px; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted)", "Mixing sources" }
-            p { class: "muted small", style: "margin: 0 0 6px",
-                "Both options below can put chapters of one series from different sources, and so from different translations. Leave them off if you want a consistent series."
-            }
-            label { class: "check-line",
-                input {
-                    r#type: "checkbox", checked: s.download.spread_sources,
-                    onchange: move |e| update(|s, v| s.download.spread_sources = v == "true", e.checked().to_string()),
-                }
-                span { "Share chapters between sources" }
-            }
-            p { class: "muted small", style: "margin: 2px 0 8px",
-                "When several sources offer a chapter, different chapters download from different sources at once, which adds their speeds together."
-            }
-            label { class: "check-line",
-                input {
-                    r#type: "checkbox", checked: s.download.race_sources,
-                    onchange: move |e| update(|s, v| s.download.race_sources = v == "true", e.checked().to_string()),
-                }
-                span { "Race every source" }
-            }
-            p { class: "muted small", style: "margin: 2px 0 0",
-                "Asks every source that has a chapter at the same time and keeps whichever finishes first. Fastest per chapter, but wastes downloads and sends the most requests."
-            }
-        }
+                        h1 { class: "sx-title", "Downloads" }
+                        Group { title: "Speed" }
+                        Row {
+                            label: "Download speed",
+                            desc: format!(
+                                "{} Right now: {} at a time, {} pages in flight.",
+                                match s.download.speed {
+                                    DownloadSpeed::Gentle => "Slow and careful.",
+                                    DownloadSpeed::Normal => "A good balance.",
+                                    DownloadSpeed::Fast => "Quick; some sources may refuse requests.",
+                                    DownloadSpeed::Ultra => "The fastest, and the recommended one.",
+                                    DownloadSpeed::Custom => "Your own numbers.",
+                                },
+                                plural(limits.chapters, "chapter"),
+                                limits.pages
+                            ),
+                            div { class: "seg",
+                                for (speed, label) in [
+                                    (DownloadSpeed::Gentle, "Gentle"),
+                                    (DownloadSpeed::Normal, "Normal"),
+                                    (DownloadSpeed::Fast, "Fast"),
+                                    (DownloadSpeed::Ultra, "Ultra"),
+                                    (DownloadSpeed::Custom, "Advanced"),
+                                ] {
+                                    button {
+                                        key: "{label}",
+                                        class: if s.download.speed == speed { "on" } else { "" },
+                                        onclick: move |_| { let mut st = state.settings; st.write().download.speed = speed; state.save_settings(); },
+                                        "{label}"
+                                    }
+                                }
+                            }
+                        }
+                        if s.download.speed == DownloadSpeed::Custom {
+                            Row { label: "Chapters at a time", desc: format!("1 to {}", DownloadLimits::MAX_CHAPTERS),
+                                input {
+                                    r#type: "number", min: "1", max: "{DownloadLimits::MAX_CHAPTERS}", value: "{s.download.custom_chapters}",
+                                    oninput: move |e| update(|s, v| s.download.custom_chapters = v.trim().parse().unwrap_or(1), e.value()),
+                                }
+                            }
+                            Row { label: "Pages in flight", desc: format!("1 to {}. Past about 50 made no difference in tests.", DownloadLimits::MAX_PAGES),
+                                input {
+                                    r#type: "number", min: "1", max: "{DownloadLimits::MAX_PAGES}", value: "{s.download.custom_pages}",
+                                    oninput: move |e| update(|s, v| s.download.custom_pages = v.trim().parse().unwrap_or(1), e.value()),
+                                }
+                            }
+                            div { class: "banner warn small",
+                                Icon { name: "triangle-alert", size: 16 }
+                                "High numbers can get your address blocked by a source."
+                            }
+                        }
+                        p { class: "sx-note", "If a source starts refusing requests, MangaPoint slows down by itself and speeds up again later." }
 
-        div { class: "card",
-            h2 { Icon { name: "image", size: 17 } "Saved pages" }
-            p { class: "muted small",
-                "Downloaded chapters are kept on this computer, so you can preview and export them again without downloading."
-            }
-            div { class: "seg", style: "max-width: 420px",
-                button {
-                    class: if !s.shrink_downloads { "on" } else { "" },
-                    onclick: move |_| { let mut st = state.settings; st.write().shrink_downloads = false; state.save_settings(); },
-                    "Full quality"
-                }
-                button {
-                    class: if s.shrink_downloads { "on" } else { "" },
-                    onclick: move |_| { let mut st = state.settings; st.write().shrink_downloads = true; state.save_settings(); },
-                    "Save space"
-                }
-            }
-            p { class: "muted small", style: "margin: 8px 0 0",
-                if s.shrink_downloads {
-                    "Tall pages are shrunk to fit twice your reader's screen, which roughly halves the disk space. Applies to chapters you download from now on."
-                } else {
-                    "Pages are kept exactly as downloaded, for the best quality. This is the recommended setting."
-                }
-            }
-            div { class: "row", style: "margin-top: 12px",
-                span { class: "muted small grow",
-                    "Library: {series_count} series, {chapter_count} chapters, {human_bytes(library_bytes)}"
-                }
-                button { class: "btn small", onclick: move |_| state.go(Page::Library), "Open Library" }
-            }
-        }
+                        Group { title: "Mixing sources" }
+                        Row { label: "Share chapters between sources", desc: "Different chapters come from different sources at once, which adds their speeds together.",
+                            input {
+                                r#type: "checkbox", checked: s.download.spread_sources,
+                                onchange: move |e| update(|s, v| s.download.spread_sources = v == "true", e.checked().to_string()),
+                            }
+                        }
+                        Row { label: "Race every source", desc: "Asks every source for each chapter and keeps the first to finish. Fastest, but sends the most requests.",
+                            input {
+                                r#type: "checkbox", checked: s.download.race_sources,
+                                onchange: move |e| update(|s, v| s.download.race_sources = v == "true", e.checked().to_string()),
+                            }
+                        }
+                        p { class: "sx-note", "Both can mix translations within one series. Leave them off for a consistent read." }
 
-
+                        Group { title: "Saved pages" }
+                        Row {
+                            label: "Page quality",
+                            desc: if s.shrink_downloads {
+                                "Tall pages are shrunk to twice your reader's screen, roughly halving disk use. Applies to new downloads."
+                            } else {
+                                "Pages are kept exactly as downloaded. Recommended."
+                            },
+                            div { class: "seg",
+                                button {
+                                    class: if !s.shrink_downloads { "on" } else { "" },
+                                    onclick: move |_| { let mut st = state.settings; st.write().shrink_downloads = false; state.save_settings(); },
+                                    "Full quality"
+                                }
+                                button {
+                                    class: if s.shrink_downloads { "on" } else { "" },
+                                    onclick: move |_| { let mut st = state.settings; st.write().shrink_downloads = true; state.save_settings(); },
+                                    "Save space"
+                                }
+                            }
+                        }
+                        Row {
+                            label: "Your library",
+                            desc: format!("{}, {}, {}", plural(series_count, "series"), plural(chapter_count, "chapter"), human_bytes(library_bytes)),
+                            button { class: "btn small", onclick: move |_| state.go(Page::Library), "Open Library" }
+                        }
                     },
                     SettingsSection::Files => rsx! {
-        div { class: "card",
-            div { class: "row",
-                h2 { class: "grow", Icon { name: "folder-open", size: 17 } "Where files go" }
-                button { class: "btn small", title: "Open the folder exported files are saved to",
-                    onclick: move |_| {
-                        let dir = state.settings.read().export.output_dir.clone().unwrap_or_else(|| paths().default_export_dir());
-                        let _ = std::fs::create_dir_all(&dir);
-                        super::widgets::open_folder(&dir);
-                    },
-                    Icon { name: "folder-open", size: 14 } "Open folder"
-                }
-                button { class: "btn small", title: "Open the folder the downloaded chapters are kept in",
-                    onclick: move |_| {
-                        let dir = crate::state::library_files().root().to_path_buf();
-                        let _ = std::fs::create_dir_all(&dir);
-                        super::widgets::open_folder(&dir);
-                    },
-                    Icon { name: "book-open", size: 14 } "Downloads folder"
-                }
-            }
-            div { class: "field",
-                label { "Save to folder" }
-                input {
-                    r#type: "text",
-                    placeholder: "{paths().default_export_dir().display()}",
-                    value: "{s.export.output_dir.as_ref().map(|p| p.display().to_string()).unwrap_or_default()}",
-                    oninput: move |e| update(|s, v| s.export.output_dir = (!v.trim().is_empty()).then(|| v.trim().into()), e.value()),
-                }
-            }
-            div { class: "field",
-                label { "Folder on the reader" }
-                input {
-                    r#type: "text", value: "{s.export.device_folder}",
-                    oninput: move |e| update(|s, v| s.export.device_folder = v, e.value()),
-                }
-            }
-            div { class: "field",
-                label { "Reader Wi-Fi address" }
-                input {
-                    r#type: "text", placeholder: "http://192.168.3.3 (optional)",
-                    value: "{s.export.webdav_url.clone().unwrap_or_default()}",
-                    oninput: move |e| update(|s, v| s.export.webdav_url = (!v.trim().is_empty()).then(|| v.trim().to_string()), e.value()),
-                }
-                span { class: "hint muted small", "For sending over Wi-Fi to CrossPoint's file transfer. Not yet tested on a real device." }
-            }
-        }
-
-
+                        h1 { class: "sx-title", "Files" }
+                        Group { title: "Exported files" }
+                        Row { label: "Save to folder", desc: "Where the files for your reader are made.",
+                            div { class: "sx-inline",
+                                input {
+                                    r#type: "text",
+                                    placeholder: "{paths().default_export_dir().display()}",
+                                    value: "{s.export.output_dir.as_ref().map(|p| p.display().to_string()).unwrap_or_default()}",
+                                    oninput: move |e| update(|s, v| s.export.output_dir = (!v.trim().is_empty()).then(|| v.trim().into()), e.value()),
+                                }
+                                button { class: "btn", title: "Open this folder",
+                                    onclick: move |_| {
+                                        let dir = state.settings.read().export.output_dir.clone().unwrap_or_else(|| paths().default_export_dir());
+                                        let _ = std::fs::create_dir_all(&dir);
+                                        super::widgets::open_folder(&dir);
+                                    },
+                                    Icon { name: "folder-open", size: 15 } "Open"
+                                }
+                            }
+                        }
+                        Row { label: "Folder on the reader", desc: "Where files go when you export straight to the reader.",
+                            input {
+                                r#type: "text", value: "{s.export.device_folder}",
+                                oninput: move |e| update(|s, v| s.export.device_folder = v, e.value()),
+                            }
+                        }
+                        Row { label: "Reader Wi-Fi address", desc: "For sending over Wi-Fi to CrossPoint's file transfer. Not yet tested on a real device.",
+                            input {
+                                r#type: "text", placeholder: "http://192.168.3.3 (optional)",
+                                value: "{s.export.webdav_url.clone().unwrap_or_default()}",
+                                oninput: move |e| update(|s, v| s.export.webdav_url = (!v.trim().is_empty()).then(|| v.trim().to_string()), e.value()),
+                            }
+                        }
+                        Group { title: "Downloaded chapters" }
+                        Row { label: "Downloads folder", desc: "Where the pages you download are kept.",
+                            button { class: "btn", title: "Open the downloads folder",
+                                onclick: move |_| {
+                                    let dir = crate::state::library_files().root().to_path_buf();
+                                    let _ = std::fs::create_dir_all(&dir);
+                                    super::widgets::open_folder(&dir);
+                                },
+                                Icon { name: "folder-open", size: 15 } "Open folder"
+                            }
+                        }
                     },
                     SettingsSection::Browser => rsx! {
-        div { class: "card",
-            h2 { Icon { name: "globe", size: 17 } "Browser support" }
-            p { class: "muted",
-                "A few sources need a real web browser to download chapters. Turning this on downloads about 270 MB once. It is off by default."
-            }
-            if on_macos {
-                div { class: "banner small", "Browser support is not available on macOS." }
-            } else if s.browser_support {
-                p { "On. Using {human_bytes(browser_size)} of disk space." }
-                button {
-                    class: "btn danger",
-                    disabled: starting,
-                    onclick: move |_| state.ask(Modal {
-                        title: "Remove browser support?".into(),
-                        body: browser::REMOVE_WARNING.into(),
-                        confirm: "Remove it".into(),
-                        cancel: "Keep it".into(),
-                        danger: true,
-                        action: ModalAction::DisableBrowser,
-                    }),
-                    "Remove browser support…"
-                }
-            } else {
-                p { "Off." }
-                button { class: "btn", disabled: starting, onclick: move |_| ask_enable_browser(state, None), "Turn on…" }
-            }
-        }
-
-
+                        h1 { class: "sx-title", "Browser support" }
+                        Row {
+                            label: "Browser support",
+                            desc: if on_macos {
+                                "Not available on macOS.".to_string()
+                            } else if s.browser_support {
+                                format!("On, using {} of disk space.", human_bytes(browser_size))
+                            } else {
+                                "A few sources need a real web browser. Turning this on downloads about 270 MB, once.".to_string()
+                            },
+                            if on_macos {
+                            } else if s.browser_support {
+                                button {
+                                    class: "btn danger", disabled: starting,
+                                    onclick: move |_| state.ask(Modal {
+                                        title: "Remove browser support?".into(),
+                                        body: browser::REMOVE_WARNING.into(),
+                                        confirm: "Remove it".into(),
+                                        cancel: "Keep it".into(),
+                                        danger: true,
+                                        action: ModalAction::DisableBrowser,
+                                    }),
+                                    "Remove…"
+                                }
+                            } else {
+                                button { class: "btn", disabled: starting, onclick: move |_| ask_enable_browser(state, None), "Turn on…" }
+                            }
+                        }
                     },
                     SettingsSection::About => rsx! {
-        div { class: "card",
-            h2 { Icon { name: "info", size: 17 } "About" }
-            p { class: "muted small",
-                "Catalog engine: Suwayomi {catalog::release::VERSION_TAG}"
-                if let Some(sv) = &services { ", running on this computer only (port {sv.port})" }
-                br {}
-                "Your data: {paths().root().display()}"
-            }
-        }
+                        h1 { class: "sx-title", "About" }
+                        Row {
+                            label: "Catalog engine",
+                            desc: match &services {
+                                Some(sv) => format!("Suwayomi {}, running on this computer only (port {}).", catalog::release::VERSION_TAG, sv.port),
+                                None => format!("Suwayomi {}", catalog::release::VERSION_TAG),
+                            },
+                        }
+                        Row { label: "Your data", desc: "{paths().root().display()}",
+                            button { class: "btn", title: "Open this folder",
+                                onclick: move |_| {
+                                    let dir = paths().root().to_path_buf();
+                                    let _ = std::fs::create_dir_all(&dir);
+                                    super::widgets::open_folder(&dir);
+                                },
+                                Icon { name: "folder-open", size: 15 } "Open folder"
+                            }
+                        }
                     },
                 }}
             }
+        }
+    }
+}
+
+/// A heading that groups a few settings.
+#[component]
+fn Group(title: String) -> Element {
+    rsx! { h2 { class: "sx-group", "{title}" } }
+}
+
+/// One setting: what it is on the left, how to change it on the right.
+#[component]
+fn Row(label: String, desc: Option<String>, children: Element) -> Element {
+    rsx! {
+        div { class: "sx-row",
+            div { class: "sx-text",
+                div { class: "sx-label", "{label}" }
+                if let Some(text) = desc { div { class: "sx-desc", "{text}" } }
+            }
+            div { class: "sx-control", {children} }
         }
     }
 }

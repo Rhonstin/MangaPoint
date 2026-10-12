@@ -222,6 +222,9 @@ pub struct PlanEntry {
     /// Positions in the merged chapter list.
     pub picked: HashSet<usize>,
     pub open: bool,
+    /// The words typed in this series' filter box.
+    pub filter: String,
+    pub sort: (SortKey, bool),
 }
 
 #[derive(Clone)]
