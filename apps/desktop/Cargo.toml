@@ -1,0 +1,22 @@
+[package]
+name = "mangapoint"
+version.workspace = true
+edition.workspace = true
+description = "MangaPoint desktop app"
+
+[dependencies]
+dioxus = { version = "0.7", features = ["desktop"] }
+catalog = { path = "../../crates/catalog" }
+library = { path = "../../crates/library" }
+sources = { path = "../../crates/sources" }
+search = { path = "../../crates/search" }
+pipeline = { path = "../../crates/pipeline" }
+converter = { path = "../../crates/converter", features = ["serde"] }
+device-profiles = { path = "../../crates/device-profiles", features = ["serde"] }
+tokio = { version = "1", features = ["rt", "macros", "time", "sync"] }
+futures-util = "0.3"
+base64 = "0.22"
+sysinfo = { version = "0.37", default-features = false, features = ["system"] }
+
+[dev-dependencies]
+catalog = { path = "../../crates/catalog", features = ["fake"] }

@@ -91,6 +91,17 @@ impl RunningServer {
         Ok(())
     }
 
+    /// Operating-system id of the server process, if it is still running.
+    pub fn pid(&self) -> Option<u32> {
+        self.child.id()
+    }
+
+    /// Ask the OS to end the server without waiting. For use where `async`
+    /// is not available, such as a window-close handler.
+    pub fn kill_now(&mut self) {
+        let _ = self.child.start_kill();
+    }
+
     /// The last part of the server log, for progress and diagnostics.
     pub fn log_tail(&self, max_bytes: usize) -> String {
         read_tail(&self.log_path, max_bytes)
@@ -132,7 +143,8 @@ fn random_password() -> Result<String> {
     Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
 }
 
-fn read_tail(path: &Path, max_bytes: usize) -> String {
+/// The last `max_bytes` of a log file; empty if it cannot be read.
+pub fn read_tail(path: &Path, max_bytes: usize) -> String {
     use std::io::{Read, Seek, SeekFrom};
     let Ok(mut f) = std::fs::File::open(path) else {
         return String::new();
