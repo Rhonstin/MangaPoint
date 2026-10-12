@@ -10,7 +10,7 @@ use pipeline::{
     PageCache, PipelineError, RetryPolicy,
 };
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tokio::sync::mpsc::unbounded_channel;
 
 fn png(w: u32, h: u32, seed: u8) -> Vec<u8> {
@@ -66,12 +66,14 @@ fn request(number: f64, options: &[(&str, i64)]) -> ChapterRequest {
     }
 }
 
-fn spec(out: &PathBuf, chapters: Vec<ChapterRequest>) -> JobSpec {
+fn spec(out: &Path, chapters: Vec<ChapterRequest>) -> JobSpec {
     JobSpec::new(
         "Test Series",
         chapters,
         Settings::default(),
-        ExportTarget::Folder { path: out.clone() },
+        ExportTarget::Folder {
+            path: out.to_path_buf(),
+        },
     )
 }
 

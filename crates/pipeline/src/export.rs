@@ -356,11 +356,14 @@ mod tests {
         assert_eq!(encode_segment("進"), "%E9%80%B2");
     }
 
+    /// Each request the fake server saw: its first line and its body.
+    type Seen = Vec<(String, Vec<u8>)>;
+
     /// A one-shot HTTP server that records each request and replies `status`.
     fn fake_server(
         status: &'static str,
         requests: usize,
-    ) -> (String, std::thread::JoinHandle<Vec<(String, Vec<u8>)>>) {
+    ) -> (String, std::thread::JoinHandle<Seen>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         let handle = std::thread::spawn(move || {
