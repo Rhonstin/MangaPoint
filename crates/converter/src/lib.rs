@@ -13,4 +13,6 @@ pub mod xtc;
 
 pub use dither::{quantize, Dither};
 pub use gray::{Depth, GrayImage, ImageError, LevelImage};
-pub use process::{process_page, CropMode, Layout, ProcessOptions, SpreadMode};
+pub use process::{
+    crop_bounds, process_page, CropMode, Layout, Margins, ProcessOptions, SpreadMode,
+};

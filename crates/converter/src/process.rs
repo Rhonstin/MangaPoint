@@ -3,7 +3,7 @@
 //! Pure functions over [`GrayImage`]: no I/O, no image-format code, so the
 //! same pipeline runs natively and in WASM. Steps, in order:
 //!
-//! 1. trim blank margins ([`CropMode::Margins`])
+//! 1. cut fixed margins ([`Margins`]), then trim blank margins ([`CropMode::Margins`])
 //! 2. decide the layout: normal page, double-page spread or tall webtoon strip
 //! 3. scale to the device screen (area averaging)
 //! 4. stretch levels and apply contrast
@@ -33,6 +33,27 @@ pub enum CropMode {
     Margins,
 }
 
+/// Fixed margins to cut from every page, each as a percentage (0..=40) of that
+/// side's length. Useful for site banners and watermarks that sit in the same
+/// place on every page.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Margins {
+    pub top: u8,
+    pub bottom: u8,
+    pub left: u8,
+    pub right: u8,
+}
+
+impl Margins {
+    pub const MAX_PERCENT: u8 = 40;
+
+    pub fn is_none(&self) -> bool {
+        *self == Margins::default()
+    }
+}
+
 /// What to do with landscape (double-page) images.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -51,6 +72,13 @@ pub struct ProcessOptions {
     pub height: u32,
     pub layout: Layout,
     pub crop: CropMode,
+    /// Cut before the automatic trim.
+    pub margins: Margins,
+    /// How readily the automatic trim sees faint marks as content, 0..=100.
+    /// Higher keeps more; 50 is the default.
+    pub trim_sensitivity: u8,
+    /// Pixels of the original kept around the content after trimming.
+    pub trim_padding: u8,
     pub spread: SpreadMode,
     /// Decides which half of a split spread comes first.
     pub direction: ReadDirection,
@@ -73,6 +101,9 @@ impl ProcessOptions {
             height,
             layout: Layout::Auto,
             crop: CropMode::Margins,
+            margins: Margins::default(),
+            trim_sensitivity: DEFAULT_TRIM_SENSITIVITY,
+            trim_padding: DEFAULT_TRIM_PADDING,
             spread: SpreadMode::Split,
             direction: ReadDirection::RightToLeft,
             contrast: 55,
@@ -84,11 +115,46 @@ impl ProcessOptions {
     }
 }
 
+pub const DEFAULT_TRIM_SENSITIVITY: u8 = 50;
+pub const DEFAULT_TRIM_PADDING: u8 = 4;
+
+/// The part of `img` that is kept: `(x, y, width, height)` in source pixels.
+/// Fixed margins come off first, then blank borders if automatic trim is on.
+/// The preview draws this rectangle over the original.
+pub fn crop_bounds(img: &GrayImage, opts: &ProcessOptions) -> (u32, u32, u32, u32) {
+    let side = |p: u8| p.min(Margins::MAX_PERCENT) as u64;
+    let cut = |len: u32, p: u8| (len as u64 * side(p) / 100) as u32;
+    let x = cut(img.width, opts.margins.left);
+    let y = cut(img.height, opts.margins.top);
+    let w = img
+        .width
+        .saturating_sub(x + cut(img.width, opts.margins.right))
+        .max(1);
+    let h = img
+        .height
+        .saturating_sub(y + cut(img.height, opts.margins.bottom))
+        .max(1);
+    if opts.crop == CropMode::Full {
+        return (x, y, w, h);
+    }
+    let inner = crop_rect(img, x, y, w, h);
+    match trim_bounds(
+        &inner,
+        trim_threshold(opts.trim_sensitivity),
+        opts.trim_padding,
+    ) {
+        Some((tx, ty, tw, th)) => (x + tx, y + ty, tw, th),
+        None => (x, y, w, h),
+    }
+}
+
 /// Convert one source image into one or more device pages.
 pub fn process_page(img: &GrayImage, opts: &ProcessOptions) -> Vec<LevelImage> {
-    let cropped = match opts.crop {
-        CropMode::Full => img.clone(),
-        CropMode::Margins => trim_margins(img),
+    let (x, y, w, h) = crop_bounds(img, opts);
+    let cropped = if (x, y, w, h) == (0, 0, img.width, img.height) {
+        img.clone()
+    } else {
+        crop_rect(img, x, y, w, h)
     };
     let layout = match opts.layout {
         Layout::Auto if cropped.height as f32 > cropped.width as f32 * 2.5 => Layout::Webtoon,
@@ -166,32 +232,56 @@ fn finish(mut screen: GrayImage, opts: &ProcessOptions) -> LevelImage {
 
 // ---- Margins ---------------------------------------------------------------
 
+/// Gray-level difference from the background that counts as content.
+/// Sensitivity 50 is the long-standing default (28); lower ignores faint
+/// marks, higher notices them.
+fn trim_threshold(sensitivity: u8) -> i16 {
+    let s = sensitivity.min(100) as i16;
+    if s <= 50 {
+        80 - (80 - 28) * s / 50
+    } else {
+        28 - (28 - 6) * (s - 50) / 50
+    }
+}
+
 /// Cut away uniform margins. The background is taken from the image border;
 /// content is anything noticeably different. Never trims below 20% of either
 /// dimension, so a nearly blank page is left alone.
 pub fn trim_margins(img: &GrayImage) -> GrayImage {
+    match trim_bounds(
+        img,
+        trim_threshold(DEFAULT_TRIM_SENSITIVITY),
+        DEFAULT_TRIM_PADDING,
+    ) {
+        Some((x, y, w, h)) => crop_rect(img, x, y, w, h),
+        None => img.clone(),
+    }
+}
+
+/// Where the content is, or `None` to leave the image alone.
+fn trim_bounds(img: &GrayImage, threshold: i16, pad: u8) -> Option<(u32, u32, u32, u32)> {
     let (w, h) = (img.width, img.height);
     let bg = border_median(img);
-    let differs = |x: u32, y: u32| (img.get(x, y) as i16 - bg as i16).abs() > 28;
+    let differs = |x: u32, y: u32| (img.get(x, y) as i16 - bg as i16).abs() > threshold;
     let row_has = |y: u32| (0..w).filter(|&x| differs(x, y)).count() as u32 > (w / 200).max(1);
     let col_has = |x: u32| (0..h).filter(|&y| differs(x, y)).count() as u32 > (h / 200).max(1);
 
-    let top = (0..h).find(|&y| row_has(y));
-    let bottom = (0..h).rev().find(|&y| row_has(y));
-    let left = (0..w).find(|&x| col_has(x));
-    let right = (0..w).rev().find(|&x| col_has(x));
-    let (Some(top), Some(bottom), Some(left), Some(right)) = (top, bottom, left, right) else {
-        return img.clone();
-    };
-    let pad = 4;
+    let top = (0..h).find(|&y| row_has(y))?;
+    let bottom = (0..h).rev().find(|&y| row_has(y))?;
+    let left = (0..w).find(|&x| col_has(x))?;
+    let right = (0..w).rev().find(|&x| col_has(x))?;
+    let pad = pad as u32;
     let x0 = left.saturating_sub(pad);
     let y0 = top.saturating_sub(pad);
     let x1 = (right + pad + 1).min(w);
     let y1 = (bottom + pad + 1).min(h);
     if (x1 - x0) * 5 < w || (y1 - y0) * 5 < h {
-        return img.clone();
+        return None;
     }
-    crop_rect(img, x0, y0, x1 - x0, y1 - y0)
+    if (x0, y0, x1, y1) == (0, 0, w, h) {
+        return None;
+    }
+    Some((x0, y0, x1 - x0, y1 - y0))
 }
 
 fn border_median(img: &GrayImage) -> u8 {
@@ -449,6 +539,67 @@ mod tests {
         let mut dot = GrayImage::new(300, 400, 255).unwrap();
         dot.fill_rect(150, 200, 20, 20, 0);
         assert_eq!(trim_margins(&dot), dot, "must not zoom into a speck");
+    }
+
+    #[test]
+    fn fixed_margins_cut_before_trimming_and_crop_bounds_reports_the_result() {
+        let mut o = opts();
+        o.crop = CropMode::Full;
+        let img = GrayImage::new(1000, 2000, 255).unwrap();
+        assert_eq!(crop_bounds(&img, &o), (0, 0, 1000, 2000));
+        o.margins = Margins {
+            top: 10,
+            bottom: 5,
+            left: 20,
+            right: 0,
+        };
+        assert_eq!(crop_bounds(&img, &o), (200, 200, 800, 1700));
+        // A huge value is held to the maximum, so something always remains.
+        o.margins = Margins {
+            top: 90,
+            bottom: 90,
+            left: 90,
+            right: 90,
+        };
+        let (_, _, w, h) = crop_bounds(&img, &o);
+        assert!(w >= 200 && h >= 400);
+    }
+
+    #[test]
+    fn a_watermark_strip_can_be_cut_away_by_fixed_margins() {
+        // Art in the middle, a dark banner across the bottom 10%.
+        let mut img = GrayImage::new(400, 600, 255).unwrap();
+        img.fill_rect(100, 100, 200, 300, 0);
+        img.fill_rect(0, 540, 400, 60, 0);
+        let mut o = opts();
+        o.margins.bottom = 10;
+        let (_, y, _, h) = crop_bounds(&img, &o);
+        assert!(y + h <= 540, "the banner is gone: {y}+{h}");
+    }
+
+    #[test]
+    fn sensitivity_decides_whether_faint_marks_count_as_content() {
+        // A faint smudge far from the art: ignored when insensitive, kept when sensitive.
+        let mut img = GrayImage::new(400, 600, 255).unwrap();
+        img.fill_rect(150, 200, 100, 200, 0);
+        img.fill_rect(20, 20, 40, 40, 215);
+        let mut o = opts();
+        o.trim_sensitivity = 10;
+        let calm = crop_bounds(&img, &o);
+        o.trim_sensitivity = 90;
+        let keen = crop_bounds(&img, &o);
+        assert!(calm.2 < keen.2 && calm.3 < keen.3, "{calm:?} vs {keen:?}");
+    }
+
+    #[test]
+    fn padding_keeps_a_border_around_the_content() {
+        let mut img = GrayImage::new(400, 600, 255).unwrap();
+        img.fill_rect(100, 150, 200, 300, 0);
+        let mut o = opts();
+        o.trim_padding = 0;
+        assert_eq!(crop_bounds(&img, &o), (100, 150, 200, 300));
+        o.trim_padding = 20;
+        assert_eq!(crop_bounds(&img, &o), (80, 130, 240, 340));
     }
 
     #[test]
