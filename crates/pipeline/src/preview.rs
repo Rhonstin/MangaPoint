@@ -8,11 +8,15 @@
 use crate::error::{PipelineError, Result};
 use converter::decode::decode_to_gray;
 use converter::process::resize;
-use converter::{crop_bounds, process_page, GrayImage, LevelImage, ProcessOptions};
+use converter::{
+    crop_bounds, process_page, ChapterPlan, GrayImage, LevelImage, PageEdits, PlannedPage,
+    Prepared, ProcessOptions,
+};
 use image::{
     codecs::{jpeg::JpegEncoder, png::PngEncoder},
     ExtendedColorType, ImageEncoder,
 };
+use std::sync::Arc;
 
 /// A page ready to show: encoded image bytes plus its size.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -136,6 +140,35 @@ pub fn render_gray(gray: &GrayImage, opts: &ProcessOptions) -> RenderedPage {
     }
 }
 
+/// A chapter prepared for previewing: cropped and (for a webtoon) stitched,
+/// with the pages it will become. Share it between threads to draw pages in
+/// parallel with [`render_planned`].
+#[derive(Clone)]
+pub struct ChapterPreview {
+    pub prepared: Arc<Prepared>,
+    pub plan: ChapterPlan,
+}
+
+/// Prepare and plan a whole decoded chapter, the way the export does.
+pub fn prepare_chapter(
+    grays: &[GrayImage],
+    opts: &ProcessOptions,
+    edits: &PageEdits,
+) -> ChapterPreview {
+    let prepared = Arc::new(converter::plan::prepare(grays, opts));
+    let plan = converter::plan::plan(&prepared, opts, edits);
+    ChapterPreview { prepared, plan }
+}
+
+/// Draw one planned page: the exact pixels the export writes for it.
+pub fn render_planned(
+    prepared: &Prepared,
+    page: &PlannedPage,
+    opts: &ProcessOptions,
+) -> PreviewImage {
+    level_png(&converter::plan::render_page(prepared, page, opts))
+}
+
 /// A page drawn from scratch to try settings on when there is nothing
 /// downloaded: panels with borders and white margins, a smooth screentone
 /// sky, halftone dots, speed lines, a dark scene and a speech bubble. It
@@ -237,6 +270,32 @@ mod tests {
 
     fn page() -> GrayImage {
         GrayImage::from_fn(600, 900, |x, _| (x * 255 / 599) as u8).unwrap()
+    }
+
+    #[test]
+    fn a_chapter_preview_matches_what_the_export_writes() {
+        // Three short webtoon images: stitched, planned, and drawn per page.
+        let images: Vec<GrayImage> = (0..3)
+            .map(|i| GrayImage::new(480, 900, 60 + i * 50).unwrap())
+            .collect();
+        let mut o = opts(Depth::Two);
+        o.layout = converter::Layout::Webtoon;
+        o.crop = converter::CropMode::Full;
+        let edits = PageEdits::default();
+        let chapter = prepare_chapter(&images, &o, &edits);
+        assert!(chapter.plan.strip);
+        let drawn: Vec<PreviewImage> = chapter
+            .plan
+            .kept()
+            .map(|p| render_planned(&chapter.prepared, p, &o))
+            .collect();
+        let exported = converter::plan::convert_chapter(&images, &o, &edits);
+        assert_eq!(drawn.len(), exported.len());
+        assert_eq!(
+            drawn,
+            levels_to_previews(&exported),
+            "preview and export draw the same pixels"
+        );
     }
 
     #[test]

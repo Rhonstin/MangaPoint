@@ -31,8 +31,9 @@ pub use plan::{
     apply_choice, coverage, rank_sources, top_tier, Chosen, RankedSource, SourceChoice,
 };
 pub use preview::{
-    decode_page, levels_to_previews, render_gray, render_levels, render_original, render_page,
-    sample_page, OriginalPreview, PreviewImage, RenderedPage,
+    decode_page, levels_to_previews, prepare_chapter, render_gray, render_levels, render_original,
+    render_page, render_planned, sample_page, ChapterPreview, OriginalPreview, PreviewImage,
+    RenderedPage,
 };
 pub use probe::{probe_source, probe_sources, PROBE_PAGES};
 pub use types::{

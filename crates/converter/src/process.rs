@@ -259,7 +259,11 @@ pub fn trim_margins(img: &GrayImage) -> GrayImage {
 }
 
 /// Where the content is, or `None` to leave the image alone.
-pub(crate) fn trim_bounds(img: &GrayImage, threshold: i16, pad: u8) -> Option<(u32, u32, u32, u32)> {
+pub(crate) fn trim_bounds(
+    img: &GrayImage,
+    threshold: i16,
+    pad: u8,
+) -> Option<(u32, u32, u32, u32)> {
     let (w, h) = (img.width, img.height);
     let bg = border_median(img);
     let differs = |x: u32, y: u32| (img.get(x, y) as i16 - bg as i16).abs() > threshold;

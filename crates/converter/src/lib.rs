@@ -13,8 +13,8 @@ pub mod testpattern;
 pub mod xtc;
 
 pub use dither::{quantize, Dither};
-pub use plan::{ChapterPlan, PageEdits, PlannedPage, Prepared};
 pub use gray::{Depth, GrayImage, ImageError, LevelImage};
+pub use plan::{ChapterPlan, PageEdits, PlannedPage, Prepared, Source};
 pub use process::{
     crop_bounds, process_page, CropMode, Layout, Margins, ProcessOptions, SpreadMode,
 };

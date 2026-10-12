@@ -54,6 +54,82 @@ impl PageEdits {
     pub fn is_empty(&self) -> bool {
         *self == PageEdits::default()
     }
+
+    /// Start a new page at this strip position.
+    pub fn split_at(&mut self, unit: u32) {
+        self.removed_cuts
+            .retain(|&c| c.abs_diff(unit) > EDIT_TOLERANCE);
+        if !self
+            .cuts
+            .iter()
+            .any(|&c| c.abs_diff(unit) <= EDIT_TOLERANCE)
+        {
+            self.cuts.push(unit);
+            self.cuts.sort_unstable();
+        }
+    }
+
+    /// Stop starting a new page at this strip position, whether the cut was
+    /// the user's or the plan's own.
+    pub fn join_at(&mut self, unit: u32) {
+        let before = self.cuts.len();
+        self.cuts.retain(|&c| c.abs_diff(unit) > EDIT_TOLERANCE);
+        if self.cuts.len() == before
+            && !self
+                .removed_cuts
+                .iter()
+                .any(|&c| c.abs_diff(unit) <= EDIT_TOLERANCE)
+        {
+            self.removed_cuts.push(unit);
+            self.removed_cuts.sort_unstable();
+        }
+    }
+
+    /// Move the cut that starts a page by `delta` units (negative is up).
+    pub fn nudge_cut(&mut self, unit: u32, delta: i32) {
+        let to = (unit as i64 + delta as i64).max(1) as u32;
+        let skipped = self.is_skipped_at(unit);
+        self.join_at(unit);
+        self.split_at(to);
+        if skipped {
+            self.skipped.retain(|&c| c.abs_diff(unit) > EDIT_TOLERANCE);
+            self.skipped.push(to);
+        }
+    }
+
+    fn is_skipped_at(&self, unit: u32) -> bool {
+        self.skipped
+            .iter()
+            .any(|&c| c.abs_diff(unit) <= EDIT_TOLERANCE)
+    }
+
+    /// Leave out, or put back, the strip page that starts here.
+    pub fn toggle_skip_at(&mut self, unit: u32) {
+        if self.is_skipped_at(unit) {
+            self.skipped.retain(|&c| c.abs_diff(unit) > EDIT_TOLERANCE);
+        } else {
+            self.skipped.push(unit);
+        }
+    }
+
+    /// Leave out, or put back, every page of a paged chapter's image.
+    pub fn toggle_skip_image(&mut self, index: u32) {
+        if self.skipped.contains(&index) {
+            self.skipped.retain(|&i| i != index);
+        } else {
+            self.skipped.push(index);
+        }
+    }
+
+    /// How a paged chapter's landscape image is handled; `None` goes back to
+    /// the series setting.
+    pub fn set_spread(&mut self, index: u32, mode: Option<SpreadMode>) {
+        self.spreads.retain(|&(i, _)| i != index);
+        if let Some(mode) = mode {
+            self.spreads.push((index, mode));
+            self.spreads.sort_by_key(|&(i, _)| i);
+        }
+    }
 }
 
 /// Which part of a paged image a page shows.
@@ -68,9 +144,15 @@ pub enum Part {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Source {
-    Image { index: usize, part: Part },
+    Image {
+        index: usize,
+        part: Part,
+    },
     /// Rows of the stitched strip, in device pixels.
-    Strip { top: u32, height: u32 },
+    Strip {
+        top: u32,
+        height: u32,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -83,8 +165,11 @@ pub struct PlannedPage {
     /// How tall the page's slice of the strip is, in units. 0 for paged
     /// chapters.
     pub unit_height: u32,
-    /// The page begins at a cut the user placed.
+    /// The page begins at a cut the user placed (strip), or its image's
+    /// spread handling was chosen by the user (paged).
     pub manual: bool,
+    /// Paged: the image is a landscape double page.
+    pub landscape: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -312,8 +397,8 @@ fn plan_paged(images: &[GrayImage], opts: &ProcessOptions, edits: &PageEdits) ->
                 skipped,
                 unit_top: 0,
                 unit_height: 0,
-                manual: !edits.spreads.is_empty()
-                    && edits.spreads.iter().any(|(i, _)| *i == index as u32),
+                manual: edits.spreads.iter().any(|(i, _)| *i == index as u32),
+                landscape,
             });
         }
     }
@@ -401,6 +486,7 @@ fn plan_strip(strip: &Strip, opts: &ProcessOptions, edits: &PageEdits) -> Chapte
                 unit_top,
                 unit_height: to_units(height, strip.width),
                 manual,
+                landscape: false,
             }
         })
         .collect();
@@ -498,7 +584,8 @@ fn spine(img: &GrayImage) -> u32 {
             _ => {}
         }
     }
-    best.map_or(centre, |(_, m)| m).clamp(1, w.saturating_sub(1).max(1))
+    best.map_or(centre, |(_, m)| m)
+        .clamp(1, w.saturating_sub(1).max(1))
 }
 
 /// Rows `[top, top + height)` of the strip.
@@ -745,6 +832,66 @@ mod tests {
         let p = plan(&prepared, &o, &edits);
         assert_eq!(p.pages.len(), 3, "one fitted page, two halves");
         assert_eq!(p.kept().count(), 1, "image 1's halves are skipped");
+    }
+
+    #[test]
+    fn edit_operations_add_remove_and_move_cuts() {
+        let mut e = PageEdits::default();
+        e.split_at(1000);
+        e.split_at(1010); // same place, within tolerance
+        assert_eq!(e.cuts, vec![1000]);
+        e.join_at(1000);
+        assert!(
+            e.cuts.is_empty() && e.removed_cuts.is_empty(),
+            "undid its own cut"
+        );
+        e.join_at(2000); // an automatic cut
+        assert_eq!(e.removed_cuts, vec![2000]);
+        e.split_at(2000); // putting it back
+        assert!(e.removed_cuts.is_empty());
+        assert_eq!(e.cuts, vec![2000]);
+
+        let mut m = PageEdits::default();
+        m.nudge_cut(3000, -100);
+        assert_eq!(
+            (m.cuts.as_slice(), m.removed_cuts.as_slice()),
+            (&[2900][..], &[3000][..])
+        );
+
+        let mut k = PageEdits::default();
+        k.toggle_skip_at(500);
+        assert_eq!(k.skipped, vec![500]);
+        k.toggle_skip_at(510);
+        assert!(k.skipped.is_empty());
+        k.toggle_skip_image(3);
+        assert_eq!(k.skipped, vec![3]);
+        k.toggle_skip_image(3);
+        k.set_spread(2, Some(SpreadMode::Rotate));
+        k.set_spread(2, Some(SpreadMode::Fit));
+        assert_eq!(k.spreads, vec![(2, SpreadMode::Fit)]);
+        k.set_spread(2, None);
+        assert!(k.is_empty());
+    }
+
+    #[test]
+    fn nudging_a_cut_moves_where_the_page_starts() {
+        let images = scenes(1, 3000, 100_000, 0);
+        let o = opts();
+        let prepared = prepare(&images, &o);
+        let base = plan(&prepared, &o, &PageEdits::default());
+        let second = base.pages[1].unit_top;
+        let mut edits = PageEdits::default();
+        edits.nudge_cut(second, -150);
+        let moved = plan(&prepared, &o, &edits);
+        let found = moved
+            .pages
+            .iter()
+            .any(|p| p.unit_top.abs_diff(second - 150) <= 2 && p.manual);
+        assert!(
+            found,
+            "{:?}",
+            moved.pages.iter().map(|p| p.unit_top).collect::<Vec<_>>()
+        );
     }
 
     #[test]

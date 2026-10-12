@@ -663,7 +663,10 @@ mod tests {
         let mut mine = manga.clone();
         mine.contrast = 90;
         db.set_settings(&id, mine, Some(&manga));
-        assert_eq!(db.find(&id).unwrap().overridden, vec![ConversionField::Contrast]);
+        assert_eq!(
+            db.find(&id).unwrap().overridden,
+            vec![ConversionField::Contrast]
+        );
 
         // Editing the preset changes the series' other settings, not its own.
         let mut edited = manga.clone();
