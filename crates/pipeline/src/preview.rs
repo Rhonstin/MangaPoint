@@ -9,12 +9,17 @@ use crate::error::{PipelineError, Result};
 use converter::decode::decode_to_gray;
 use converter::process::resize;
 use converter::{crop_bounds, process_page, GrayImage, LevelImage, ProcessOptions};
-use image::{codecs::png::PngEncoder, ExtendedColorType, ImageEncoder};
+use image::{
+    codecs::{jpeg::JpegEncoder, png::PngEncoder},
+    ExtendedColorType, ImageEncoder,
+};
 
-/// A page ready to show: PNG bytes plus its size.
+/// A page ready to show: encoded image bytes plus its size.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PreviewImage {
-    pub png: Vec<u8>,
+    pub bytes: Vec<u8>,
+    /// "image/png" for converted pages (exact pixels), "image/jpeg" for originals.
+    pub mime: &'static str,
     pub width: u32,
     pub height: u32,
 }
@@ -45,7 +50,8 @@ fn level_png(img: &LevelImage) -> PreviewImage {
         .map(|&l| (l as u32 * 255 / max) as u8)
         .collect();
     PreviewImage {
-        png: encode_png(&pixels, img.width, img.height),
+        bytes: encode_png(&pixels, img.width, img.height),
+        mime: "image/png",
         width: img.width,
         height: img.height,
     }
@@ -53,7 +59,10 @@ fn level_png(img: &LevelImage) -> PreviewImage {
 
 /// Longest side of the original shown beside the converted page. Large enough
 /// to look sharp when the preview fills a wide window.
-pub const ORIGINAL_MAX_SIDE: u32 = 1400;
+pub const ORIGINAL_MAX_SIDE: u32 = 1100;
+
+/// JPEG quality of the original shown beside the converted page.
+const ORIGINAL_QUALITY: u8 = 82;
 
 /// The downloaded page, in its own shape and tones, and which part of it the
 /// conversion keeps.
@@ -82,12 +91,39 @@ pub fn render_original(gray: &GrayImage, opts: &ProcessOptions) -> OriginalPrevi
     let (gw, gh) = (gray.width as f32, gray.height as f32);
     OriginalPreview {
         image: PreviewImage {
-            png: encode_png(&shown.pixels, shown.width, shown.height),
+            bytes: encode_jpeg(&shown.pixels, shown.width, shown.height),
+            mime: "image/jpeg",
             width: shown.width,
             height: shown.height,
         },
         kept: [x as f32 / gw, y as f32 / gh, w as f32 / gw, h as f32 / gh],
     }
+}
+
+fn encode_jpeg(gray: &[u8], width: u32, height: u32) -> Vec<u8> {
+    let mut out = Vec::new();
+    JpegEncoder::new_with_quality(&mut out, ORIGINAL_QUALITY)
+        .write_image(gray, width, height, ExtendedColorType::L8)
+        .expect("encoding an in-memory gray image cannot fail");
+    out
+}
+
+/// One saved page, ready to show: the device pages it becomes, and the
+/// original beside them.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RenderedPage {
+    pub converted: Vec<PreviewImage>,
+    pub original: OriginalPreview,
+}
+
+/// Decode a saved page and run the export's conversion on it. Meant for a
+/// background thread; a chapter's pages can be rendered independently.
+pub fn render_page(bytes: &[u8], opts: &ProcessOptions) -> Result<RenderedPage> {
+    let gray = decode_page(bytes)?;
+    Ok(RenderedPage {
+        converted: levels_to_previews(&render_levels(&gray, opts)),
+        original: render_original(&gray, opts),
+    })
 }
 
 fn encode_png(gray: &[u8], width: u32, height: u32) -> Vec<u8> {
@@ -119,14 +155,14 @@ mod tests {
         let previews = levels_to_previews(&levels);
         assert_eq!(previews.len(), 1);
         assert_eq!((previews[0].width, previews[0].height), (480, 800));
-        assert_eq!(&previews[0].png[..8], b"\x89PNG\r\n\x1a\n");
+        assert_eq!(&previews[0].bytes[..8], b"\x89PNG\r\n\x1a\n");
     }
 
     #[test]
     fn four_levels_show_as_four_grays_and_two_as_black_and_white() {
         let shades = |depth| {
             let previews = levels_to_previews(&render_levels(&page(), &opts(depth)));
-            let decoded = image::load_from_memory(&previews[0].png)
+            let decoded = image::load_from_memory(&previews[0].bytes)
                 .unwrap()
                 .to_luma8();
             let mut seen: Vec<u8> = decoded.pixels().map(|p| p.0[0]).collect();
@@ -155,12 +191,13 @@ mod tests {
             (600, 900),
             "no letterboxing"
         );
-        let decoded = image::load_from_memory(&original.png).unwrap().to_luma8();
+        let decoded = image::load_from_memory(&original.bytes).unwrap().to_luma8();
         let distinct: std::collections::HashSet<u8> = decoded.pixels().map(|p| p.0[0]).collect();
         assert!(
             distinct.len() > 16,
             "all the original's tones remain, not just four"
         );
+        assert_eq!(original.mime, "image/jpeg");
     }
 
     #[test]
@@ -168,7 +205,7 @@ mod tests {
         let big = GrayImage::new(3000, 4500, 200).unwrap();
         let o = render_original(&big, &opts(Depth::Two)).image;
         assert_eq!(o.height, ORIGINAL_MAX_SIDE);
-        assert_eq!(o.width, 933);
+        assert_eq!(o.width, 733);
     }
 
     #[test]
@@ -185,6 +222,23 @@ mod tests {
         };
         let kept = render_original(&img, &o).kept;
         assert_eq!(kept, [0.2, 0.1, 0.8, 0.8]);
+    }
+
+    #[test]
+    fn a_whole_page_renders_to_converted_pages_and_an_original() {
+        let source = {
+            let g = page();
+            let mut out = Vec::new();
+            PngEncoder::new(&mut out)
+                .write_image(&g.pixels, g.width, g.height, ExtendedColorType::L8)
+                .unwrap();
+            out
+        };
+        let rendered = render_page(&source, &opts(Depth::Two)).unwrap();
+        assert_eq!(rendered.converted.len(), 1);
+        assert_eq!(rendered.converted[0].mime, "image/png");
+        assert_eq!(rendered.original.image.mime, "image/jpeg");
+        assert!(render_page(b"junk", &opts(Depth::Two)).is_err());
     }
 
     #[test]

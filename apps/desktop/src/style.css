@@ -254,7 +254,7 @@ td.status, th.status { width: 170px; }
   container-type: inline-size; display: flex; gap: 16px; align-items: flex-start; justify-content: center;
   overflow-x: auto; padding-bottom: 4px; outline: none;
 }
-.preview-stage .device img { display: block; max-width: none; border: 0; border-radius: 0; opacity: 1; image-rendering: auto; }
+.preview-stage .device img { display: block; max-width: none; max-height: none; border: 0; border-radius: 0; opacity: 1; image-rendering: auto; }
 .preview-stage .device .shot { position: relative; line-height: 0; border: 1px solid var(--line-strong); border-radius: 6px; overflow: hidden; background: #fff; }
 .preview-stage .kept { position: absolute; border: 2px solid var(--accent); box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.62); pointer-events: none; }
 .side.panel { max-height: calc(100vh - 150px); overflow-y: auto; padding-right: 4px; }
@@ -269,3 +269,16 @@ td.status, th.status { width: 170px; }
 .controls.compact .margins { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .margins label { display: flex; flex-direction: column; gap: 3px; color: var(--muted); font-size: 0.8rem; }
 .margins input { width: 100%; }
+
+/* ---- preview: one long column of pages ---- */
+.toolbar.sticky { position: sticky; top: 0; z-index: 6; background: var(--bg); padding: 8px 0; margin-bottom: 6px; border-bottom: 1px solid var(--line); }
+.preview-stage { display: block; overflow-x: auto; }
+.preview-stage.busy .page-row { opacity: 0.85; }
+.page-row { padding: 10px 0 18px; border-bottom: 1px solid var(--line); }
+.page-row:last-child { border-bottom: 0; }
+.page-label { color: var(--muted); font-size: 0.8rem; margin-bottom: 6px; text-align: center; }
+.page-pair { display: flex; gap: 16px; align-items: flex-start; justify-content: center; }
+.page-row.strip .page-pair { align-items: flex-start; }
+.slices { display: flex; flex-direction: column; gap: 8px; }
+.skeleton { background: var(--panel); border: 1px dashed var(--line-strong); border-radius: 6px; margin: 0 auto; }
+.side.panel { position: sticky; top: 64px; max-height: calc(100vh - 90px); }

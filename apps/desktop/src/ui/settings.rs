@@ -130,6 +130,16 @@ pub fn SettingsPage() -> Element {
                 }}
                 " Right now: {limits.chapters} chapter(s) at a time, {limits.pages} pages at once."
             }
+            label { class: "check-line", style: "margin-top: 12px",
+                input {
+                    r#type: "checkbox", checked: s.download.spread_sources,
+                    onchange: move |e| update(|s, v| s.download.spread_sources = v == "true", e.checked().to_string()),
+                }
+                span { "Use several sources at once" }
+            }
+            p { class: "muted small", style: "margin: 4px 0 0",
+                "When a chapter is offered by more than one source, different chapters download from different sources at the same time. Some sources limit their own speed (MangaFire hands out about 2 pages a second however you ask), so this adds the speeds together."
+            }
             if s.download.speed == DownloadSpeed::Custom {
                 div { class: "field",
                     label { "Chapters at a time" }

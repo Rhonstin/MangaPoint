@@ -7,6 +7,7 @@
 //! 3. [`compose`]: build reader files from the saved chapters, with no
 //!    network, then send them with [`export`] (folder, SD card, Wi-Fi)
 
+pub mod balance;
 pub mod compose;
 pub mod download;
 pub mod error;
@@ -25,7 +26,8 @@ pub use fetch::RetryPolicy;
 pub use limiter::Limiter;
 pub use options::{process_options, process_options_for};
 pub use preview::{
-    decode_page, levels_to_previews, render_levels, render_original, OriginalPreview, PreviewImage,
+    decode_page, levels_to_previews, render_levels, render_original, render_page, OriginalPreview,
+    PreviewImage, RenderedPage,
 };
 pub use types::{
     requests_from_merged, CancelFlag, ChapterRef, ChapterRequest, JobEvent, SkippedChapter,

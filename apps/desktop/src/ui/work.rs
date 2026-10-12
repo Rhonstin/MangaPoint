@@ -5,13 +5,14 @@
 use crate::logic::{self, JobProgress};
 use crate::state::{
     library_files, now_secs, paths, spawn_forever, AppState, ChaptersState, ExportOpts,
-    GroupingChoice, JobKind, JobView, LoadedChapters, Page, PreviewState, SeriesTab, Shot,
-    TableView, Workspace,
+    GroupingChoice, JobKind, JobView, LoadedChapters, Page, PreviewPage, PreviewState, SeriesTab,
+    Shot, TableView, Workspace,
 };
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use dioxus::prelude::*;
 use futures_util::future::{join, join_all};
+use futures_util::stream::{self, StreamExt};
 use library::{chapter_key, ExportRecord, ExportedFileRecord};
 use pipeline::{
     download_chapters, export_series, requests_from_merged, CancelFlag, ExportJob, ExportTarget,
@@ -35,7 +36,12 @@ fn reset_workspace_state(state: AppState) {
     );
     selected.set(HashSet::new());
     table.set(TableView::default());
-    preview.set(PreviewState::default());
+    // A new series starts with an empty preview, but keeps how the user likes to view it.
+    let view = preview.peek().view;
+    preview.set(PreviewState {
+        view,
+        ..Default::default()
+    });
     opts.set(ExportOpts::default());
 }
 
@@ -355,19 +361,23 @@ pub fn start_download(state: AppState) {
 
 // ---- Previewing ------------------------------------------------------------
 
-fn png_url(png: &[u8]) -> String {
-    format!("data:image/png;base64,{}", STANDARD.encode(png))
+fn data_url(image: &PreviewImage) -> String {
+    format!(
+        "data:{};base64,{}",
+        image.mime,
+        STANDARD.encode(&image.bytes)
+    )
 }
 
 fn shot(image: &PreviewImage) -> Shot {
     Shot {
-        url: png_url(&image.png),
+        url: data_url(image),
         width: image.width,
         height: image.height,
     }
 }
 
-/// Make sure the preview points at a downloaded chapter, then render it.
+/// Make sure the preview points at a downloaded chapter, and that it is drawn.
 pub fn prepare_preview(state: AppState) {
     let Some(ws) = state.workspace.peek().clone() else {
         return;
@@ -379,20 +389,28 @@ pub fn prepare_preview(state: AppState) {
         .map(|s| s.chapters.iter().map(|c| c.key.clone()).collect())
         .unwrap_or_default();
     let mut preview = state.preview;
-    {
+    let up_to_date = {
         let mut p = preview.write();
         let valid = p.chapter_key.as_ref().is_some_and(|k| keys.contains(k));
         if !valid {
             p.chapter_key = keys.first().cloned();
-            p.page = 0;
-            p.decoded = None;
+            p.pages.clear();
+            p.fresh = 0;
         }
+        let on_disk = p
+            .chapter_key
+            .as_ref()
+            .map_or(0, |k| library_files().page_files(&ws.series_id, k).len());
+        valid && on_disk > 0 && p.pages.len() == on_disk && p.fresh == on_disk && !p.busy
+    };
+    if !up_to_date {
+        schedule_preview(state, 0);
     }
-    schedule_preview(state, 0);
 }
 
-/// Render the current page with the series' settings. Settings changes call
-/// this with a short delay, so dragging a slider renders once it settles.
+/// Draw every page of the chapter with the series' settings, a few at a time
+/// in the background. Settings changes call this with a short delay, so
+/// dragging a slider draws once it settles.
 pub fn schedule_preview(state: AppState, delay_ms: u64) {
     let mut preview = state.preview;
     let generation = {
@@ -400,6 +418,7 @@ pub fn schedule_preview(state: AppState, delay_ms: u64) {
         p.generation += 1;
         p.busy = true;
         p.error = None;
+        p.fresh = 0;
         p.generation
     };
     spawn_forever(async move {
@@ -416,18 +435,13 @@ pub fn schedule_preview(state: AppState, delay_ms: u64) {
                 let mut w = p.write();
                 w.busy = false;
                 w.error = Some(message);
-                w.converted.clear();
-                w.original = None;
-                w.kept = None;
+                w.pages.clear();
             }
         };
         let Some(ws) = state.workspace.peek().clone() else {
             return;
         };
-        let (key, wanted_page, cached) = {
-            let p = state.preview.peek();
-            (p.chapter_key.clone(), p.page, p.decoded.clone())
-        };
+        let key = state.preview.peek().chapter_key.clone();
         let Some(key) = key else {
             let mut p = state.preview;
             if current(state) {
@@ -439,62 +453,74 @@ pub fn schedule_preview(state: AppState, delay_ms: u64) {
             return fail("This series is not in your library.".into());
         };
         let device = state.settings.peek().device;
-        let files = library_files();
-        let pages = files.page_files(&ws.series_id, &key);
+        let pages = library_files().page_files(&ws.series_id, &key);
         if pages.is_empty() {
             return fail("This chapter has no saved pages. Download it again.".into());
         }
-        let page = wanted_page.min(pages.len() - 1);
+        {
+            let mut p = state.preview;
+            let mut w = p.write();
+            if w.generation != generation {
+                return;
+            }
+            w.pages.resize(pages.len(), None);
+        }
 
-        // Decode the page once; changing a setting reuses it.
-        let gray = match cached {
-            Some((k, p, g)) if k == key && p == page => g,
-            _ => {
-                let bytes = match tokio::fs::read(&pages[page]).await {
-                    Ok(b) => b,
-                    Err(e) => return fail(format!("Could not read the saved page: {e}")),
-                };
-                match tokio::task::spawn_blocking(move || pipeline::decode_page(&bytes)).await {
-                    Ok(Ok(g)) => Rc::new(g),
-                    Ok(Err(e)) => return fail(e.to_string()),
-                    Err(e) => return fail(e.to_string()),
+        // The same conversion the export runs, on background threads.
+        let opts = pipeline::process_options_for(device, &series.settings);
+        let mut drawn = stream::iter(pages.into_iter().enumerate())
+            .map(|(index, path)| {
+                let opts = opts.clone();
+                async move {
+                    let result = tokio::task::spawn_blocking(move || {
+                        let bytes = std::fs::read(&path)
+                            .map_err(|e| format!("Could not read a saved page: {e}"))?;
+                        let page =
+                            pipeline::render_page(&bytes, &opts).map_err(|e| e.to_string())?;
+                        Ok::<PreviewPage, String>(PreviewPage {
+                            converted: page.converted.iter().map(shot).collect(),
+                            original: shot(&page.original.image),
+                            kept: page.original.kept,
+                        })
+                    })
+                    .await;
+                    (index, result)
+                }
+            })
+            .buffer_unordered(PREVIEW_THREADS);
+        let mut first_error = None;
+        while let Some((index, result)) = drawn.next().await {
+            if !current(state) {
+                return;
+            }
+            match result {
+                Ok(Ok(page)) => {
+                    let mut p = state.preview;
+                    let mut w = p.write();
+                    if let Some(slot) = w.pages.get_mut(index) {
+                        *slot = Some(Rc::new(page));
+                    }
+                    w.fresh += 1;
+                }
+                Ok(Err(message)) => {
+                    first_error.get_or_insert(format!("Page {}: {message}", index + 1));
+                }
+                Err(e) => {
+                    first_error.get_or_insert(e.to_string());
                 }
             }
-        };
-        if !current(state) {
-            return;
         }
-
-        // The same conversion the export runs, on a background thread.
-        let work = (*gray).clone();
-        let conversion = series.settings.clone();
-        let rendered = tokio::task::spawn_blocking(move || {
-            let opts = pipeline::process_options_for(device, &conversion);
-            let levels = pipeline::render_levels(&work, &opts);
-            (
-                pipeline::levels_to_previews(&levels),
-                pipeline::render_original(&work, &opts),
-            )
-        })
-        .await;
-        let Ok((converted, original)) = rendered else {
-            return fail("The preview could not be drawn.".into());
-        };
         let mut p = state.preview;
-        if p.peek().generation != generation {
-            return;
+        if p.peek().generation == generation {
+            let mut w = p.write();
+            w.busy = false;
+            w.error = first_error;
         }
-        let mut w = p.write();
-        w.converted = converted.iter().map(shot).collect();
-        w.original = Some(shot(&original.image));
-        w.kept = Some(original.kept);
-        w.total_pages = pages.len();
-        w.page = page;
-        w.decoded = Some((key, page, gray));
-        w.busy = false;
-        w.error = None;
     });
 }
+
+/// Pages drawn at the same time while previewing.
+const PREVIEW_THREADS: usize = 3;
 
 // ---- Exporting -------------------------------------------------------------
 

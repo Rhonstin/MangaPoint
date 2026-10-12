@@ -178,9 +178,10 @@ pub fn DownloadsTab() -> Element {
                     let fraction = job.as_ref().map(|j| j.progress.fraction());
                     let label = job.as_ref().map(|j| j.progress.label()).unwrap_or_default();
                     let note = job.as_ref().and_then(|j| j.progress.note.clone());
+                    let speed = job.as_ref().and_then(|j| j.progress.pages_per_second());
                     rsx! {
                         div { style: "margin-top: 12px", ProgressBar { fraction } }
-                        p { class: "muted small", style: "margin: 6px 0 0", "{label}" if let Some(n) = note { " · {n}" } }
+                        p { class: "muted small", style: "margin: 6px 0 0", "{label}" if let Some(v) = speed { " · about {v:.1} pages a second" } if let Some(n) = note { " · {n}" } }
                     }
                 }
             }

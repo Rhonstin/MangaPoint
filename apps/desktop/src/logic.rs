@@ -329,6 +329,9 @@ pub struct JobProgress {
     /// Chapters under way, by their position in the job.
     pub active: std::collections::BTreeMap<usize, ActiveChapter>,
     pub note: Option<String>,
+    /// When the first chapter began, and how many pages have arrived since.
+    pub started: Option<std::time::Instant>,
+    pub pages_seen: usize,
 }
 
 impl JobProgress {
@@ -336,6 +339,7 @@ impl JobProgress {
         match event {
             JobEvent::ChapterStarted { index, total, name } => {
                 self.chapter_total = *total;
+                self.started.get_or_insert_with(std::time::Instant::now);
                 self.active.insert(
                     *index,
                     ActiveChapter {
@@ -350,6 +354,7 @@ impl JobProgress {
                 done,
                 total,
             } => {
+                self.pages_seen += 1;
                 let chapter = self.active.entry(*chapter_index).or_default();
                 chapter.pages_done = *done;
                 chapter.pages_total = *total;
@@ -379,6 +384,12 @@ impl JobProgress {
                 self.note = Some("Writing the file…".into());
             }
         }
+    }
+
+    /// How fast pages are arriving, once there is enough to say.
+    pub fn pages_per_second(&self) -> Option<f32> {
+        let seconds = self.started?.elapsed().as_secs_f32();
+        (seconds >= 4.0 && self.pages_seen >= 6).then(|| self.pages_seen as f32 / seconds)
     }
 
     /// The positions of the chapters under way.

@@ -221,28 +221,35 @@ impl Default for PreviewView {
     }
 }
 
-/// What the Preview tab is showing.
+/// One page of the chapter, rendered for the preview.
+#[derive(Clone, PartialEq)]
+pub struct PreviewPage {
+    /// The page as it will appear on the reader (several for a long strip,
+    /// two for a split spread).
+    pub converted: Vec<Shot>,
+    /// The downloaded page, unconverted, for comparison.
+    pub original: Shot,
+    /// The part of the original the conversion keeps: left, top, width, height
+    /// as fractions of the image.
+    pub kept: [f32; 4],
+}
+
+/// What the Preview tab is showing: every page of one chapter.
 #[derive(Clone, Default)]
 pub struct PreviewState {
     /// Downloaded chapter being previewed.
     pub chapter_key: Option<String>,
-    /// 0-based page within that chapter.
-    pub page: usize,
-    pub total_pages: usize,
-    /// The page as it will appear on the reader (two for a split spread).
-    pub converted: Vec<Shot>,
-    /// The downloaded page, unconverted, for comparison.
-    pub original: Option<Shot>,
-    /// The part of the original the conversion keeps: left, top, width, height
-    /// as fractions of the image.
-    pub kept: Option<[f32; 4]>,
+    /// Every page of the chapter, in order. A page is `None` until it has been
+    /// drawn; after a settings change the old drawing stays until the new one
+    /// replaces it.
+    pub pages: Vec<Option<Rc<PreviewPage>>>,
+    /// Pages drawn with the current settings so far.
+    pub fresh: usize,
     pub view: PreviewView,
     pub busy: bool,
     pub error: Option<String>,
     /// Bumped on every change so an older render never overwrites a newer one.
     pub generation: u64,
-    /// The decoded current page, so changing a setting need not decode again.
-    pub decoded: Option<(String, usize, Rc<converter::GrayImage>)>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

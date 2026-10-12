@@ -71,6 +71,9 @@ pub struct DownloadLimits {
     pub chapters: usize,
     /// Page requests in flight at the same time, across all chapters.
     pub pages: usize,
+    /// Download different chapters from different sources at the same time
+    /// when several offer them.
+    pub spread_sources: bool,
 }
 
 impl DownloadLimits {
@@ -91,6 +94,10 @@ pub struct DownloadSettings {
     /// Used when `speed` is Custom.
     pub custom_chapters: u8,
     pub custom_pages: u8,
+    /// Download different chapters from different sources at the same time
+    /// when several offer them. Some sources cap their own speed, so this
+    /// adds the sources' speeds together.
+    pub spread_sources: bool,
 }
 
 impl Default for DownloadSettings {
@@ -99,6 +106,7 @@ impl Default for DownloadSettings {
             speed: DownloadSpeed::Normal,
             custom_chapters: 2,
             custom_pages: 6,
+            spread_sources: true,
         }
     }
 }
@@ -108,23 +116,19 @@ impl DownloadSettings {
     /// measuring real sources: gains level off around 8 to 12 requests at
     /// once, and some sources gain nothing at all.
     pub fn limits(&self) -> DownloadLimits {
-        match self.speed {
-            DownloadSpeed::Gentle => DownloadLimits {
-                chapters: 1,
-                pages: 2,
-            },
-            DownloadSpeed::Normal => DownloadLimits {
-                chapters: 2,
-                pages: 6,
-            },
-            DownloadSpeed::Fast => DownloadLimits {
-                chapters: 3,
-                pages: 12,
-            },
-            DownloadSpeed::Custom => DownloadLimits {
-                chapters: self.custom_chapters.clamp(1, DownloadLimits::MAX_CHAPTERS) as usize,
-                pages: self.custom_pages.clamp(1, DownloadLimits::MAX_PAGES) as usize,
-            },
+        let (chapters, pages) = match self.speed {
+            DownloadSpeed::Gentle => (1, 2),
+            DownloadSpeed::Normal => (2, 6),
+            DownloadSpeed::Fast => (3, 12),
+            DownloadSpeed::Custom => (
+                self.custom_chapters.clamp(1, DownloadLimits::MAX_CHAPTERS) as usize,
+                self.custom_pages.clamp(1, DownloadLimits::MAX_PAGES) as usize,
+            ),
+        };
+        DownloadLimits {
+            chapters,
+            pages,
+            spread_sources: self.spread_sources,
         }
     }
 }
@@ -210,49 +214,26 @@ mod tests {
 
     #[test]
     fn download_speeds_map_to_limits_and_custom_numbers_are_held_in_range() {
+        let both = |chapters, pages| DownloadLimits {
+            chapters,
+            pages,
+            spread_sources: true,
+        };
         let mut d = DownloadSettings::default();
-        assert_eq!(
-            d.limits(),
-            DownloadLimits {
-                chapters: 2,
-                pages: 6
-            }
-        );
+        assert_eq!(d.limits(), both(2, 6));
         d.speed = DownloadSpeed::Gentle;
-        assert_eq!(
-            d.limits(),
-            DownloadLimits {
-                chapters: 1,
-                pages: 2
-            }
-        );
+        assert_eq!(d.limits(), both(1, 2));
         d.speed = DownloadSpeed::Fast;
-        assert_eq!(
-            d.limits(),
-            DownloadLimits {
-                chapters: 3,
-                pages: 12
-            }
-        );
+        assert_eq!(d.limits(), both(3, 12));
         d.speed = DownloadSpeed::Custom;
         d.custom_chapters = 0;
         d.custom_pages = 200;
-        assert_eq!(
-            d.limits(),
-            DownloadLimits {
-                chapters: 1,
-                pages: 16
-            }
-        );
+        assert_eq!(d.limits(), both(1, 16));
         d.custom_chapters = 9;
         d.custom_pages = 0;
-        assert_eq!(
-            d.limits(),
-            DownloadLimits {
-                chapters: 4,
-                pages: 1
-            }
-        );
+        assert_eq!(d.limits(), both(4, 1));
+        d.spread_sources = false;
+        assert!(!d.limits().spread_sources);
     }
 
     #[test]

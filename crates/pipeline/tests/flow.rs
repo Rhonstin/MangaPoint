@@ -711,7 +711,11 @@ async fn a_lone_unnumbered_chapter_is_named_after_itself() {
 // ---- Parallel downloads ----------------------------------------------------
 
 fn limits(chapters: usize, pages: usize) -> DownloadLimits {
-    DownloadLimits { chapters, pages }
+    DownloadLimits {
+        chapters,
+        pages,
+        spread_sources: true,
+    }
 }
 
 async fn download_with(
@@ -909,5 +913,41 @@ async fn a_cancel_during_parallel_downloads_keeps_what_finished() {
         lib.files.page_files(&lib.id, "c1").len() == 3,
         "the chapter that finished is on disk"
     );
+    let _ = fs::remove_dir_all(lib.root);
+}
+
+#[tokio::test]
+async fn chapters_offered_by_two_sources_are_shared_between_them() {
+    let lib = library("spread");
+    let c = FakeCatalog::new();
+    c.set_latency_ms(10);
+    // Chapters 1-3 exist on source "a" (ids 1-3) and on source "b" (ids 11-13).
+    for id in [1, 2, 3, 11, 12, 13] {
+        add_chapter(&c, id, 4);
+    }
+    let reqs = [
+        request(1.0, &[("a", 1), ("b", 11)]),
+        request(2.0, &[("a", 2), ("b", 12)]),
+        request(3.0, &[("a", 3), ("b", 13)]),
+    ];
+    let out = download_with(&c, &lib, &reqs, limits(3, 6), None)
+        .await
+        .unwrap();
+    let sources: Vec<_> = out.chapters.iter().map(|c| c.source_id.as_str()).collect();
+    assert_eq!(
+        sources,
+        ["a", "b", "a"],
+        "the second chapter went to the free source"
+    );
+    let _ = fs::remove_dir_all(lib.root);
+
+    // Switched off, everything comes from the best source.
+    let lib = library("spread-off");
+    let off = DownloadLimits {
+        spread_sources: false,
+        ..limits(3, 6)
+    };
+    let out = download_with(&c, &lib, &reqs, off, None).await.unwrap();
+    assert!(out.chapters.iter().all(|c| c.source_id == "a"));
     let _ = fs::remove_dir_all(lib.root);
 }

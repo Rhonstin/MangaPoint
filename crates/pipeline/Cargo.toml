@@ -15,7 +15,7 @@ device-profiles = { path = "../device-profiles", features = ["serde"] }
 tokio = { version = "1", features = ["rt", "macros", "time", "sync", "fs", "io-util", "net"] }
 futures-util = "0.3"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
-image = { version = "0.25", default-features = false, features = ["png"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 # 0.39 needs Rust 1.95; 0.37 works on 1.90 and has the same Disks API.
 sysinfo = { version = "0.37", default-features = false, features = ["disk"] }
 

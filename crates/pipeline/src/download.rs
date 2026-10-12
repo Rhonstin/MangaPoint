@@ -9,6 +9,7 @@
 //! limits the user chose. A source that pushes back makes the whole download
 //! ease off by itself (see [`crate::limiter`]).
 
+use crate::balance::Balancer;
 use crate::error::{PipelineError, Result};
 use crate::fetch::{fetch_page_limited, with_retry, RetryPolicy};
 use crate::limiter::Limiter;
@@ -63,6 +64,7 @@ struct Context<'a, C> {
     shrink: bool,
     policy: &'a RetryPolicy,
     limiter: &'a Limiter,
+    balancer: &'a Balancer,
     /// Page requests allowed at once, as chosen.
     pages_at_once: usize,
     events: &'a Events,
@@ -91,6 +93,7 @@ pub async fn download_chapters<C: Catalog>(
     }
     let pages_at_once = limits.pages.max(1);
     let limiter = Limiter::new(pages_at_once);
+    let balancer = Balancer::new(limits.spread_sources);
     let cx = Context {
         catalog,
         files,
@@ -98,6 +101,7 @@ pub async fn download_chapters<C: Catalog>(
         shrink,
         policy,
         limiter: &limiter,
+        balancer: &balancer,
         pages_at_once,
         events: &events,
         cancel,
@@ -157,9 +161,15 @@ async fn download_request<C: Catalog>(
     let mut source_use = Vec::new();
     let mut last_reason = String::from("no source offers this chapter");
     let mut saved = None;
-    for (n, option) in request.options.iter().enumerate() {
+    // The sources in the order to try them: the best that is not already busy.
+    let order = cx.balancer.order(&request.options);
+    for (n, option) in order.iter().copied().enumerate() {
         let started = Instant::now();
+        cx.balancer.begin(&option.source_id);
         let attempt = download_one(cx, &key, option, index).await;
+        let pages = attempt.as_ref().map_or(0, |(pages, _)| *pages);
+        cx.balancer
+            .finish(&option.source_id, pages, started.elapsed().as_secs_f64());
         source_use.push(SourceUse {
             source_id: option.source_id.clone(),
             ok: attempt.is_ok(),
@@ -173,7 +183,7 @@ async fn download_request<C: Catalog>(
             Err(PipelineError::Cancelled) => return Err(PipelineError::Cancelled),
             Err(e) => {
                 last_reason = e.to_string();
-                if let Some(next) = request.options.get(n + 1) {
+                if let Some(next) = order.get(n + 1) {
                     send(
                         cx.events,
                         JobEvent::UsedFallback {
