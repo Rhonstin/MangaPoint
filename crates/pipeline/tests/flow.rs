@@ -395,7 +395,7 @@ async fn save_space_shrinks_big_pages_and_keeps_small_ones_untouched() {
     let lib = library("dl-shrink");
     let c = FakeCatalog::new();
     c.set_pages(1, &["/big", "/small"]);
-    c.set_bytes("/big", png(800, 3200, 0));
+    c.set_bytes("/big", png(1200, 4800, 0));
     c.set_bytes("/small", png(300, 450, 0));
     download(&c, &lib, &[request(1.0, &[("s", 1)])], true)
         .await
@@ -403,7 +403,8 @@ async fn save_space_shrinks_big_pages_and_keeps_small_ones_untouched() {
 
     let big = fs::read(lib.files.page_path(&lib.id, "c1", 0)).unwrap();
     assert_eq!(&big[..3], &[0xFF, 0xD8, 0xFF], "re-encoded as JPEG");
-    assert_eq!(image_dimensions(&big).unwrap(), (400, 1600));
+    // 960 wide is the narrowest a page is made, so a tall one is not shrunk to 400.
+    assert_eq!(image_dimensions(&big).unwrap(), (960, 3840));
     assert_eq!(
         fs::read(lib.files.page_path(&lib.id, "c1", 1)).unwrap(),
         png(300, 450, 0)
@@ -416,7 +417,7 @@ async fn save_space_shrinks_big_pages_and_keeps_small_ones_untouched() {
         .unwrap();
     assert_eq!(
         fs::read(lib2.files.page_path(&lib2.id, "c1", 0)).unwrap(),
-        png(800, 3200, 0)
+        png(1200, 4800, 0)
     );
     let _ = fs::remove_dir_all(lib.root);
     let _ = fs::remove_dir_all(lib2.root);
