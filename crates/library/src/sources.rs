@@ -50,10 +50,12 @@ mod tests {
 
     #[test]
     fn round_trips() {
-        let mut s = SourceState::default();
-        s.onboarding_done = true;
-        s.custom_stores.push("https://example.org/index.pb".into());
-        s.custom_extensions.insert("pkg.one".into());
+        let s = SourceState {
+            onboarding_done: true,
+            custom_stores: vec!["https://example.org/index.pb".into()],
+            custom_extensions: ["pkg.one".to_string()].into(),
+            ..Default::default()
+        };
         let json = serde_json::to_string(&s).unwrap();
         assert_eq!(serde_json::from_str::<SourceState>(&json).unwrap(), s);
     }

@@ -316,8 +316,10 @@ mod tests {
     #[tokio::test]
     async fn the_reference_title_adds_a_step_and_must_be_found() {
         let c = healthy();
-        let mut o = CheckOptions::default();
-        o.reference_title = Some("one piece".into());
+        let mut o = CheckOptions {
+            reference_title: Some("one piece".into()),
+            ..Default::default()
+        };
         let r = check_source(&c, &source("s"), &o).await;
         assert_eq!(r.verdict, Verdict::Pass);
         assert!(step_names(&r).contains(&"reference search"));
