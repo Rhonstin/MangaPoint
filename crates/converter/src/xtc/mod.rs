@@ -52,6 +52,7 @@ pub const AUTHOR_LEN: usize = 64;
 pub const GRAY_MAP: [u8; 4] = [3, 1, 2, 0];
 
 /// Which flavour of container to write.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Format {
     /// `.xtc`: 1-bit pages.
@@ -91,6 +92,7 @@ impl Format {
 }
 
 /// Value of the header's `readDirection` byte.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReadDirection {
     LeftToRight = 0,

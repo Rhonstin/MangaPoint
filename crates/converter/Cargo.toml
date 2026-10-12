@@ -7,10 +7,13 @@ edition.workspace = true
 thiserror.workspace = true
 device-profiles = { path = "../device-profiles" }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif"], optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
 
 [features]
 # Image decoding (JPEG/PNG/WebP/GIF). Off for the WASM build, which decodes in the browser.
 decode = ["dep:image"]
+# Serialization of option enums, for saved settings.
+serde = ["dep:serde"]
 
 [dev-dependencies]
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif"] }

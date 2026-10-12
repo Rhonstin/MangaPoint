@@ -13,6 +13,7 @@ use crate::dither::{quantize, Dither};
 use crate::gray::{Depth, GrayImage, LevelImage};
 use crate::xtc::ReadDirection;
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Layout {
     /// Ordinary pages.
@@ -23,6 +24,7 @@ pub enum Layout {
     Auto,
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CropMode {
     /// Keep the whole image.
@@ -32,6 +34,7 @@ pub enum CropMode {
 }
 
 /// What to do with landscape (double-page) images.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SpreadMode {
     /// Scale the whole spread to fit, leaving bars above and below.

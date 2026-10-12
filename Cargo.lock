@@ -154,6 +154,7 @@ version = "0.1.0"
 dependencies = [
  "device-profiles",
  "image",
+ "serde",
  "thiserror",
 ]
 
@@ -214,6 +215,9 @@ dependencies = [
 [[package]]
 name = "device-profiles"
 version = "0.1.0"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "digest"
@@ -692,6 +696,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ce5d3ddc6d3fa000eb1536d85e147bfe31aacaba692ed6a876f95cb7c855be78"
 
 [[package]]
+name = "library"
+version = "0.1.0"
+dependencies = [
+ "converter",
+ "device-profiles",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "linux-raw-sys"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -788,6 +803,10 @@ name = "pin-project-lite"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
+
+[[package]]
+name = "pipeline"
+version = "0.1.0"
 
 [[package]]
 name = "png"
@@ -1057,6 +1076,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
 
 [[package]]
+name = "search"
+version = "0.1.0"
+
+[[package]]
 name = "serde"
 version = "1.0.229"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1164,6 +1187,17 @@ checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "sources"
+version = "0.1.0"
+dependencies = [
+ "catalog",
+ "futures-util",
+ "library",
+ "thiserror",
+ "tokio",
 ]
 
 [[package]]

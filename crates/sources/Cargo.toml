@@ -1,0 +1,15 @@
+[package]
+name = "sources"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+catalog = { path = "../catalog" }
+library = { path = "../library" }
+tokio = { version = "1", features = ["time"] }
+futures-util = "0.3"
+
+[dev-dependencies]
+catalog = { path = "../catalog", features = ["fake"] }
+tokio = { version = "1", features = ["time", "macros", "rt"] }

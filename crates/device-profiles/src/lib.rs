@@ -4,6 +4,7 @@
 //! (see [`Support`]), only the tables here change.
 
 /// A supported e-reader model.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Device {
     XteinkX4,
@@ -11,6 +12,7 @@ pub enum Device {
 }
 
 /// Firmware running on the device.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Firmware {
     /// The firmware the device ships with.

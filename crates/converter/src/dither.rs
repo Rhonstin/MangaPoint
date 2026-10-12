@@ -3,6 +3,7 @@
 use crate::gray::{Depth, GrayImage, LevelImage};
 
 /// How to hide the loss of gray levels.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Dither {
     /// Nearest level, no dithering. Banding, but crisp line art.

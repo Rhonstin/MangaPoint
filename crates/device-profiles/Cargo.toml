@@ -2,3 +2,9 @@
 name = "device-profiles"
 version.workspace = true
 edition.workspace = true
+
+[dependencies]
+serde = { version = "1", features = ["derive"], optional = true }
+
+[features]
+serde = ["dep:serde"]
