@@ -1,13 +1,16 @@
 //! Everything the screens share.
 
-use crate::logic::JobProgress;
+use crate::logic::{JobProgress, SortKey, TargetChoice};
 use catalog::SuwayomiClient;
 use dioxus::prelude::*;
-use library::{AppPaths, HealthDb, JsonFile, Settings, SourceState};
+use library::{
+    AppPaths, ExportsDb, HealthDb, JsonFile, LibraryDb, LibraryFiles, Settings, SourceState,
+};
 use pipeline::CancelFlag;
-use search::RankedSeries;
+use search::{MergedChapter, RankedSeries};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::{Arc, OnceLock};
 
 /// Where the app keeps its files. Set `MANGAPOINT_HOME` to use another folder
@@ -23,14 +26,29 @@ pub fn paths() -> &'static AppPaths {
     })
 }
 
+/// The downloaded chapters on disk.
+pub fn library_files() -> LibraryFiles {
+    LibraryFiles::new(paths().library_dir())
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Page {
     Setup,
     Search,
+    /// A series the user opened: chapters, downloads, preview, export.
     Series,
+    Library,
     Sources,
-    Jobs,
     Settings,
+}
+
+/// The steps within an open series.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SeriesTab {
+    Chapters,
+    Downloads,
+    Preview,
+    Export,
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -66,6 +84,19 @@ pub enum ModalAction {
     },
     DisableBrowser,
     RemoveExtension(String),
+    /// Delete every downloaded page of a series (exported files are kept).
+    DeleteDownloadedSeries {
+        series_id: String,
+    },
+    DeleteDownloadedChapter {
+        series_id: String,
+        key: String,
+    },
+    /// Delete an exported file from disk.
+    DeleteExportedFile {
+        record_id: String,
+        path: String,
+    },
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -93,13 +124,133 @@ pub struct SearchView {
     pub generation: u64,
 }
 
+/// The series the user is working on.
+#[derive(Clone)]
+pub struct Workspace {
+    /// The library id (from the title), under which downloads are kept.
+    pub series_id: String,
+    pub title: String,
+    /// Present when opened from a search; needed to find more chapters.
+    pub ranked: Option<RankedSeries>,
+    pub tab: SeriesTab,
+    /// Where the back button goes.
+    pub origin: Page,
+}
+
+/// Chapter lists from the sources, merged.
+pub struct LoadedChapters {
+    pub merged: Vec<MergedChapter>,
+    /// Source id of each member, best first; chapter options point into this.
+    pub member_sources: Vec<String>,
+    pub member_names: Vec<String>,
+    pub unreachable: usize,
+}
+
+#[derive(Clone)]
+pub enum ChaptersState {
+    /// Nothing to load (opened from the library).
+    Idle,
+    Loading,
+    Ready(Rc<LoadedChapters>),
+    Failed(String),
+}
+
+/// How the chapter table is filtered and sorted.
+#[derive(Clone)]
+pub struct TableView {
+    pub filter: String,
+    /// Column, and whether descending.
+    pub sort: (SortKey, bool),
+}
+
+impl Default for TableView {
+    fn default() -> Self {
+        Self {
+            filter: String::new(),
+            sort: (SortKey::Number, true),
+        }
+    }
+}
+
+/// A rendered page as a data URL.
+#[derive(Clone, PartialEq)]
+pub struct Shot {
+    pub url: String,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// What the Preview tab is showing.
+#[derive(Clone, Default)]
+pub struct PreviewState {
+    /// Downloaded chapter being previewed.
+    pub chapter_key: Option<String>,
+    /// 0-based page within that chapter.
+    pub page: usize,
+    pub total_pages: usize,
+    /// The page as it will appear on the reader (two for a split spread).
+    pub converted: Vec<Shot>,
+    /// The downloaded page, unconverted, for comparison.
+    pub original: Option<Shot>,
+    pub busy: bool,
+    pub error: Option<String>,
+    /// Bumped on every change so an older render never overwrites a newer one.
+    pub generation: u64,
+    /// The decoded current page, so changing a setting need not decode again.
+    pub decoded: Option<(String, usize, Rc<converter::GrayImage>)>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum GroupingChoice {
+    Single,
+    PerChapter,
+    EveryN,
+}
+
+/// Choices on the Export tab, kept while the user moves between tabs.
+#[derive(Clone)]
+pub struct ExportOpts {
+    pub target: TargetChoice,
+    pub grouping: GroupingChoice,
+    /// The "N" of "every N chapters", as typed.
+    pub every_n: String,
+    pub advanced_open: bool,
+    /// Downloaded chapters left out of the export.
+    pub excluded: HashSet<String>,
+}
+
+impl Default for ExportOpts {
+    fn default() -> Self {
+        Self {
+            target: TargetChoice::Folder,
+            grouping: GroupingChoice::Single,
+            every_n: "10".into(),
+            advanced_open: false,
+            excluded: HashSet::new(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum JobKind {
+    Download,
+    Export,
+}
+
 #[derive(Clone)]
 pub struct JobView {
+    pub kind: JobKind,
     pub title: String,
+    /// Chapter keys in the order they are processed, so a position in the
+    /// progress report can be matched to a chapter.
+    pub plan: Vec<String>,
     pub progress: JobProgress,
-    /// `None` while running, then the files written or the error.
-    pub result: Option<Result<Vec<String>, String>>,
+    /// `None` while running, then a one-line summary or the error.
+    pub result: Option<Result<String, String>>,
+    /// Chapters no source could supply, in words.
     pub skipped: Vec<String>,
+    /// The same chapters, by key.
+    pub failed: Vec<String>,
     pub cancel: CancelFlag,
 }
 
@@ -111,15 +262,24 @@ pub struct AppState {
     pub sources: Signal<SourceState>,
     pub health: Signal<HealthDb>,
     pub page: Signal<Page>,
-    pub series: Signal<Option<RankedSeries>>,
     pub search: Signal<SearchView>,
     /// Cover images as data URLs, keyed by `source:manga`.
     pub covers: Signal<HashMap<String, String>>,
     pub notice: Signal<Option<Notice>>,
     pub modal: Signal<Option<Modal>>,
+    /// Downloaded chapters (their pages are on disk).
+    pub library: Signal<LibraryDb>,
+    /// Files exported so far.
+    pub exports: Signal<ExportsDb>,
+    pub workspace: Signal<Option<Workspace>>,
+    pub chapters: Signal<ChaptersState>,
+    /// Chapters ticked in the table, by position in the merged list.
+    pub selected: Signal<HashSet<usize>>,
+    pub table: Signal<TableView>,
+    pub preview: Signal<PreviewState>,
+    pub export_opts: Signal<ExportOpts>,
+    /// The running (or just finished) download or export.
     pub job: Signal<Option<JobView>>,
-    /// Bumped when the job history changes, so the Jobs page reloads.
-    pub jobs_version: Signal<u32>,
     /// Bumped when installed sources or test results change.
     pub sources_version: Signal<u32>,
     /// Source ids being tested right now.
@@ -133,7 +293,7 @@ impl AppState {
     /// files.
     ///
     /// The signals are owned by Dioxus's root scope rather than by the
-    /// component that creates them. Background tasks (exports, searches,
+    /// component that creates them. Background tasks (downloads, searches,
     /// retests) run in the root scope and write to this state, and a signal
     /// may only be used from its owner or the owner's descendants.
     pub fn init() -> Self {
@@ -160,13 +320,19 @@ impl AppState {
             sources: sig(sources),
             health: sig(JsonFile::<HealthDb>::new(paths().health_file()).load()),
             page: sig(first_page),
-            series: sig(None),
             search: sig(SearchView::default()),
             covers: sig(HashMap::new()),
             notice: sig(None),
             modal: sig(None),
+            library: sig(JsonFile::<LibraryDb>::new(paths().library_file()).load()),
+            exports: sig(JsonFile::<ExportsDb>::new(paths().exports_file()).load()),
+            workspace: sig(None),
+            chapters: sig(ChaptersState::Idle),
+            selected: sig(HashSet::new()),
+            table: sig(TableView::default()),
+            preview: sig(PreviewState::default()),
+            export_opts: sig(ExportOpts::default()),
             job: sig(None),
-            jobs_version: sig(0),
             sources_version: sig(0),
             testing: sig(HashSet::new()),
             installing: sig(false),
@@ -180,6 +346,14 @@ impl AppState {
     pub fn go(&self, page: Page) {
         let mut p = self.page;
         p.set(page);
+    }
+
+    /// Switch tab within the open series.
+    pub fn open_tab(&self, tab: SeriesTab) {
+        let mut ws = self.workspace;
+        if let Some(w) = ws.write().as_mut() {
+            w.tab = tab;
+        };
     }
 
     pub fn notify(&self, text: impl Into<String>) {
@@ -213,10 +387,12 @@ impl AppState {
         let _ = JsonFile::new(paths().health_file()).save(&*self.health.read());
     }
 
-    pub fn bump_jobs(&self) {
-        let mut v = self.jobs_version;
-        let next = *v.peek() + 1;
-        v.set(next);
+    pub fn save_library(&self) {
+        let _ = JsonFile::new(paths().library_file()).save(&*self.library.read());
+    }
+
+    pub fn save_exports(&self) {
+        let _ = JsonFile::new(paths().exports_file()).save(&*self.exports.read());
     }
 
     pub fn bump_sources(&self) {

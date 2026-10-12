@@ -81,6 +81,18 @@ pub fn body(name: &str) -> Option<&'static str> {
             r#"<path d="m3 16 4 4 4-4" /> <path d="M7 20V4" /> <path d="m21 8-4-4-4 4" /> <path d="M17 4v16" />"#,
         ),
         "list-filter" => Some(r#"<path d="M2 5h20" /> <path d="M6 12h12" /> <path d="M9 19h6" />"#),
+        "eye" => Some(
+            r#"<path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0" /> <circle cx="12" cy="12" r="3" />"#,
+        ),
+        "list-checks" => Some(
+            r#"<path d="M13 5h8" /> <path d="M13 12h8" /> <path d="M13 19h8" /> <path d="m3 17 2 2 4-4" /> <path d="m3 7 2 2 4-4" />"#,
+        ),
+        "image" => Some(
+            r#"<rect width="18" height="18" x="3" y="3" rx="2" ry="2" /> <circle cx="9" cy="9" r="2" /> <path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21" />"#,
+        ),
+        "book-open-check" => Some(
+            r#"<path d="M12 5v16" /> <path d="m16 12 2 2 4-4" /> <path d="M22 6V5a2 2 0 00-1.999-2L16 3.002A5 5 0 0012 5a5 5 0 00-4-2H4a2 2 0 00-2 2v12a2 2 0 001.999 2H8a5 5 0 014 2 5 5 0 014-2h4.001A2 2 0 0022 17v-1.344" />"#,
+        ),
         _ => None,
     }
 }

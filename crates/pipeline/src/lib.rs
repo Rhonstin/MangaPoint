@@ -1,24 +1,29 @@
-//! Turning chosen chapters into files on the e-reader.
+//! Turning chosen chapters into files on the e-reader, in three stages:
 //!
-//! * [`fetch`]: downloading pages with retries and a disk cache, so an
-//!   interrupted job resumes without downloading everything again
-//! * [`job`]: the whole run: fetch, convert, assemble XTC/XTCH, hand to export
-//! * [`export`]: writing to a folder, a mounted SD card or a WebDAV share
-//! * [`store`]: remembering jobs so failed ones can be retried
+//! 1. [`download`]: save chapters into the library (resumable, with
+//!    fallback to another source)
+//! 2. [`preview`]: show how a saved page will look on the reader, using the
+//!    very conversion the export uses
+//! 3. [`compose`]: build reader files from the saved chapters, with no
+//!    network, then send them with [`export`] (folder, SD card, Wi-Fi)
 
+pub mod compose;
+pub mod download;
 pub mod error;
 pub mod export;
 pub mod fetch;
-pub mod job;
 pub mod options;
-pub mod store;
+pub mod preview;
+pub mod types;
 
+pub use compose::{export_series, ExportJob, ExportOutcome, Grouping};
+pub use download::{download_chapters, DownloadOutcome};
 pub use error::PipelineError;
 pub use export::{ExportTarget, ExportedFile};
-pub use fetch::{PageCache, RetryPolicy};
-pub use job::{
-    requests_from_merged, run_job, CancelFlag, ChapterRef, ChapterRequest, JobEvent, JobOutcome,
-    JobSpec, OnMissing,
+pub use fetch::RetryPolicy;
+pub use options::{process_options, process_options_for};
+pub use preview::{decode_page, levels_to_previews, render_levels, render_original, PreviewImage};
+pub use types::{
+    requests_from_merged, CancelFlag, ChapterRef, ChapterRequest, JobEvent, SkippedChapter,
+    SourceUse,
 };
-pub use options::process_options;
-pub use store::{JobRecord, JobState, JobStore};

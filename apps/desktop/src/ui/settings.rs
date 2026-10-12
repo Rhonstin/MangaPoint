@@ -1,13 +1,11 @@
 //! Preferences.
 
 use super::ask_enable_browser;
+use super::conversion::ConversionControls;
 use super::widgets::Icon;
 use crate::logic::human_bytes;
-use crate::state::{paths, AppState, BootState, Modal, ModalAction};
+use crate::state::{paths, AppState, BootState, Modal, ModalAction, Page};
 use catalog::browser;
-use converter::process::SpreadMode;
-use converter::xtc::{Format, ReadDirection};
-use converter::Dither;
 use device_profiles::{Device, Firmware};
 use dioxus::prelude::*;
 
@@ -15,7 +13,6 @@ use dioxus::prelude::*;
 pub fn SettingsPage() -> Element {
     let state = use_context::<AppState>();
     let s = state.settings.read().clone();
-    let c = &s.conversion;
     let services = state.services.read().clone();
     let browser_size = services
         .as_ref()
@@ -23,6 +20,18 @@ pub fn SettingsPage() -> Element {
         .unwrap_or(0);
     let on_macos = !browser::supported();
     let starting = matches!(*state.boot.read(), BootState::Starting { .. });
+    let (series_count, chapter_count, library_bytes) = {
+        let library = state.library.read();
+        (
+            library.series.len(),
+            library
+                .series
+                .iter()
+                .map(|s| s.chapters.len())
+                .sum::<usize>(),
+            library.total_bytes(),
+        )
+    };
 
     let update = move |change: fn(&mut library::Settings, String), value: String| {
         let mut settings = state.settings;
@@ -57,59 +66,46 @@ pub fn SettingsPage() -> Element {
 
         div { class: "card",
             h2 { Icon { name: "sliders-horizontal", size: 17 } "How pages look" }
-            div { class: "field",
-                label { "Quality" }
-                select {
-                    onchange: move |e| update(|s, v| s.conversion.format = if v == "xtc" { Format::Xtc } else { Format::Xtch }, e.value()),
-                    option { value: "xtch", selected: c.format == Format::Xtch, "4 grays (XTCH), best for manga" }
-                    option { value: "xtc", selected: c.format == Format::Xtc, "Black & white (XTC), smaller files" }
+            p { class: "muted small", "Your starting point for every new series. Each series can be fine-tuned while you preview it." }
+            ConversionControls {
+                value: s.conversion.clone(),
+                onchange: move |v| {
+                    let mut settings = state.settings;
+                    settings.write().conversion = v;
+                    state.save_settings();
+                },
+            }
+        }
+
+        div { class: "card",
+            h2 { Icon { name: "image", size: 17 } "Saved pages" }
+            p { class: "muted small",
+                "Downloaded chapters are kept on this computer, so you can preview and export them again without downloading."
+            }
+            div { class: "seg", style: "max-width: 420px",
+                button {
+                    class: if !s.shrink_downloads { "on" } else { "" },
+                    onclick: move |_| { let mut st = state.settings; st.write().shrink_downloads = false; state.save_settings(); },
+                    "Full quality"
+                }
+                button {
+                    class: if s.shrink_downloads { "on" } else { "" },
+                    onclick: move |_| { let mut st = state.settings; st.write().shrink_downloads = true; state.save_settings(); },
+                    "Save space"
                 }
             }
-            div { class: "field",
-                label { "Reading direction" }
-                select {
-                    onchange: move |e| update(|s, v| s.conversion.direction = if v == "ltr" { ReadDirection::LeftToRight } else { ReadDirection::RightToLeft }, e.value()),
-                    option { value: "rtl", selected: c.direction == ReadDirection::RightToLeft, "Right to left (manga)" }
-                    option { value: "ltr", selected: c.direction == ReadDirection::LeftToRight, "Left to right (comics, manhwa)" }
+            p { class: "muted small", style: "margin: 8px 0 0",
+                if s.shrink_downloads {
+                    "Tall pages are shrunk to fit twice your reader's screen, which roughly halves the disk space. Applies to chapters you download from now on."
+                } else {
+                    "Pages are kept exactly as downloaded, for the best quality. This is the recommended setting."
                 }
             }
-            div { class: "field",
-                label { "Double-page spreads" }
-                select {
-                    onchange: move |e| update(|s, v| s.conversion.spread = match v.as_str() { "fit" => SpreadMode::Fit, "rotate" => SpreadMode::Rotate, _ => SpreadMode::Split }, e.value()),
-                    option { value: "split", selected: c.spread == SpreadMode::Split, "Split into two pages" }
-                    option { value: "rotate", selected: c.spread == SpreadMode::Rotate, "Turn sideways" }
-                    option { value: "fit", selected: c.spread == SpreadMode::Fit, "Shrink to fit" }
+            div { class: "row", style: "margin-top: 12px",
+                span { class: "muted small grow",
+                    "Library: {series_count} series, {chapter_count} chapters, {human_bytes(library_bytes)}"
                 }
-            }
-            div { class: "field",
-                label { "Contrast ({c.contrast})" }
-                input {
-                    r#type: "range", min: "0", max: "100", value: "{c.contrast}",
-                    oninput: move |e| update(|s, v| s.conversion.contrast = v.parse().unwrap_or(55), e.value()),
-                }
-                span { class: "hint muted small", "50 leaves the page as it is. A little higher (55) usually looks better on e-paper." }
-            }
-            div { class: "field",
-                label { "Shading style" }
-                select {
-                    onchange: move |e| update(|s, v| s.conversion.dither = match v.as_str() { "atkinson" => Dither::Atkinson, "ordered" => Dither::Ordered, "none" => Dither::Threshold, _ => Dither::FloydSteinberg }, e.value()),
-                    option { value: "fs", selected: c.dither == Dither::FloydSteinberg, "Smooth (recommended)" }
-                    option { value: "atkinson", selected: c.dither == Dither::Atkinson, "High contrast" }
-                    option { value: "ordered", selected: c.dither == Dither::Ordered, "Patterned" }
-                    option { value: "none", selected: c.dither == Dither::Threshold, "None (crisp line art)" }
-                }
-            }
-            div { class: "field",
-                label { "Trim blank margins" }
-                input {
-                    r#type: "checkbox", checked: c.crop == converter::CropMode::Margins,
-                    onchange: move |e| {
-                        let mut settings = state.settings;
-                        settings.write().conversion.crop = if e.checked() { converter::CropMode::Margins } else { converter::CropMode::Full };
-                        state.save_settings();
-                    },
-                }
+                button { class: "btn small", onclick: move |_| state.go(Page::Library), "Open Library" }
             }
         }
 

@@ -100,9 +100,7 @@ fn SeriesCard(index: usize) -> Element {
         button {
             class: "series-card",
             onclick: move |_| {
-                let mut s = state.series;
-                s.set(Some(for_click.clone()));
-                state.go(Page::Series);
+                super::work::open_series_from_search(state, for_click.clone());
             },
             Cover { key_id: cover }
             div { class: "meta",

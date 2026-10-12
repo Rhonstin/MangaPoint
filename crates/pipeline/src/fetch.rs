@@ -1,10 +1,7 @@
 //! Downloading page images reliably.
 
 use catalog::{Catalog, CatalogError};
-use std::fs;
 use std::future::Future;
-use std::io;
-use std::path::PathBuf;
 use std::time::Duration;
 
 #[derive(Clone, Debug)]
@@ -62,52 +59,6 @@ pub async fn fetch_page<C: Catalog>(
     policy: &RetryPolicy,
 ) -> Result<Vec<u8>, CatalogError> {
     with_retry(policy, || catalog.get_bytes(path)).await
-}
-
-/// Raw page images kept on disk while a job runs, so a retry after a crash
-/// or a failed chapter does not download everything again.
-#[derive(Clone, Debug)]
-pub struct PageCache {
-    root: PathBuf,
-}
-
-impl PageCache {
-    pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into() }
-    }
-
-    fn path(&self, job: &str, chapter_id: i64, index: usize) -> PathBuf {
-        self.root
-            .join(job)
-            .join(chapter_id.to_string())
-            .join(format!("{index:05}.img"))
-    }
-
-    pub fn get(&self, job: &str, chapter_id: i64, index: usize) -> Option<Vec<u8>> {
-        let data = fs::read(self.path(job, chapter_id, index)).ok()?;
-        // An empty file is a leftover from an interrupted write.
-        (!data.is_empty()).then_some(data)
-    }
-
-    pub fn put(&self, job: &str, chapter_id: i64, index: usize, data: &[u8]) -> io::Result<()> {
-        let path = self.path(job, chapter_id, index);
-        if let Some(dir) = path.parent() {
-            fs::create_dir_all(dir)?;
-        }
-        let tmp = path.with_extension("part");
-        fs::write(&tmp, data)?;
-        fs::rename(tmp, path)
-    }
-
-    /// Drop one entry, for example because it turned out not to be a valid image.
-    pub fn remove(&self, job: &str, chapter_id: i64, index: usize) {
-        let _ = fs::remove_file(self.path(job, chapter_id, index));
-    }
-
-    /// Forget everything cached for a finished (or abandoned) job.
-    pub fn clear_job(&self, job: &str) {
-        let _ = fs::remove_dir_all(self.root.join(job));
-    }
 }
 
 #[cfg(test)]
@@ -184,31 +135,5 @@ mod tests {
             "{:?}",
             start.elapsed()
         );
-    }
-
-    #[test]
-    fn cache_round_trips_and_clears() {
-        let dir = std::env::temp_dir().join(format!("mangapoint-cache-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        let cache = PageCache::new(&dir);
-        assert_eq!(cache.get("job", 7, 0), None);
-        cache.put("job", 7, 0, b"abc").unwrap();
-        assert_eq!(cache.get("job", 7, 0), Some(b"abc".to_vec()));
-        assert_eq!(cache.get("job", 7, 1), None);
-        assert_eq!(cache.get("other", 7, 0), None);
-        cache.clear_job("job");
-        assert_eq!(cache.get("job", 7, 0), None);
-        let _ = fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn empty_cache_files_count_as_missing() {
-        let dir =
-            std::env::temp_dir().join(format!("mangapoint-cache-empty-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        let cache = PageCache::new(&dir);
-        cache.put("j", 1, 0, b"").unwrap();
-        assert_eq!(cache.get("j", 1, 0), None);
-        let _ = fs::remove_dir_all(dir);
     }
 }

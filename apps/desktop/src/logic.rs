@@ -1,7 +1,7 @@
 //! The app's decisions that do not depend on the UI, so they can be tested.
 
 use library::{Settings, Verdict};
-use pipeline::{ChapterRequest, ExportTarget, JobEvent, JobSpec};
+use pipeline::{ExportTarget, JobEvent};
 use search::{MergedChapter, ScoredMember};
 use std::collections::HashSet;
 use std::path::Path;
@@ -206,7 +206,7 @@ pub fn latest(numbers: &[Option<f64>], count: usize) -> Vec<usize> {
     numbered.into_iter().take(count).map(|(i, _)| i).collect()
 }
 
-// ---- Building a job --------------------------------------------------------
+// ---- Where files go --------------------------------------------------------
 
 /// Where the user chose to send the result.
 #[derive(Clone, Debug, PartialEq)]
@@ -246,29 +246,62 @@ pub fn export_target(
     }
 }
 
-/// A job for the chosen chapters of a series. `selected` indexes `merged`;
-/// chapters go into the file in reading order whatever order they were ticked.
-pub fn build_spec(
-    title: &str,
-    merged: &[MergedChapter],
-    selected: &[usize],
-    member_sources: &[String],
-    settings: &Settings,
-    target: ExportTarget,
-) -> Option<JobSpec> {
-    let mut picked: Vec<usize> = selected
-        .iter()
-        .copied()
-        .filter(|&i| i < merged.len())
-        .collect();
-    picked.sort_unstable();
-    picked.dedup();
-    if picked.is_empty() {
-        return None;
+// ---- Steps within a series -------------------------------------------------
+
+/// What a tab needs before it can be opened.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Needs {
+    Nothing,
+    /// Chapters ticked, or something already downloaded.
+    SelectionOrDownloads,
+    /// At least one downloaded chapter.
+    Downloads,
+}
+
+/// Why a tab cannot be opened yet, in words for a tooltip; `None` if it can.
+pub fn tab_blocked(
+    needs: Needs,
+    selected: usize,
+    downloaded: usize,
+    downloading: bool,
+) -> Option<&'static str> {
+    match needs {
+        Needs::Nothing => None,
+        Needs::SelectionOrDownloads if selected > 0 || downloaded > 0 || downloading => None,
+        Needs::SelectionOrDownloads => Some("Tick some chapters first"),
+        Needs::Downloads if downloaded > 0 => None,
+        Needs::Downloads => Some("Download a chapter first"),
     }
-    let chosen: Vec<MergedChapter> = picked.iter().map(|&i| merged[i].clone()).collect();
-    let chapters: Vec<ChapterRequest> = pipeline::requests_from_merged(&chosen, member_sources);
-    Some(JobSpec::new(title, chapters, settings.clone(), target))
+}
+
+/// Where a chapter stands in the Downloads tab.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChapterStatus {
+    Saved,
+    Downloading,
+    Waiting,
+    Failed,
+}
+
+/// `plan` is the order the running download works through chapters, and
+/// `current` its position now; `failed` lists chapters no source could supply.
+pub fn download_status(
+    key: &str,
+    saved: &HashSet<String>,
+    plan: &[String],
+    current: usize,
+    running: bool,
+    failed: &[String],
+) -> ChapterStatus {
+    if saved.contains(key) {
+        ChapterStatus::Saved
+    } else if failed.iter().any(|k| k == key) {
+        ChapterStatus::Failed
+    } else if running && plan.get(current).is_some_and(|k| k == key) {
+        ChapterStatus::Downloading
+    } else {
+        ChapterStatus::Waiting
+    }
 }
 
 // ---- Progress --------------------------------------------------------------
@@ -305,6 +338,7 @@ impl JobProgress {
             JobEvent::ChapterSkipped { name, .. } => {
                 self.note = Some(format!("Skipped {name}: no source could supply it."));
             }
+            JobEvent::ChapterSaved { .. } => {}
             JobEvent::Writing { .. } => {
                 self.pages_done = 0;
                 self.pages_total = 0;
@@ -341,6 +375,19 @@ impl JobProgress {
             self.chapter_total
         )
     }
+}
+
+// ---- Export size -----------------------------------------------------------
+
+/// A rough size for a reader file: each page is a fixed size in the format
+/// (about 48 KB for black and white, 96 KB for four grays). Split spreads make
+/// it a little bigger.
+pub fn estimate_export_bytes(pages: usize, format: converter::xtc::Format) -> u64 {
+    let per_page: u64 = match format {
+        converter::xtc::Format::Xtc => 48_022,
+        converter::xtc::Format::Xtch => 96_022,
+    };
+    pages as u64 * per_page
 }
 
 // ---- Wording ---------------------------------------------------------------
@@ -516,6 +563,51 @@ mod tests {
         assert_eq!(format_date(1_000_000_000_000), "2001-09-09");
     }
 
+    #[test]
+    fn tabs_open_only_when_their_step_can_work() {
+        // Chapters is always open.
+        assert_eq!(tab_blocked(Needs::Nothing, 0, 0, false), None);
+        // Downloads needs something ticked, something downloaded, or a download running.
+        assert!(tab_blocked(Needs::SelectionOrDownloads, 0, 0, false).is_some());
+        assert_eq!(tab_blocked(Needs::SelectionOrDownloads, 3, 0, false), None);
+        assert_eq!(tab_blocked(Needs::SelectionOrDownloads, 0, 2, false), None);
+        assert_eq!(tab_blocked(Needs::SelectionOrDownloads, 0, 0, true), None);
+        // Preview and Export need a downloaded chapter, however many are ticked.
+        assert_eq!(
+            tab_blocked(Needs::Downloads, 50, 0, true),
+            Some("Download a chapter first")
+        );
+        assert_eq!(tab_blocked(Needs::Downloads, 0, 1, false), None);
+    }
+
+    #[test]
+    fn a_chapters_download_status_follows_the_running_job() {
+        let saved: HashSet<String> = ["c1".to_string()].into();
+        let plan: Vec<String> = ["c2", "c3", "c4"].map(String::from).to_vec();
+        let failed = vec!["c4".to_string()];
+        let status = |key: &str, current, running| {
+            download_status(key, &saved, &plan, current, running, &failed)
+        };
+        assert_eq!(
+            status("c1", 0, true),
+            ChapterStatus::Saved,
+            "downloaded wins"
+        );
+        assert_eq!(status("c2", 0, true), ChapterStatus::Downloading);
+        assert_eq!(status("c3", 0, true), ChapterStatus::Waiting);
+        assert_eq!(status("c3", 1, true), ChapterStatus::Downloading);
+        assert_eq!(
+            status("c4", 2, true),
+            ChapterStatus::Failed,
+            "a failure is not 'downloading'"
+        );
+        assert_eq!(
+            status("c2", 0, false),
+            ChapterStatus::Waiting,
+            "nothing is downloading once it ends"
+        );
+    }
+
     fn member(source: &str, manga_id: i64, score: f32) -> ScoredMember {
         ScoredMember {
             candidate: search::Candidate::new(
@@ -636,40 +728,6 @@ mod tests {
     }
 
     #[test]
-    fn specs_contain_only_the_ticked_chapters_in_reading_order() {
-        let merged = merge_chapters(&[
-            vec![chapter(1, 1.0, 0), chapter(2, 2.0, 0), chapter(3, 3.0, 0)],
-            vec![chapter(12, 2.0, 0)],
-        ]);
-        let sources = vec!["best".to_string(), "other".to_string()];
-        let spec = build_spec(
-            "Series",
-            &merged,
-            &[2, 1, 1, 99], // out of order, repeated, and out of range
-            &sources,
-            &Settings::default(),
-            ExportTarget::Folder { path: "/o".into() },
-        )
-        .unwrap();
-        let names: Vec<_> = spec.chapters.iter().map(|c| c.name.as_str()).collect();
-        assert_eq!(names, ["Chapter 2", "Chapter 3"]);
-        // Chapter 2 can come from either source, best first.
-        assert_eq!(spec.chapters[0].options.len(), 2);
-        assert_eq!(spec.chapters[0].options[0].source_id, "best");
-        assert_eq!(spec.chapters[1].options.len(), 1);
-
-        assert!(build_spec(
-            "S",
-            &merged,
-            &[],
-            &sources,
-            &Settings::default(),
-            spec.target.clone()
-        )
-        .is_none());
-    }
-
-    #[test]
     fn progress_combines_chapter_and_page_position() {
         let mut p = JobProgress::default();
         assert_eq!(p.fraction(), 0.0);
@@ -713,6 +771,19 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(p.fraction(), 1.0);
+    }
+
+    #[test]
+    fn export_size_estimates_follow_the_format() {
+        use converter::xtc::Format;
+        assert_eq!(estimate_export_bytes(0, Format::Xtch), 0);
+        assert_eq!(estimate_export_bytes(100, Format::Xtch), 9_602_200);
+        assert_eq!(estimate_export_bytes(100, Format::Xtc), 4_802_200);
+        // Four grays take about twice the room of black and white.
+        assert!(
+            estimate_export_bytes(10, Format::Xtch)
+                > 2 * estimate_export_bytes(10, Format::Xtc) - 1000
+        );
     }
 
     #[test]

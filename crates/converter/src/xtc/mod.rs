@@ -24,7 +24,7 @@ use thiserror::Error;
 
 pub use encode::{decode_page, encode_page, xtg_data_size, xth_data_size, DecodedPage};
 pub use parser::{ChapterInfo, Header, PageInfo, XtcFile};
-pub use writer::{Chapter, Metadata, XtcBuilder};
+pub use writer::{Chapter, Metadata, WriteError, XtcBuilder};
 
 pub const XTC_MAGIC: u32 = 0x0043_5458; // "XTC\0"
 pub const XTCH_MAGIC: u32 = 0x4843_5458; // "XTCH"

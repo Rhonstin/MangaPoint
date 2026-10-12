@@ -1,18 +1,20 @@
 //! The app's screens.
 
 pub mod cat;
+mod conversion;
 mod icons;
-mod jobs;
+mod library_page;
 mod search;
-mod series;
 mod settings;
 mod setup;
 mod sources_page;
 mod widgets;
+mod work;
+mod workspace;
 
 use crate::backend;
 use crate::state::spawn_forever;
-use crate::state::{AppState, BootState, Modal, ModalAction, Page};
+use crate::state::{AppState, BootState, JobKind, Modal, ModalAction, Page};
 use dioxus::desktop::tao::event::{Event, WindowEvent};
 use dioxus::desktop::use_wry_event_handler;
 use dioxus::prelude::*;
@@ -101,7 +103,7 @@ fn Shell() -> Element {
                 span { "MangaPoint" }
             }
             NavItem { page: Page::Search, label: "Search", icon: "search" }
-            NavItem { page: Page::Jobs, label: "Exports", icon: "download" }
+            NavItem { page: Page::Library, label: "Library", icon: "book-open" }
             NavItem { page: Page::Sources, label: "Sources", icon: "layers" }
             NavItem { page: Page::Settings, label: "Settings", icon: "settings" }
         }
@@ -111,9 +113,9 @@ fn Shell() -> Element {
                 {match page {
                     Page::Setup => rsx! { setup::Setup {} },
                     Page::Search => rsx! { search::SearchPage {} },
-                    Page::Series => rsx! { series::SeriesPage {} },
+                    Page::Series => rsx! { workspace::WorkspacePage {} },
+                    Page::Library => rsx! { library_page::LibraryPage {} },
                     Page::Sources => rsx! { sources_page::SourcesPage {} },
-                    Page::Jobs => rsx! { jobs::JobsPage {} },
                     Page::Settings => rsx! { settings::SettingsPage {} },
                 }}
             }
@@ -125,9 +127,16 @@ fn Shell() -> Element {
 fn NavItem(page: Page, label: &'static str, icon: &'static str) -> Element {
     let state = use_context::<AppState>();
     let current = *state.page.read();
-    // The series page belongs to Search; first-run setup belongs to Sources.
+    // An open series belongs to wherever it was opened from; first-run
+    // setup belongs to Sources.
+    let opened_from_library = state
+        .workspace
+        .read()
+        .as_ref()
+        .is_some_and(|w| w.origin == Page::Library);
     let active = current == page
-        || (page == Page::Search && current == Page::Series)
+        || (page == Page::Search && current == Page::Series && !opened_from_library)
+        || (page == Page::Library && current == Page::Series && opened_from_library)
         || (page == Page::Sources && current == Page::Setup);
     let class = if active {
         "nav-item active"
@@ -142,25 +151,33 @@ fn NavItem(page: Page, label: &'static str, icon: &'static str) -> Element {
     }
 }
 
-/// The running (or just finished) export, shown above every screen.
+/// The running (or just finished) download or export, shown above every screen.
 #[component]
 fn JobBar() -> Element {
     let state = use_context::<AppState>();
     let job = state.job.read().clone();
     let Some(job) = job else { return rsx! {} };
     let running = job.result.is_none();
+    let verb = match job.kind {
+        JobKind::Download => "Downloading",
+        JobKind::Export => "Exporting",
+    };
+    let kind = job.kind;
     rsx! {
         div { class: "jobbar",
             div { class: "row",
                 div { class: "grow",
                     strong { "{job.title}" }
                     {match &job.result {
-                        None => rsx! { span { class: "muted", " · {job.progress.label()}" } },
-                        Some(Ok(files)) => rsx! {
+                        None => rsx! { span { class: "muted", " · {verb} · {job.progress.label()}" } },
+                        Some(Ok(summary)) => rsx! {
                             span { class: "chip ok", style: "margin-left: 8px", "Done" }
-                            span { class: "muted small", " {files.len()} file(s) written" }
+                            span { class: "muted small", " {summary}" }
                         },
-                        Some(Err(e)) => rsx! { span { class: "chip bad", style: "margin-left: 8px", "Failed" } span { class: "muted small", " {e}" } },
+                        Some(Err(e)) => rsx! {
+                            span { class: "chip bad", style: "margin-left: 8px", "Stopped" }
+                            span { class: "muted small", " {e}" }
+                        },
                     }}
                 }
                 if running {
@@ -171,11 +188,13 @@ fn JobBar() -> Element {
                         "Cancel"
                     }
                 } else {
-                    button {
-                        class: "btn small",
-                        onclick: move |_| state.go(Page::Jobs),
-                        Icon { name: "info", size: 14 }
-                        "Details"
+                    if kind == JobKind::Export && job.result.as_ref().is_some_and(|r| r.is_ok()) {
+                        button {
+                            class: "btn small",
+                            onclick: move |_| state.go(Page::Library),
+                            Icon { name: "book-open", size: 14 }
+                            "Library"
+                        }
                     }
                     button {
                         class: "btn small",
@@ -250,6 +269,15 @@ fn run_action(state: AppState, action: ModalAction) {
                 }
             }
             ModalAction::DisableBrowser => backend::disable_browser(state).await,
+            ModalAction::DeleteDownloadedSeries { series_id } => {
+                work::delete_downloaded_series(state, series_id)
+            }
+            ModalAction::DeleteDownloadedChapter { series_id, key } => {
+                work::delete_downloaded_chapter(state, series_id, key)
+            }
+            ModalAction::DeleteExportedFile { record_id, path } => {
+                work::delete_exported_file(state, record_id, path)
+            }
             ModalAction::RemoveExtension(pkg) => {
                 let Some(client) = state.client() else { return };
                 tracing::info!("Removing source {pkg}");

@@ -42,6 +42,46 @@ impl ExportTarget {
     }
 }
 
+impl ExportTarget {
+    /// Send a finished file that is already on disk. Large books are copied,
+    /// never loaded into memory (Wi-Fi uploads are the exception, since they
+    /// need the whole body).
+    pub async fn write_file(&self, filename: &str, src: &Path) -> Result<ExportedFile> {
+        let size = fs::metadata(src)
+            .map_err(|e| PipelineError::Io(src.to_path_buf(), e))?
+            .len();
+        match self {
+            ExportTarget::Folder { path } => copy_file(path, filename, src),
+            ExportTarget::Device { mount, folder } => {
+                check_space(mount, size)?;
+                copy_file(&mount.join(sanitize_component(folder)), filename, src)
+            }
+            ExportTarget::WebDav { base_url, folder } => {
+                let data = fs::read(src).map_err(|e| PipelineError::Io(src.to_path_buf(), e))?;
+                upload_webdav(base_url, folder, filename, &data).await
+            }
+        }
+    }
+}
+
+/// Copy `src` into `dir` under a name that does not exist yet. Written to a
+/// temporary name first, so a full disk never leaves a half-file that looks
+/// complete.
+fn copy_file(dir: &Path, filename: &str, src: &Path) -> Result<ExportedFile> {
+    fs::create_dir_all(dir).map_err(|e| PipelineError::Io(dir.to_path_buf(), e))?;
+    let path = unique_path(dir, filename);
+    let tmp = path.with_extension("part");
+    let bytes = fs::copy(src, &tmp).map_err(|e| {
+        let _ = fs::remove_file(&tmp);
+        PipelineError::Io(tmp.clone(), e)
+    })?;
+    fs::rename(&tmp, &path).map_err(|e| PipelineError::Io(path.clone(), e))?;
+    Ok(ExportedFile {
+        location: path.display().to_string(),
+        bytes,
+    })
+}
+
 fn write_file(dir: &Path, filename: &str, data: &[u8]) -> Result<ExportedFile> {
     let io = |p: &Path| {
         let p = p.to_path_buf();

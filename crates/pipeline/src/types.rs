@@ -1,0 +1,114 @@
+//! Types shared by the download and export stages.
+
+use library::DownloadedChapter;
+use search::merge::MergedChapter;
+use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
+/// One way to get a chapter: a specific source's copy of it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChapterRef {
+    pub source_id: String,
+    pub chapter_id: i64,
+}
+
+/// A chapter to download, with every source that can supply it (best first).
+/// If the first source fails, the next is tried.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ChapterRequest {
+    pub number: Option<f64>,
+    pub name: String,
+    pub options: Vec<ChapterRef>,
+}
+
+/// Build requests from a merged chapter list. `member_sources[i]` is the
+/// source id of member `i` used when merging.
+pub fn requests_from_merged(
+    merged: &[MergedChapter],
+    member_sources: &[String],
+) -> Vec<ChapterRequest> {
+    merged
+        .iter()
+        .map(|m| ChapterRequest {
+            number: m.number,
+            name: m.name.clone(),
+            options: m
+                .options
+                .iter()
+                .filter_map(|o| {
+                    Some(ChapterRef {
+                        source_id: member_sources.get(o.member)?.clone(),
+                        chapter_id: o.chapter_id,
+                    })
+                })
+                .collect(),
+        })
+        .collect()
+}
+
+/// Progress reports while a download or export runs.
+#[derive(Clone, Debug, PartialEq)]
+pub enum JobEvent {
+    ChapterStarted {
+        index: usize,
+        total: usize,
+        name: String,
+    },
+    /// One more page of the current chapter is done.
+    PageDone {
+        chapter_index: usize,
+        done: usize,
+        total: usize,
+    },
+    /// The first source failed, so another is being used.
+    UsedFallback {
+        chapter_index: usize,
+        from: String,
+        to: String,
+        reason: String,
+    },
+    ChapterSkipped {
+        chapter_index: usize,
+        name: String,
+        reason: String,
+    },
+    /// A chapter is completely downloaded and safe on disk.
+    ChapterSaved {
+        chapter: DownloadedChapter,
+    },
+    Writing {
+        file: String,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SkippedChapter {
+    pub index: usize,
+    pub name: String,
+    pub reason: String,
+}
+
+/// How a source did, so the caller can update its health record.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceUse {
+    pub source_id: String,
+    pub ok: bool,
+    pub ms: u64,
+}
+
+/// Lets the UI stop a running download or export.
+#[derive(Clone, Debug, Default)]
+pub struct CancelFlag(Arc<AtomicBool>);
+
+impl CancelFlag {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn cancel(&self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+    pub fn is_cancelled(&self) -> bool {
+        self.0.load(Ordering::SeqCst)
+    }
+}
