@@ -37,6 +37,8 @@ pub fn EmptyState(
     compact: Option<bool>,
     /// Show the cat asleep on an empty bookshelf instead of on its own.
     shelf: Option<bool>,
+    /// Or another scene: "search" or "waiting".
+    scene: Option<&'static str>,
 ) -> Element {
     let class = if compact.unwrap_or(false) {
         "empty compact"
@@ -45,7 +47,11 @@ pub fn EmptyState(
     };
     rsx! {
         div { class: "{class}",
-            if shelf.unwrap_or(false) {
+            if scene == Some("search") {
+                super::scenes::SearchCat {}
+            } else if scene == Some("waiting") {
+                super::scenes::WaitingCat {}
+            } else if shelf.unwrap_or(false) {
                 super::shelf::ShelfCat {}
             } else {
                 super::cat::RestingCat {}
@@ -130,6 +136,22 @@ pub fn show_in_folder(path: &str) {
     #[cfg(all(unix, not(target_os = "macos")))]
     {
         let dir = path.parent().unwrap_or(path);
+        let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
+    }
+}
+
+/// Open a folder in the system's file browser.
+pub fn open_folder(dir: &std::path::Path) {
+    #[cfg(target_os = "windows")]
+    {
+        let _ = std::process::Command::new("explorer").arg(dir).spawn();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("open").arg(dir).spawn();
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
         let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
     }
 }

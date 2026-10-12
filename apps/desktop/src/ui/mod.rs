@@ -5,8 +5,10 @@ mod conversion;
 mod downloads_page;
 mod icons;
 mod library_page;
+mod plan_page;
 mod presets;
 mod presets_lab;
+mod scenes;
 mod search;
 mod settings;
 mod setup;
@@ -113,7 +115,7 @@ fn Shell() -> Element {
             NavItem { page: Page::Search, label: "Search", icon: "search" }
             NavItem { page: Page::Library, label: "Library", icon: "book-open" }
             NavItem {
-                page: Page::Downloads, label: "Downloads", icon: "download",
+                page: Page::Downloads, label: "Downloads & exports", icon: "download",
                 badge: (in_queue > 0).then(|| in_queue.to_string()),
             }
             NavItem { page: Page::Sources, label: "Sources", icon: "layers" }
@@ -129,6 +131,7 @@ fn Shell() -> Element {
                     Page::Series => rsx! { workspace::WorkspacePage {} },
                     Page::Library => rsx! { library_page::LibraryPage {} },
                     Page::Downloads => rsx! { downloads_page::DownloadsPage {} },
+                    Page::Plan => rsx! { plan_page::PlanPage {} },
                     Page::Sources => rsx! { sources_page::SourcesPage {} },
                     Page::Settings => rsx! { settings::SettingsPage {} },
                 }}
@@ -329,11 +332,14 @@ fn run_action(state: AppState, action: ModalAction) {
                 }
             }
             ModalAction::DisableBrowser => backend::disable_browser(state).await,
-            ModalAction::DeleteDownloadedSeries { series_id } => {
-                work::delete_downloaded_series(state, series_id)
+            ModalAction::RemoveSeries { series_ids } => {
+                work::remove_from_library(state, series_ids)
             }
-            ModalAction::DeleteDownloadedChapter { series_id, key } => {
-                work::delete_downloaded_chapter(state, series_id, key)
+            ModalAction::DeleteChapters { series_id, keys } => {
+                work::delete_chapters(state, series_id, keys)
+            }
+            ModalAction::DeleteDownloads { series_ids } => {
+                work::delete_downloads(state, series_ids)
             }
             ModalAction::DeletePreset { id } => presets::delete_preset(state, id),
             ModalAction::DeleteExportedFile { record_id, path } => {

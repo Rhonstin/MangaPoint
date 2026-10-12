@@ -198,12 +198,13 @@ pub fn SearchPage() -> Element {
             EmptyState {
                 title: "The cat looked everywhere",
                 message: format!("It found nothing for “{}”. Try another spelling, or add more sources.", view.query),
+                scene: "search",
             }
         } else if view.query.is_empty() && !view.no_sources && !view.none_selected {
             EmptyState {
-                title: "Shh… the cat is napping",
-                message: "Type a title above to wake it up, and it will fetch your next read.",
-                shelf: true,
+                title: "What are we reading?",
+                message: "Type a title above and the cat will go looking for it.",
+                scene: "search",
             }
         }
         if !view.failed.is_empty() && !view.searching {

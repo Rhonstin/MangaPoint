@@ -271,7 +271,7 @@ fn DownloadRow(
                             confirm: "Delete".into(),
                             cancel: "Keep".into(),
                             danger: true,
-                            action: ModalAction::DeleteDownloadedChapter { series_id: series_id.clone(), key: chapter_key.clone() },
+                            action: ModalAction::DeleteChapters { series_id: series_id.clone(), keys: vec![chapter_key.clone()] },
                         }),
                         Icon { name: "trash", size: 14 }
                     }

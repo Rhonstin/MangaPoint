@@ -1,10 +1,9 @@
 //! Tab 0: what the series is, and what you have of it.
 
 use crate::logic::{self, ago, describe_settings, human_bytes};
-use crate::state::{now_secs, AppState, Modal, ModalAction, Page, SeriesTab};
-use crate::ui::search::run_search;
+use crate::state::{now_secs, AppState};
 use crate::ui::widgets::{Chip, Cover, EmptyState, Icon};
-use crate::ui::work::{ensure_series_info, load_saved_cover, prepare_preview, saved_cover_key};
+use crate::ui::work::{ensure_series_info, load_saved_cover, saved_cover_key};
 use dioxus::prelude::*;
 
 #[component]
@@ -84,14 +83,6 @@ pub fn OverviewTab() -> Element {
             (true, false) => format!("Art by {}", i.artist),
             (true, true) => String::new(),
         });
-    let delete_id = series.id.clone();
-    let delete_title = series.title.clone();
-    let delete_body = format!(
-        "The downloaded pages of {} ({}) will be deleted. Files you already exported are kept, and you can download the chapters again later.",
-        series.title,
-        human_bytes(series.bytes())
-    );
-    let search_title = series.title.clone();
 
     rsx! {
         div { class: "overview",
@@ -132,6 +123,11 @@ pub fn OverviewTab() -> Element {
                     }
                 }
 
+                if series.chapters.is_empty() {
+                    p { class: "muted", style: "margin: 14px 0 0",
+                        "Not downloaded yet. Use the Chapters tab to choose what to download."
+                    }
+                }
                 div { class: "facts",
                     div { class: "summary-line", span { class: "muted", "Chapters" } span { "{series.chapters.len()}" if series.chapters.len() > 1 && !range_text.is_empty() { " (numbered {range_text})" } } }
                     div { class: "summary-line", span { class: "muted", "Pages" } span { "{series.page_count()}" } }
@@ -142,34 +138,6 @@ pub fn OverviewTab() -> Element {
                     div { class: "summary-line", span { class: "muted", "Converted as" } span { class: "right", "{describe_settings(&series.settings)}" } }
                     if series.updated_at > 0 {
                         div { class: "summary-line", span { class: "muted", "Last downloaded" } span { "{ago(now_secs(), series.updated_at)}" } }
-                    }
-                }
-
-                div { class: "row wrap", style: "margin-top: 16px",
-                    button { class: "btn primary", onclick: move |_| { state.open_tab(SeriesTab::Preview); prepare_preview(state); },
-                        Icon { name: "eye", size: 16 } "Preview"
-                    }
-                    button { class: "btn", onclick: move |_| state.open_tab(SeriesTab::Export),
-                        Icon { name: "file-down", size: 16 } "Export"
-                    }
-                    button { class: "btn",
-                        onclick: move |_| {
-                            run_search(state, search_title.clone());
-                            state.go(Page::Search);
-                        },
-                        Icon { name: "search", size: 16 } "Find more chapters"
-                    }
-                    span { class: "grow" }
-                    button { class: "btn danger",
-                        onclick: move |_| state.ask(Modal {
-                            title: format!("Delete {delete_title}?"),
-                            body: delete_body.clone(),
-                            confirm: "Delete".into(),
-                            cancel: "Keep".into(),
-                            danger: true,
-                            action: ModalAction::DeleteDownloadedSeries { series_id: delete_id.clone() },
-                        }),
-                        Icon { name: "trash", size: 16 } "Delete"
                     }
                 }
             }

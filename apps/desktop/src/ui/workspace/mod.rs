@@ -39,7 +39,7 @@ pub fn WorkspacePage() -> Element {
     let in_library = state.library.read().find(&ws.series_id).is_some();
     let remove_body = if downloaded > 0 {
         format!(
-            "{} and its {} downloaded chapters ({}) will be deleted from this computer. Files you already exported are kept.",
+            "{} and its {} downloaded chapters ({}) will be deleted from this computer. Files you already exported are kept. To keep it in the library, delete just the chapters on the Chapters or Downloads tab.",
             ws.title,
             downloaded,
             crate::logic::human_bytes(library_bytes)
@@ -56,8 +56,8 @@ pub fn WorkspacePage() -> Element {
         confirm: "Remove".into(),
         cancel: "Keep".into(),
         danger: true,
-        action: ModalAction::DeleteDownloadedSeries {
-            series_id: ws.series_id.clone(),
+        action: ModalAction::RemoveSeries {
+            series_ids: vec![ws.series_id.clone()],
         },
     };
 

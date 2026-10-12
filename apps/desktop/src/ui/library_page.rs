@@ -1,14 +1,14 @@
-//! The Library: the series you keep (downloaded or saved for later), and
-//! every file exported.
+//! The Library: the series you keep (downloaded or saved for later). Exported
+//! files are listed on the Downloads page.
 
-use super::widgets::{show_in_folder, Chip, Cover, EmptyState, Icon};
+use super::widgets::{open_folder, Cover, EmptyState, Icon};
 use super::work::{
-    ensure_series_info, forget_exported_file, load_saved_cover, open_series_from_library,
-    saved_cover_key,
+    ensure_series_info, load_saved_cover, open_plan, open_series_from_library, saved_cover_key,
 };
-use crate::logic::{ago, human_bytes, library_order, plural, LibrarySort, LibraryView};
-use crate::state::{now_secs, AppState, Modal, ModalAction, Page};
+use crate::logic::{human_bytes, library_order, plural, LibrarySort, LibraryView};
+use crate::state::{library_files, AppState, Modal, ModalAction, Page};
 use dioxus::prelude::*;
+use std::collections::HashSet;
 
 #[component]
 pub fn LibraryPage() -> Element {
@@ -16,6 +16,7 @@ pub fn LibraryPage() -> Element {
     let mut view = use_signal(LibraryView::default);
     let mut sort = use_signal(LibrarySort::default);
     let mut filter = use_signal(String::new);
+    let mut picked = use_signal(HashSet::<String>::new);
     // Fetch the details and covers of series that do not have them yet, and
     // show the saved covers. Runs again when the catalog comes up or the
     // library changes.
@@ -43,9 +44,6 @@ pub fn LibraryPage() -> Element {
         }
     });
     let library = state.library.read().clone();
-    let mut records = state.exports.read().records.clone();
-    records.reverse(); // newest first
-    let now = now_secs();
     let total = library.total_bytes();
     let order = library_order(&library.series, view(), sort(), &filter.read());
     let downloaded_count = library
@@ -56,6 +54,64 @@ pub fn LibraryPage() -> Element {
     let saved_count = library.series.len() - downloaded_count;
     let queue = state.queue.read().clone();
     let (running, waiting, chapters_left) = queue.counts();
+
+    // The ticked series that are still shown, in the order shown.
+    let chosen: Vec<&library::DownloadedSeries> = order
+        .iter()
+        .map(|&i| &library.series[i])
+        .filter(|s| picked.read().contains(&s.id))
+        .collect();
+    let chosen_ids: Vec<String> = chosen.iter().map(|s| s.id.clone()).collect();
+    let chosen_with_downloads: Vec<String> = chosen
+        .iter()
+        .filter(|s| !s.chapters.is_empty())
+        .map(|s| s.id.clone())
+        .collect();
+    let chosen_bytes: u64 = chosen.iter().map(|s| s.bytes()).sum();
+    let selecting = !chosen.is_empty();
+    let all_shown: Vec<String> = order
+        .iter()
+        .map(|&i| library.series[i].id.clone())
+        .collect();
+    let all_ticked = selecting && chosen.len() == all_shown.len();
+
+    let remove_modal = Modal {
+        title: format!(
+            "Remove {} from your library?",
+            plural(chosen.len(), "series")
+        ),
+        body: if chosen_with_downloads.is_empty() {
+            "They will be taken off your list. Nothing is stored on this computer for them."
+                .to_string()
+        } else {
+            format!(
+                "Their downloaded chapters ({}) will be deleted from this computer too. Files you already exported are kept. To keep them in the library, delete only the downloads instead.",
+                human_bytes(chosen_bytes)
+            )
+        },
+        confirm: "Remove".into(),
+        cancel: "Keep".into(),
+        danger: true,
+        action: ModalAction::RemoveSeries {
+            series_ids: chosen_ids.clone(),
+        },
+    };
+    let delete_modal = Modal {
+        title: format!(
+            "Delete the downloads of {}?",
+            plural(chosen_with_downloads.len(), "series")
+        ),
+        body: format!(
+            "The downloaded chapters ({}) will be deleted from this computer. The series stay in your library, so you can download them again later. Files you already exported are kept.",
+            human_bytes(chosen_bytes)
+        ),
+        confirm: "Delete downloads".into(),
+        cancel: "Keep".into(),
+        danger: true,
+        action: ModalAction::DeleteDownloads {
+            series_ids: chosen_with_downloads.clone(),
+        },
+    };
 
     rsx! {
         div { class: "q-head",
@@ -69,6 +125,15 @@ pub fn LibraryPage() -> Element {
                         if saved_count > 0 { " · {saved_count} saved for later" }
                     }
                 }
+            }
+            button {
+                class: "btn", title: "Open the folder the downloads are kept in",
+                onclick: move |_| {
+                    let root = library_files().root().to_path_buf();
+                    let _ = std::fs::create_dir_all(&root);
+                    open_folder(&root);
+                },
+                Icon { name: "folder-open", size: 16 } "Open folder"
             }
         }
 
@@ -119,11 +184,13 @@ pub fn LibraryPage() -> Element {
             if order.is_empty() {
                 p { class: "muted", style: "margin: 28px 0", "Nothing here matches. Try another filter." }
             }
-            div { class: "poster-grid",
+            div { class: if selecting { "poster-grid selecting" } else { "poster-grid" },
                 for &i in order.iter() {
                     {
                         let s = &library.series[i];
                         let open_id = s.id.clone();
+                        let tick_id = s.id.clone();
+                        let on = picked.read().contains(&s.id);
                         let has_cover = s.info.as_ref().is_some_and(|i| i.has_cover);
                         let cover_key = saved_cover_key(&s.id);
                         let chapters = s.chapters.len();
@@ -134,26 +201,17 @@ pub fn LibraryPage() -> Element {
                             format!("{} · {size}", plural(chapters, "chapter"))
                         };
                         let queued = queue.series_has_work(&s.id);
-                        let body = if chapters == 0 {
-                            format!("{} will be taken off your list. Nothing is stored on this computer for it.", s.title)
-                        } else {
-                            format!(
-                                "{} and its {} downloaded chapters ({size}) will be deleted from this computer. Files you already exported are kept.",
-                                s.title, chapters
-                            )
-                        };
-                        let modal = Modal {
-                            title: format!("Remove {} from your library?", s.title),
-                            body,
-                            confirm: "Remove".into(),
-                            cancel: "Keep".into(),
-                            danger: true,
-                            action: ModalAction::DeleteDownloadedSeries { series_id: s.id.clone() },
-                        };
                         rsx! {
-                            div { class: "poster", key: "{s.id}",
+                            div { class: if on { "poster on" } else { "poster" }, key: "{s.id}",
                                 div { class: "poster-art", title: "Open {s.title}",
-                                    onclick: move |_| open_series_from_library(state, &open_id),
+                                    onclick: move |_| {
+                                        if picked.read().is_empty() {
+                                            open_series_from_library(state, &open_id);
+                                        } else {
+                                            let mut p = picked.write();
+                                            if !p.remove(&open_id) { p.insert(open_id.clone()); }
+                                        }
+                                    },
                                     if has_cover { Cover { key_id: cover_key } } else { div { class: "cover empty", "📖" } }
                                     span { class: if chapters == 0 { "poster-badge saved" } else { "poster-badge" },
                                         if chapters == 0 { "Saved" } else { "{chapters} ch" }
@@ -164,9 +222,14 @@ pub fn LibraryPage() -> Element {
                                         }
                                     }
                                     button {
-                                        class: "poster-remove", title: "Remove from your library",
-                                        onclick: move |e| { e.stop_propagation(); state.ask(modal.clone()); },
-                                        Icon { name: "x", size: 14 }
+                                        class: if on { "poster-check on" } else { "poster-check" },
+                                        title: if on { "Deselect" } else { "Select" },
+                                        onclick: move |e| {
+                                            e.stop_propagation();
+                                            let mut p = picked.write();
+                                            if !p.remove(&tick_id) { p.insert(tick_id.clone()); }
+                                        },
+                                        if on { Icon { name: "check", size: 14 } }
                                     }
                                 }
                                 strong { class: "poster-title", title: "{s.title}", "{s.title}" }
@@ -178,60 +241,35 @@ pub fn LibraryPage() -> Element {
             }
         }
 
-        div { class: "lib-exports",
-            h2 { class: "q-title", "Exported files" }
-            if records.is_empty() {
-                EmptyState {
-                    title: "No exports yet",
-                    message: "Files you export for your reader will be listed here, so you can find or delete them later.",
-                    compact: true,
+        if selecting {
+            div { class: "action-bar",
+                div { class: "bar-count",
+                    strong { "{chosen.len()} selected" }
+                    span { class: "muted small", "{human_bytes(chosen_bytes)} on this computer" }
                 }
-            }
-            for r in records.iter() {
-                div { class: "list-row", key: "{r.id}", style: "align-items: flex-start",
-                    div { class: "grow",
-                        div { class: "row wrap",
-                            strong { "{r.title}" }
-                            Chip { text: r.format.to_uppercase() }
-                            span { class: "muted small", "{r.chapters} chapters · {ago(now, r.at)} · {r.target}" }
-                        }
-                        for f in r.files.iter() {
-                            {
-                                let path = f.path.clone();
-                                let is_url = path.starts_with("http");
-                                let missing = !is_url && !std::path::Path::new(&path).is_file();
-                                let size = human_bytes(f.bytes);
-                                let record_id = r.id.clone();
-                                let (p_show, p_delete, p_forget) = (path.clone(), path.clone(), path.clone());
-                                let (id_delete, id_forget) = (record_id.clone(), record_id.clone());
-                                rsx! {
-                                    div { class: "row small", style: "margin-top: 4px",
-                                        span { class: "grow muted", style: "word-break: break-all", "{path}" }
-                                        if missing { Chip { text: "missing", kind: Some("warn".to_string()) } } else { span { class: "muted", "{size}" } }
-                                        if missing {
-                                            button { class: "btn small", onclick: move |_| forget_exported_file(state, id_forget.clone(), p_forget.clone()), "Forget" }
-                                        } else if !is_url {
-                                            button { class: "btn small", title: "Show in its folder", onclick: move |_| show_in_folder(&p_show),
-                                                Icon { name: "folder-open", size: 14 }
-                                            }
-                                            button {
-                                                class: "btn small danger", title: "Delete this file",
-                                                onclick: move |_| state.ask(Modal {
-                                                    title: "Delete this file?".into(),
-                                                    body: format!("{p_delete} will be deleted from your computer. Your downloaded chapters are not affected."),
-                                                    confirm: "Delete file".into(),
-                                                    cancel: "Keep".into(),
-                                                    danger: true,
-                                                    action: ModalAction::DeleteExportedFile { record_id: id_delete.clone(), path: p_delete.clone() },
-                                                }),
-                                                Icon { name: "trash", size: 14 }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                button { class: "btn ghost", onclick: move |_| {
+                        if all_ticked { picked.write().clear(); } else { picked.set(all_shown.iter().cloned().collect()); }
+                    },
+                    if all_ticked { "Select none" } else { "Select all" }
+                }
+                button { class: "btn primary", onclick: {
+                        let ids = chosen_ids.clone();
+                        move |_| { picked.write().clear(); open_plan(state, ids.clone()); }
+                    },
+                    Icon { name: "download", size: 16 } "Download…"
+                }
+                if !chosen_with_downloads.is_empty() {
+                    button { class: "btn danger", title: "Delete the downloaded chapters but keep the series",
+                        onclick: move |_| { state.ask(delete_modal.clone()); picked.write().clear(); },
+                        Icon { name: "trash", size: 15 } "Delete downloads"
                     }
+                }
+                button { class: "btn danger", title: "Take the series out of your library",
+                    onclick: move |_| { state.ask(remove_modal.clone()); picked.write().clear(); },
+                    Icon { name: "x", size: 15 } "Remove"
+                }
+                button { class: "btn ghost", title: "Clear the selection", onclick: move |_| picked.write().clear(),
+                    Icon { name: "x", size: 15 }
                 }
             }
         }

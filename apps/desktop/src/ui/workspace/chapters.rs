@@ -1,7 +1,7 @@
 //! Tab 1: pick the chapters you want.
 
-use crate::logic::{self, SortKey};
-use crate::state::{AppState, ChaptersState, Page, SeriesTab};
+use crate::logic::{self, plural, SortKey};
+use crate::state::{AppState, ChaptersState, Modal, ModalAction, Page, SeriesTab};
 use crate::ui::search::run_search;
 use crate::ui::widgets::{Chip, EmptyState, Icon};
 use crate::ui::work::{downloaded_keys, merged_key, queue_download};
@@ -93,6 +93,25 @@ pub fn ChaptersTab() -> Element {
         .iter()
         .filter(|&&i| loaded.merged.get(i).is_some_and(|c| queued(&merged_key(c))))
         .count();
+    let downloaded_picked: Vec<String> = selected_now
+        .iter()
+        .filter_map(|&i| loaded.merged.get(i).map(merged_key))
+        .filter(|k| have.contains(k))
+        .collect();
+    let delete_modal = Modal {
+        title: format!("Delete {}?", plural(downloaded_picked.len(), "downloaded chapter")),
+        body: format!(
+            "The downloaded pages of the chapters you ticked in {} will be deleted from this computer. The series stays in your library and you can download them again. Files you already exported are kept.",
+            ws.title
+        ),
+        confirm: "Delete".into(),
+        cancel: "Keep".into(),
+        danger: true,
+        action: ModalAction::DeleteChapters {
+            series_id: ws.series_id.clone(),
+            keys: downloaded_picked,
+        },
+    };
     // Picked chapters that are neither downloaded nor already in the queue.
     let to_download = picked - already - queued_picked;
     // Which sources can supply the chapters still to download, and how many each.
@@ -320,6 +339,12 @@ pub fn ChaptersTab() -> Element {
                 }
                 if not_offered > 0 {
                     Chip { text: format!("{not_offered} not offered"), kind: Some("warn".to_string()) }
+                }
+                if already > 0 {
+                    button { class: "btn danger", title: "Delete the downloaded pages of the chapters you ticked. The series stays in your library.",
+                        onclick: move |_| state.ask(delete_modal.clone()),
+                        Icon { name: "trash", size: 15 } "Delete {already} downloaded"
+                    }
                 }
                 if to_download == 0 && queued_picked > 0 {
                     button { class: "btn primary", onclick: move |_| state.go(Page::Downloads),

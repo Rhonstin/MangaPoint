@@ -2,14 +2,14 @@
 //! Chapters are added from any series; they download in turn, so there is
 //! nothing to start by hand.
 
-use super::widgets::{Chip, Cover, EmptyState, Icon, ProgressBar};
+use super::widgets::{show_in_folder, Chip, Cover, EmptyState, Icon, ProgressBar};
 use super::work::{
-    cancel_all_downloads, cancel_batch, load_saved_cover, open_series_from_library,
-    prioritize_batch, retry_batch, saved_cover_key, set_queue_paused,
+    cancel_all_downloads, cancel_batch, forget_exported_file, load_saved_cover,
+    open_series_from_library, prioritize_batch, retry_batch, saved_cover_key, set_queue_paused,
 };
-use crate::logic::plural;
+use crate::logic::{ago, human_bytes, plural};
 use crate::queue::BatchStatus;
-use crate::state::{AppState, Page};
+use crate::state::{now_secs, AppState, Modal, ModalAction, Page};
 use dioxus::prelude::*;
 
 #[component]
@@ -52,14 +52,14 @@ pub fn DownloadsPage() -> Element {
     rsx! {
         div { class: "q-head",
             div { class: "grow",
-                h1 { "Downloads" }
+                h1 { "Downloads & exports" }
                 p { class: "muted",
                     if busy {
                         "{plural(chapters_left, \"chapter\")} to go"
                         if waiting_batches > 0 { " · {waiting_batches} more in line" }
                         if paused { " · paused" }
                     } else {
-                        "Chapters you add from any series download here, one series after another."
+                        "Downloads go on here one series after another. The files you export for your reader are listed below."
                     }
                 }
             }
@@ -78,11 +78,11 @@ pub fn DownloadsPage() -> Element {
             }
         }
 
-        if !busy && finished.is_empty() {
+        if !busy && finished.is_empty() && state.exports.read().records.is_empty() {
             EmptyState {
                 title: "Nothing downloading",
                 message: "Pick chapters in any series and add them to the downloads. They go on in the background while you carry on.",
-                shelf: true,
+                scene: "waiting",
             }
             div { style: "text-align: center",
                 button { class: "btn primary", onclick: move |_| state.go(Page::Search), Icon { name: "search", size: 16 } "Find a series" }
@@ -103,6 +103,71 @@ pub fn DownloadsPage() -> Element {
             h2 { class: "q-title", "Finished" }
             for id in finished.iter().copied() {
                 BatchRow { key: "{id}", id }
+            }
+        }
+        ExportedFiles {}
+    }
+}
+
+/// Every file exported for a reader, newest first.
+#[component]
+fn ExportedFiles() -> Element {
+    let state = use_context::<AppState>();
+    let mut records = state.exports.read().records.clone();
+    records.reverse();
+    let now = now_secs();
+    rsx! {
+        h2 { class: "q-title", "Exported files" }
+        if records.is_empty() {
+            p { class: "muted small", style: "margin: 4px 0 0",
+                "Files you export for your reader are listed here, so you can find or delete them later."
+            }
+        }
+        for r in records.iter() {
+            div { class: "list-row", key: "{r.id}", style: "align-items: flex-start",
+                div { class: "grow",
+                    div { class: "row wrap",
+                        strong { "{r.title}" }
+                        Chip { text: r.format.to_uppercase() }
+                        span { class: "muted small", "{r.chapters} chapters · {ago(now, r.at)} · {r.target}" }
+                    }
+                    for f in r.files.iter() {
+                        {
+                            let path = f.path.clone();
+                            let is_url = path.starts_with("http");
+                            let missing = !is_url && !std::path::Path::new(&path).is_file();
+                            let size = human_bytes(f.bytes);
+                            let record_id = r.id.clone();
+                            let (p_show, p_delete, p_forget) = (path.clone(), path.clone(), path.clone());
+                            let (id_delete, id_forget) = (record_id.clone(), record_id.clone());
+                            rsx! {
+                                div { class: "row small", style: "margin-top: 4px",
+                                    span { class: "grow muted", style: "word-break: break-all", "{path}" }
+                                    if missing { Chip { text: "missing", kind: Some("warn".to_string()) } } else { span { class: "muted", "{size}" } }
+                                    if missing {
+                                        button { class: "btn small", onclick: move |_| forget_exported_file(state, id_forget.clone(), p_forget.clone()), "Forget" }
+                                    } else if !is_url {
+                                        button { class: "btn small", title: "Show in its folder", onclick: move |_| show_in_folder(&p_show),
+                                            Icon { name: "folder-open", size: 14 }
+                                        }
+                                        button {
+                                            class: "btn small danger", title: "Delete this file",
+                                            onclick: move |_| state.ask(Modal {
+                                                title: "Delete this file?".into(),
+                                                body: format!("{p_delete} will be deleted from your computer. Your downloaded chapters are not affected."),
+                                                confirm: "Delete file".into(),
+                                                cancel: "Keep".into(),
+                                                danger: true,
+                                                action: ModalAction::DeleteExportedFile { record_id: id_delete.clone(), path: p_delete.clone() },
+                                            }),
+                                            Icon { name: "trash", size: 14 }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }

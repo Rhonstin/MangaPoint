@@ -255,6 +255,20 @@ pub(super) fn rest_frame_markup(breathe: bool) -> String {
     rects(&rest_frame(breathe))
 }
 
+/// The sitting cat, eyes open or shut, with the right paw raised to `paw_top`
+/// (or resting), as rectangles in its own 32x32 space.
+pub(super) fn sitting_markup(eyes_closed: bool, paw_top: Option<usize>) -> String {
+    format!(
+        "<g class=\"tail\">{}</g>{}",
+        rects(&tail()),
+        rects(&frame(Pose {
+            eyes_closed,
+            paw_top,
+            tongue: 0,
+        }))
+    )
+}
+
 /// The cat asleep, for screens with nothing on them yet.
 #[component]
 pub fn RestingCat() -> Element {

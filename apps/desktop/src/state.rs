@@ -40,8 +40,10 @@ pub enum Page {
     /// A series the user opened: chapters, downloads, preview, export.
     Series,
     Library,
-    /// The download queue, for every series.
+    /// The download queue and the exported files.
     Downloads,
+    /// Choosing what to download from one or more library series.
+    Plan,
     Sources,
     Settings,
 }
@@ -123,13 +125,19 @@ pub enum ModalAction {
     },
     DisableBrowser,
     RemoveExtension(String),
-    /// Delete every downloaded page of a series (exported files are kept).
-    DeleteDownloadedSeries {
-        series_id: String,
+    /// Take series out of the library, deleting what was downloaded for them
+    /// (exported files are kept).
+    RemoveSeries {
+        series_ids: Vec<String>,
     },
-    DeleteDownloadedChapter {
+    /// Delete the downloaded pages of some chapters; the series stays.
+    DeleteChapters {
         series_id: String,
-        key: String,
+        keys: Vec<String>,
+    },
+    /// Delete every downloaded chapter of these series; they stay in the library.
+    DeleteDownloads {
+        series_ids: Vec<String>,
     },
     /// Delete one of the user's presets, or put a changed built-in back.
     DeletePreset {
@@ -191,6 +199,25 @@ pub struct LoadedChapters {
     /// The same members as they are kept in the library.
     pub saved: Vec<library::SavedSource>,
     pub unreachable: usize,
+}
+
+/// What the download planner knows about one series.
+#[derive(Clone)]
+pub enum PlanChapters {
+    Loading,
+    Ready(Rc<LoadedChapters>),
+    Failed(String),
+}
+
+/// One series in the download planner, with the chapters ticked for it.
+#[derive(Clone)]
+pub struct PlanEntry {
+    pub series_id: String,
+    pub title: String,
+    pub chapters: PlanChapters,
+    /// Positions in the merged chapter list.
+    pub picked: HashSet<usize>,
+    pub open: bool,
 }
 
 #[derive(Clone)]
@@ -369,6 +396,8 @@ pub struct AppState {
     pub download_source: Signal<SourceChoice>,
     /// Chapters waiting to download, the batch downloading now, and what finished.
     pub queue: Signal<DownloadQueue>,
+    /// The series being planned for download, with their ticked chapters.
+    pub plan: Signal<Vec<PlanEntry>>,
     /// Series whose details are being fetched right now.
     pub info_busy: Signal<HashSet<String>>,
     pub workspace: Signal<Option<Workspace>>,
@@ -433,6 +462,7 @@ impl AppState {
             speeds: sig(JsonFile::<SpeedDb>::new(paths().speeds_file()).load()),
             download_source: sig(SourceChoice::Adaptive),
             queue: sig(DownloadQueue::default()),
+            plan: sig(Vec::new()),
             info_busy: sig(HashSet::new()),
             workspace: sig(None),
             chapters: sig(ChaptersState::Idle),
@@ -467,15 +497,32 @@ impl AppState {
     pub fn notify(&self, text: impl Into<String>) {
         let text = text.into();
         tracing::info!("{text}");
+        self.show_notice(text, false);
+    }
+
+    /// Show a message, and take it away again after a little while.
+    fn show_notice(&self, text: String, error: bool) {
         let mut n = self.notice;
-        n.set(Some(Notice { text, error: false }));
+        n.set(Some(Notice {
+            text: text.clone(),
+            error,
+        }));
+        let seconds = if error { 10 } else { 4 };
+        let this = *self;
+        spawn_forever(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(seconds)).await;
+            let same = this.notice.peek().as_ref().is_some_and(|n| n.text == text);
+            if same {
+                let mut n = this.notice;
+                n.set(None);
+            }
+        });
     }
 
     pub fn error(&self, text: impl Into<String>) {
         let text = text.into();
         tracing::warn!("{text}");
-        let mut n = self.notice;
-        n.set(Some(Notice { text, error: true }));
+        self.show_notice(text, true);
     }
 
     pub fn ask(&self, modal: Modal) {
