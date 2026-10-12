@@ -11,7 +11,7 @@ use catalog::provision::locate_install;
 use catalog::release::VERSION_TAG;
 use catalog::{Browse, RunningServer, ServerConfig};
 use library::{DownloadLimits, LibraryFiles};
-use pipeline::{download_chapters, CancelFlag, ChapterRef, ChapterRequest, RetryPolicy};
+use pipeline::{download_chapters, CancelFlag, ChapterRef, ChapterRequest, JobEvent, RetryPolicy};
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -64,6 +64,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }],
         })
         .collect();
+    if requests.is_empty() {
+        let numbers: Vec<f64> = list.iter().map(|c| c.chapter_number).collect();
+        println!(
+            "no chapter numbered {first}..={last}; the source has {} chapters, numbers {:?} .. {:?}",
+            list.len(),
+            numbers.first(),
+            numbers.last()
+        );
+        let _ = server.stop().await;
+        return Ok(());
+    }
     println!(
         "{} chapters, {chapters} at a time, {pages} pages at once",
         requests.len()
@@ -71,6 +82,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let root = std::env::temp_dir().join(format!("mangapoint-compare-{}", std::process::id()));
     let files = LibraryFiles::new(root.join("library"));
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let started = Instant::now();
     let out = download_chapters(
         client,
@@ -85,11 +97,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             race_sources: false,
         },
         &RetryPolicy::default(),
-        None,
+        Some(tx),
         &CancelFlag::new(),
     )
     .await?;
     let secs = started.elapsed().as_secs_f32();
+    let (mut slowdowns, mut lowest) = (0, usize::MAX);
+    while let Ok(event) = rx.try_recv() {
+        if let JobEvent::PagesAtOnce { now, chosen } = event {
+            if now < chosen {
+                slowdowns += 1;
+                lowest = lowest.min(now);
+            }
+        }
+    }
     let total_pages: usize = out.chapters.iter().map(|c| c.pages).sum();
     let mb: f32 = out.chapters.iter().map(|c| c.bytes).sum::<u64>() as f32 / 1e6;
     println!(
@@ -98,6 +119,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         total_pages as f32 / secs,
         out.skipped.len()
     );
+    if slowdowns > 0 {
+        println!(
+            "the source pushed back {slowdowns} time(s); the allowance fell as low as {lowest}"
+        );
+    } else {
+        println!("the source never pushed back");
+    }
+    for skipped in &out.skipped {
+        println!("skipped {}: {}", skipped.name, skipped.reason);
+    }
     let _ = std::fs::remove_dir_all(&root);
     let _ = server.stop().await;
     Ok(())
