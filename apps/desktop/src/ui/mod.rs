@@ -1,6 +1,6 @@
 //! The app's screens.
 
-mod cat;
+pub mod cat;
 mod icons;
 mod jobs;
 mod search;

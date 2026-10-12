@@ -1,6 +1,6 @@
 //! Running exports, and the history of past ones.
 
-use super::widgets::{show_in_folder, Chip, Icon};
+use super::widgets::{show_in_folder, Chip, EmptyState, Icon};
 use crate::logic::{ago, JobProgress};
 use crate::state::spawn_forever;
 use crate::state::{now_secs, paths, AppState, JobView};
@@ -175,7 +175,12 @@ pub fn JobsPage() -> Element {
         {match &*records.read() {
             None => rsx! { p { class: "muted", "Loading…" } },
             Some(list) if list.is_empty() => rsx! {
-                div { class: "card", p { class: "muted", "Nothing exported yet. Search for a series, tick the chapters you want and press Convert & export." } }
+                div { class: "card",
+                    EmptyState {
+                        title: "No exports yet",
+                        message: "Find a series, tick the chapters you want and press Convert & export. The cat will keep your files company.",
+                    }
+                }
             },
             Some(list) => rsx! {
                 div { class: "card",

@@ -1,7 +1,7 @@
 //! Installed sources, their test results, and adding new ones.
 
 use super::ask_enable_browser;
-use super::widgets::{Chip, Icon};
+use super::widgets::{Chip, EmptyState, Icon};
 use crate::backend;
 use crate::logic::{ago, verdict_label};
 use crate::state::spawn_forever;
@@ -79,7 +79,11 @@ pub fn SourcesPage() -> Element {
             }
             if loading { p { class: "muted", "Loading…" } }
             if !loading && installed_count == 0 {
-                p { class: "muted", "No sources yet. Install some below." }
+                EmptyState {
+                    title: "No sources yet",
+                    message: "The cat can't fetch anything without them. Install some below.",
+                    compact: true,
+                }
             }
             {rows.into_iter()}
         }

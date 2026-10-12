@@ -1,10 +1,12 @@
 //! MangaPoint: search manga, convert it for an Xteink reader, export.
 
+mod assets;
 mod backend;
 mod logic;
 mod state;
 mod ui;
 
+use dioxus::desktop::tao::window::Icon;
 use dioxus::desktop::{Config, LogicalSize, WindowBuilder};
 use tracing_subscriber::fmt::time::uptime;
 use tracing_subscriber::EnvFilter;
@@ -28,6 +30,20 @@ fn init_logging() {
 }
 
 fn main() {
+    // Developer command: write the app icon files and exit.
+    let mut args = std::env::args().skip(1);
+    if args.next().as_deref() == Some("--write-icons") {
+        let dir = args.next().unwrap_or_else(|| "assets".into());
+        match assets::write_icons(std::path::Path::new(&dir)) {
+            Ok(()) => println!("wrote icon.png and icon.ico to {dir}"),
+            Err(e) => {
+                eprintln!("could not write the icons: {e}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+
     init_logging();
     // Ctrl+C in the terminal would otherwise leave the catalog server running
     // and holding its database, so the next start could not open it.
@@ -39,7 +55,11 @@ fn main() {
         "MangaPoint starting; data folder: {}",
         state::paths().root().display()
     );
+    // The cat is the window and taskbar icon (Windows and Linux; macOS takes
+    // its Dock icon from the app bundle, which the installer provides).
+    let (rgba, w, h) = ui::cat::icon_rgba(8);
     let window = WindowBuilder::new()
+        .with_window_icon(Icon::from_rgba(rgba, w, h).ok())
         .with_title("MangaPoint")
         .with_inner_size(LogicalSize::new(1180.0, 800.0))
         .with_min_inner_size(LogicalSize::new(860.0, 560.0));

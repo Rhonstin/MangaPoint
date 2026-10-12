@@ -1,6 +1,6 @@
 //! Searching every installed source at once.
 
-use super::widgets::{cover_key, load_cover, Chip, Cover, Icon};
+use super::widgets::{cover_key, load_cover, Chip, Cover, EmptyState, Icon};
 use crate::state::now_secs;
 use crate::state::spawn_forever;
 use crate::state::{AppState, Page, SearchView};
@@ -58,7 +58,15 @@ pub fn SearchPage() -> Element {
         if view.searching {
             p { class: "muted", "Searching… {view.answered} of {view.total} sources answered" }
         } else if !view.query.is_empty() && view.ranked.is_empty() && !view.no_sources {
-            p { class: "muted", "No results for “{view.query}”. Try another spelling, or add more sources." }
+            EmptyState {
+                title: "The cat looked everywhere",
+                message: format!("It found nothing for “{}”. Try another spelling, or add more sources.", view.query),
+            }
+        } else if view.query.is_empty() && !view.no_sources {
+            EmptyState {
+                title: "Shh… the cat is napping",
+                message: "Type a title above to wake it up, and it will fetch your next read.",
+            }
         }
         if !view.failed.is_empty() && !view.searching {
             p { class: "muted small",

@@ -29,6 +29,23 @@ pub fn Icon(name: &'static str, size: Option<u32>) -> Element {
     }
 }
 
+/// A screen with nothing on it yet: the cat napping, and a friendly line.
+#[component]
+pub fn EmptyState(title: String, message: String, compact: Option<bool>) -> Element {
+    let class = if compact.unwrap_or(false) {
+        "empty compact"
+    } else {
+        "empty"
+    };
+    rsx! {
+        div { class: "{class}",
+            super::cat::RestingCat {}
+            h2 { "{title}" }
+            p { "{message}" }
+        }
+    }
+}
+
 #[component]
 pub fn ProgressBar(fraction: Option<f32>) -> Element {
     match fraction {

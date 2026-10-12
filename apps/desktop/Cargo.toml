@@ -16,6 +16,7 @@ device-profiles = { path = "../../crates/device-profiles", features = ["serde"] 
 tokio = { version = "1", features = ["rt", "macros", "time", "sync"] }
 futures-util = "0.3"
 ctrlc = "3"
+image = { version = "0.25", default-features = false, features = ["png"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "ansi"] }
 base64 = "0.22"
@@ -23,3 +24,6 @@ sysinfo = { version = "0.37", default-features = false, features = ["system"] }
 
 [dev-dependencies]
 catalog = { path = "../../crates/catalog", features = ["fake"] }
+
+[build-dependencies]
+winresource = "0.1"

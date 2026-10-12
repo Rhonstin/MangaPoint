@@ -172,6 +172,125 @@ fn frame(pose: Pose) -> Grid {
     g
 }
 
+/// The resting pose: a sleeping loaf, head on its paws. `breathe` lifts the
+/// back one pixel so alternating the two frames looks like breathing.
+fn rest_frame(breathe: bool) -> Grid {
+    let mut g = [[CLEAR; SIZE]; SIZE];
+
+    // Tail along the bottom and up the right side.
+    rect(&mut g, 14, 29, 29, 29, SHADE);
+    rect(&mut g, 28, 21, 29, 28, SHADE);
+
+    // Body.
+    let top = if breathe { 18 } else { 19 };
+    rect(&mut g, 8, top, 25, top, BODY);
+    rect(&mut g, 6, top + 1, 27, 27, BODY);
+    rect(&mut g, 8, 28, 25, 28, BODY);
+    for x in [13, 17, 21] {
+        rect(&mut g, x, top, x, top + 2, SHADE);
+    }
+
+    // Ears (left, then mirrored across the head).
+    for (y, from, to) in [(12, 3, 3), (13, 3, 4), (14, 3, 5), (15, 3, 6)] {
+        rect(&mut g, from, y, to, y, BODY);
+        rect(&mut g, 15 - to, y, 15 - from, y, BODY);
+    }
+    px(&mut g, 4, 14, PINK);
+    px(&mut g, 11, 14, PINK);
+
+    // Head, rounded.
+    rect(&mut g, 4, 16, 11, 16, BODY);
+    rect(&mut g, 3, 17, 12, 24, BODY);
+    rect(&mut g, 4, 25, 11, 25, BODY);
+    px(&mut g, 7, 17, SHADE);
+    px(&mut g, 8, 17, SHADE);
+
+    // Sleeping face.
+    rect(&mut g, 5, 20, 6, 20, EYE);
+    rect(&mut g, 9, 20, 10, 20, EYE);
+    rect(&mut g, 6, 22, 9, 23, LIGHT);
+    rect(&mut g, 7, 22, 8, 22, PINK);
+
+    // Paws under the chin.
+    rect(&mut g, 4, 26, 13, 28, LIGHT);
+    px(&mut g, 8, 27, SHADE);
+    g
+}
+
+/// A small pixel "z" of the given size (4 or 5 pixels square).
+fn z_rects(x: usize, y: usize, size: usize) -> String {
+    let rows: &[&str] = if size >= 5 {
+        &["#####", "...#.", "..#..", ".#...", "#####"]
+    } else {
+        &["####", "..#.", ".#..", "####"]
+    };
+    let mut g = [[CLEAR; SIZE]; SIZE];
+    for (dy, row) in rows.iter().enumerate() {
+        for (dx, ch) in row.chars().enumerate() {
+            if ch == '#' {
+                px(&mut g, x + dx, y + dy, LIGHT);
+            }
+        }
+    }
+    rects(&g)
+}
+
+fn rest_markup() -> &'static str {
+    static MARKUP: OnceLock<String> = OnceLock::new();
+    MARKUP.get_or_init(|| {
+        format!(
+            "<g class=\"r r0\">{}</g><g class=\"r r1\">{}</g>\
+             <g class=\"z z1\">{}</g><g class=\"z z2\">{}</g>",
+            rects(&rest_frame(false)),
+            rects(&rest_frame(true)),
+            z_rects(15, 8, 4),
+            z_rects(20, 2, 5),
+        )
+    })
+}
+
+/// The cat asleep, for screens with nothing on them yet.
+#[component]
+pub fn RestingCat() -> Element {
+    rsx! {
+        svg {
+            class: "cat rest",
+            width: "32",
+            height: "32",
+            view_box: "0 0 32 32",
+            "aria-hidden": "true",
+            dangerous_inner_html: "{rest_markup()}",
+        }
+    }
+}
+
+/// The idle cat as an RGBA image for the window icon: `scale` screen pixels
+/// per sprite pixel, transparent background.
+pub fn icon_rgba(scale: usize) -> (Vec<u8>, u32, u32) {
+    let size = SIZE * scale;
+    let mut rgba = vec![0u8; size * size * 4];
+    let layers = [tail(), frame(POSES[0])];
+    for layer in &layers {
+        for (y, row) in layer.iter().enumerate() {
+            for (x, &c) in row.iter().enumerate() {
+                if c == CLEAR {
+                    continue;
+                }
+                let hex = color(c).trim_start_matches('#');
+                let v = u32::from_str_radix(hex, 16).unwrap_or(0);
+                let (r, g, b) = ((v >> 16) as u8, (v >> 8) as u8, v as u8);
+                for dy in 0..scale {
+                    for dx in 0..scale {
+                        let i = ((y * scale + dy) * size + x * scale + dx) * 4;
+                        rgba[i..i + 4].copy_from_slice(&[r, g, b, 255]);
+                    }
+                }
+            }
+        }
+    }
+    (rgba, size as u32, size as u32)
+}
+
 /// One `<rect>` per horizontal run of equal color.
 fn rects(g: &Grid) -> String {
     let mut out = String::new();
@@ -241,6 +360,40 @@ mod tests {
             let (x, y, w) = (num("x=\""), num("y=\""), num("width=\""));
             assert!(x + w <= SIZE && y < SIZE, "{part}");
         }
+    }
+
+    #[test]
+    fn the_resting_cat_breathes_and_dreams() {
+        let m = rest_markup();
+        for class in ["r r0", "r r1", "z z1", "z z2"] {
+            assert!(m.contains(&format!("class=\"{class}\"")), "{class}");
+        }
+        assert_ne!(
+            rest_frame(false),
+            rest_frame(true),
+            "the two breaths differ"
+        );
+        // Sleeping: no open-eye highlight, and nothing outside the canvas.
+        for part in m.split("<rect ").skip(1) {
+            let num = |key: &str| -> usize {
+                let rest = &part[part.find(key).unwrap() + key.len()..];
+                rest[..rest.find('"').unwrap()].parse().unwrap()
+            };
+            assert!(num("x=\"") + num("width=\"") <= SIZE && num("y=\"") < SIZE);
+        }
+    }
+
+    #[test]
+    fn the_window_icon_is_the_cat_on_a_transparent_background() {
+        let (rgba, w, h) = icon_rgba(4);
+        assert_eq!((w, h), (128, 128));
+        assert_eq!(rgba.len(), 128 * 128 * 4);
+        let alpha = |x: usize, y: usize| rgba[(y * 128 + x) * 4 + 3];
+        assert_eq!(alpha(0, 0), 0, "corners are transparent");
+        // Something solid where the head is (sprite pixel 15,12 -> 60..63).
+        assert_eq!(alpha(62, 50), 255);
+        let opaque = rgba.chunks(4).filter(|p| p[3] == 255).count();
+        assert!(opaque > 1000 && opaque < 128 * 128 / 2, "{opaque}");
     }
 
     #[test]

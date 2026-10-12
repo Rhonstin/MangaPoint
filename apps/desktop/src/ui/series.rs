@@ -1,7 +1,7 @@
 //! One series: a sortable chapter table and an export panel.
 
 use super::jobs::start_job;
-use super::widgets::{cover_key, Chip, Cover, Icon};
+use super::widgets::{cover_key, Chip, Cover, EmptyState, Icon};
 use crate::logic::{self, SortKey, TargetChoice};
 use crate::state::{paths, AppState, Page};
 use converter::xtc::Format;
@@ -89,8 +89,13 @@ pub fn SeriesPage() -> Element {
     let series = state.series.read().clone();
     let Some(series) = series else {
         return rsx! {
-            p { class: "muted", "Pick a series from the search results first." }
-            button { class: "btn", onclick: move |_| state.go(Page::Search), Icon { name: "arrow-left" } "Back to search" }
+            EmptyState {
+                title: "No series picked",
+                message: "Pick one from the search results and the cat will bring its chapters.",
+            }
+            div { style: "text-align: center",
+                button { class: "btn", onclick: move |_| state.go(Page::Search), Icon { name: "arrow-left" } "Back to search" }
+            }
         };
     };
 
@@ -296,7 +301,11 @@ pub fn SeriesPage() -> Element {
                                         tbody { {rows.into_iter()} }
                                     }
                                     if order.is_empty() {
-                                        div { class: "empty-state", "No chapters match “{filter}”." }
+                                        EmptyState {
+                                            title: "No chapters match",
+                                            message: format!("Nothing matches “{}”. Try fewer words.", filter.read()),
+                                            compact: true,
+                                        }
                                     }
                                 }
                             }
