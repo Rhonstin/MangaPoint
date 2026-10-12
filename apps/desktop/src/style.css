@@ -591,7 +591,8 @@ table.chapters tbody tr.locked:hover { background: transparent; }
 
 /* ---- the cat on the sea (empty Search page) ---- */
 .empty:has(.ocean) { padding-top: 10px; }
-.ocean { width: min(100%, calc((100vh - 280px) * 2), 1040px); height: auto; shape-rendering: crispEdges; image-rendering: pixelated; margin-bottom: 4px; display: block; }
+/* Each pixel is 5 screen pixels, like the other cats. */
+.ocean { width: 400px; max-width: 92%; height: auto; shape-rendering: crispEdges; image-rendering: pixelated; margin-bottom: 4px; display: block; }
 .ocean .floater { animation: ocean-bob 4.8s step-end infinite; }
 @keyframes ocean-bob { 0% { transform: translateY(0); } 25% { transform: translateY(1px); } 50% { transform: translateY(1px); } 75% { transform: translateY(0); } }
 .ocean .tail-a { animation: tail-a 2.4s step-end infinite; }
