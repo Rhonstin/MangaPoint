@@ -60,6 +60,8 @@ pub enum DownloadSpeed {
     #[default]
     Normal,
     Fast,
+    /// Every source that has a chapter is asked at once; the first to finish wins.
+    Ultra,
     /// The user's own numbers.
     Custom,
 }
@@ -74,6 +76,9 @@ pub struct DownloadLimits {
     /// Download different chapters from different sources at the same time
     /// when several offer them.
     pub spread_sources: bool,
+    /// Ask every source that has a chapter at once and keep the first to
+    /// finish. `pages` is then the allowance of each source.
+    pub race_sources: bool,
 }
 
 impl DownloadLimits {
@@ -120,6 +125,7 @@ impl DownloadSettings {
             DownloadSpeed::Gentle => (1, 2),
             DownloadSpeed::Normal => (2, 6),
             DownloadSpeed::Fast => (3, 12),
+            DownloadSpeed::Ultra => (3, 8),
             DownloadSpeed::Custom => (
                 self.custom_chapters.clamp(1, DownloadLimits::MAX_CHAPTERS) as usize,
                 self.custom_pages.clamp(1, DownloadLimits::MAX_PAGES) as usize,
@@ -129,6 +135,7 @@ impl DownloadSettings {
             chapters,
             pages,
             spread_sources: self.spread_sources,
+            race_sources: self.speed == DownloadSpeed::Ultra,
         }
     }
 }
@@ -218,6 +225,7 @@ mod tests {
             chapters,
             pages,
             spread_sources: true,
+            race_sources: false,
         };
         let mut d = DownloadSettings::default();
         assert_eq!(d.limits(), both(2, 6));
@@ -225,7 +233,11 @@ mod tests {
         assert_eq!(d.limits(), both(1, 2));
         d.speed = DownloadSpeed::Fast;
         assert_eq!(d.limits(), both(3, 12));
+        d.speed = DownloadSpeed::Ultra;
+        assert!(d.limits().race_sources);
+        assert_eq!((d.limits().chapters, d.limits().pages), (3, 8));
         d.speed = DownloadSpeed::Custom;
+        assert!(!d.limits().race_sources);
         d.custom_chapters = 0;
         d.custom_pages = 200;
         assert_eq!(d.limits(), both(1, 16));

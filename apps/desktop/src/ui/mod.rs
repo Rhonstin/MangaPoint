@@ -184,9 +184,10 @@ fn JobBar() -> Element {
                 if running {
                     button {
                         class: "btn small",
-                        onclick: move |_| job.cancel.cancel(),
+                        disabled: job.progress.stopping,
+                        onclick: move |_| work::cancel_job(state),
                         Icon { name: "x", size: 14 }
-                        "Cancel"
+                        if job.progress.stopping { "Stopping…" } else { "Cancel" }
                     }
                 } else {
                     if kind == JobKind::Export && job.result.as_ref().is_some_and(|r| r.is_ok()) {

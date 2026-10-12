@@ -111,6 +111,7 @@ pub fn SettingsPage() -> Element {
                     (DownloadSpeed::Gentle, "Gentle"),
                     (DownloadSpeed::Normal, "Normal"),
                     (DownloadSpeed::Fast, "Fast"),
+                    (DownloadSpeed::Ultra, "Ultra"),
                     (DownloadSpeed::Custom, "Advanced"),
                 ] {
                     button {
@@ -125,11 +126,13 @@ pub fn SettingsPage() -> Element {
                 {match s.download.speed {
                     DownloadSpeed::Gentle => "Slow and careful. Best for sources that block easily.",
                     DownloadSpeed::Normal => "A good balance of speed and care. Recommended.",
-                    DownloadSpeed::Fast => "As quick as it goes. Some sources may start refusing requests.",
+                    DownloadSpeed::Fast => "Quick. Some sources may start refusing requests.",
+                    DownloadSpeed::Ultra => "As fast as possible: every source that has a chapter is asked at the same time, and whichever finishes first is kept. It sends the most requests, so sources are more likely to slow you down or block you.",
                     DownloadSpeed::Custom => "Choose the numbers yourself.",
                 }}
-                " Right now: {limits.chapters} chapter(s) at a time, {limits.pages} pages at once."
+                if limits.race_sources { " Right now: {limits.chapters} chapter(s) at a time, {limits.pages} pages at once from each source." } else { " Right now: {limits.chapters} chapter(s) at a time, {limits.pages} pages at once." }
             }
+            if s.download.speed != DownloadSpeed::Ultra {
             label { class: "check-line", style: "margin-top: 12px",
                 input {
                     r#type: "checkbox", checked: s.download.spread_sources,
@@ -139,6 +142,7 @@ pub fn SettingsPage() -> Element {
             }
             p { class: "muted small", style: "margin: 4px 0 0",
                 "When a chapter is offered by more than one source, different chapters download from different sources at the same time. Some sources limit their own speed (MangaFire hands out about 2 pages a second however you ask), so this adds the speeds together."
+            }
             }
             if s.download.speed == DownloadSpeed::Custom {
                 div { class: "field",

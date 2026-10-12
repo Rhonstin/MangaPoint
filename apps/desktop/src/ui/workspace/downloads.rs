@@ -3,7 +3,7 @@
 use crate::logic::{self, ChapterStatus};
 use crate::state::{AppState, ChaptersState, JobKind, Modal, ModalAction, SeriesTab};
 use crate::ui::widgets::{Chip, EmptyState, Icon, ProgressBar};
-use crate::ui::work::{merged_key, prepare_preview, start_download};
+use crate::ui::work::{cancel_job, merged_key, prepare_preview, start_download};
 use dioxus::prelude::*;
 use std::collections::HashSet;
 
@@ -73,6 +73,7 @@ pub fn DownloadsTab() -> Element {
         .clone()
         .filter(|j| j.kind == JobKind::Download);
     let running = job.as_ref().is_some_and(|j| j.result.is_none());
+    let stopping = job.as_ref().is_some_and(|j| j.progress.stopping);
     let plan: Vec<String> = job.as_ref().map(|j| j.plan.clone()).unwrap_or_default();
     let failed: Vec<String> = job.as_ref().map(|j| j.failed.clone()).unwrap_or_default();
     let active: Vec<usize> = job
@@ -156,8 +157,12 @@ pub fn DownloadsTab() -> Element {
                     if waiting > 0 && !running { span { class: "muted", " · {waiting} to go" } }
                 }
                 if running {
-                    button { class: "btn small", onclick: { let cancel = job.as_ref().map(|j| j.cancel.clone()); move |_| { if let Some(c) = &cancel { c.cancel(); } } },
-                        Icon { name: "x", size: 14 } "Cancel"
+                    button {
+                        class: "btn small",
+                        disabled: stopping,
+                        onclick: move |_| cancel_job(state),
+                        Icon { name: "x", size: 14 }
+                        if stopping { "Stopping…" } else { "Cancel" }
                     }
                 } else {
                     if waiting > 0 {

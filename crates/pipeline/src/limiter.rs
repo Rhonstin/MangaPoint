@@ -6,7 +6,8 @@
 //! the app stops adding to the problem. After a run of good answers it creeps
 //! back up, one at a time, to what the user chose.
 
-use std::sync::Mutex;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::Notify;
 
@@ -115,11 +116,57 @@ impl Limiter {
     }
 }
 
+/// The limiters for a download: one shared by every source, or one for each
+/// source (so a slow source cannot hold a fast one back, and each is asked for
+/// no more than the allowance).
+pub struct LimiterSet {
+    max: usize,
+    per_source: bool,
+    limiters: Mutex<HashMap<String, Arc<Limiter>>>,
+}
+
+impl LimiterSet {
+    pub fn new(max: usize, per_source: bool) -> Self {
+        Self {
+            max,
+            per_source,
+            limiters: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// The limiter requests to `source` go through.
+    pub fn get(&self, source: &str) -> Arc<Limiter> {
+        let key = if self.per_source { source } else { "" };
+        self.limiters
+            .lock()
+            .unwrap()
+            .entry(key.to_string())
+            .or_insert_with(|| Arc::new(Limiter::new(self.max)))
+            .clone()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+
+    #[test]
+    fn sources_share_one_allowance_or_each_have_their_own() {
+        let shared = LimiterSet::new(4, false);
+        assert!(Arc::ptr_eq(&shared.get("a"), &shared.get("b")));
+        let own = LimiterSet::new(4, true);
+        assert!(!Arc::ptr_eq(&own.get("a"), &own.get("b")));
+        assert!(Arc::ptr_eq(&own.get("a"), &own.get("a")));
+        own.get("a").slow_down();
+        assert_eq!(own.get("a").current(), 2);
+        assert_eq!(
+            own.get("b").current(),
+            4,
+            "one source easing off leaves the others alone"
+        );
+    }
 
     #[test]
     fn at_least_one_request_is_always_allowed() {

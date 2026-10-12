@@ -332,6 +332,8 @@ pub struct JobProgress {
     /// When the first chapter began, and how many pages have arrived since.
     pub started: Option<std::time::Instant>,
     pub pages_seen: usize,
+    /// The user pressed cancel; the job is winding down.
+    pub stopping: bool,
 }
 
 impl JobProgress {
@@ -412,6 +414,9 @@ impl JobProgress {
     }
 
     pub fn label(&self) -> String {
+        if self.stopping {
+            return "Stopping…".into();
+        }
         if self.chapter_total == 0 {
             return "Starting…".into();
         }
@@ -970,5 +975,23 @@ mod preset_tests {
             describe_settings(&c),
             "left to right · long strips · fixed margins · black & white · contrast 55"
         );
+    }
+}
+
+#[cfg(test)]
+mod stop_tests {
+    use super::*;
+
+    #[test]
+    fn a_stopping_job_says_so_whatever_it_was_doing() {
+        let mut p = JobProgress::default();
+        p.apply(&JobEvent::ChapterStarted {
+            index: 0,
+            total: 3,
+            name: "Ch 1".into(),
+        });
+        assert_eq!(p.label(), "Chapter 1 of 3");
+        p.stopping = true;
+        assert_eq!(p.label(), "Stopping…");
     }
 }

@@ -715,6 +715,7 @@ fn limits(chapters: usize, pages: usize) -> DownloadLimits {
         chapters,
         pages,
         spread_sources: true,
+        race_sources: false,
     }
 }
 
@@ -949,5 +950,165 @@ async fn chapters_offered_by_two_sources_are_shared_between_them() {
     };
     let out = download_with(&c, &lib, &reqs, off, None).await.unwrap();
     assert!(out.chapters.iter().all(|c| c.source_id == "a"));
+    let _ = fs::remove_dir_all(lib.root);
+}
+
+// ---- Racing every source, and cancelling ------------------------------------
+
+fn racing(chapters: usize, pages: usize) -> DownloadLimits {
+    DownloadLimits {
+        race_sources: true,
+        ..limits(chapters, pages)
+    }
+}
+
+#[tokio::test]
+async fn the_fastest_source_wins_and_the_slow_one_is_stopped_and_cleaned_up() {
+    let lib = library("race-win");
+    let c = FakeCatalog::new();
+    // Source "slow" (chapter 1) answers in 60 ms a page, "quick" (chapter 11) in 2.
+    for id in [1, 11] {
+        add_chapter(&c, id, 8);
+    }
+    c.set_path_latency_ms("/c1/", 60);
+    c.set_path_latency_ms("/c11/", 2);
+    let (tx, mut rx) = unbounded_channel();
+    let out = download_with(
+        &c,
+        &lib,
+        &[request(1.0, &[("slow", 1), ("quick", 11)])],
+        racing(1, 2),
+        Some(tx),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(out.chapters[0].source_id, "quick");
+    assert_eq!(out.chapters[0].pages, 8);
+    assert_eq!(
+        lib.files.page_files(&lib.id, "c1").len(),
+        8,
+        "pages are in the chapter's own folder"
+    );
+    let slow_requests = c
+        .calls()
+        .iter()
+        .filter(|x| x.starts_with("get /c1/"))
+        .count();
+    assert!(
+        slow_requests < 8,
+        "the slow source was stopped early ({slow_requests} requests)"
+    );
+
+    // Only the finished chapter's folder is left behind: no staging folders.
+    let series_dir = lib.files.series_dir(&lib.id);
+    let folders: Vec<_> = fs::read_dir(&series_dir)
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .collect();
+    assert_eq!(folders, ["c1"], "{folders:?}");
+
+    // Losing a race is not held against the slow source.
+    assert!(out.source_use.iter().all(|u| u.ok));
+    // Progress never goes backwards while the sources race.
+    let mut last = 0;
+    while let Ok(e) = rx.try_recv() {
+        if let JobEvent::PageDone { done, .. } = e {
+            assert!(done > last, "{done} after {last}");
+            last = done;
+        }
+    }
+    assert_eq!(last, 8);
+    let _ = fs::remove_dir_all(lib.root);
+}
+
+#[tokio::test]
+async fn a_race_still_succeeds_when_all_but_one_source_fail() {
+    let lib = library("race-fail");
+    let c = FakeCatalog::new();
+    // "bad" lists a page that does not exist; "good" is complete.
+    c.set_pages(10, &["/bad/p0"]);
+    add_chapter(&c, 20, 3);
+    let out = download_with(
+        &c,
+        &lib,
+        &[request(1.0, &[("bad", 10), ("good", 20)])],
+        racing(1, 4),
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(out.chapters[0].source_id, "good");
+    let bad = out
+        .source_use
+        .iter()
+        .find(|u| u.source_id == "bad")
+        .unwrap();
+    assert!(
+        !bad.ok,
+        "a source that really failed is still recorded as failed"
+    );
+    let _ = fs::remove_dir_all(lib.root);
+}
+
+#[tokio::test]
+async fn a_race_where_every_source_fails_skips_the_chapter() {
+    let lib = library("race-none");
+    let c = FakeCatalog::new();
+    c.set_pages(10, &["/a/p0"]);
+    c.set_pages(20, &["/b/p0"]);
+    let r = download_with(
+        &c,
+        &lib,
+        &[request(1.0, &[("a", 10), ("b", 20)])],
+        racing(1, 4),
+        None,
+    )
+    .await;
+    assert!(matches!(r, Err(PipelineError::NothingDownloaded)));
+    assert!(
+        fs::read_dir(lib.files.series_dir(&lib.id))
+            .map(|d| d.count())
+            .unwrap_or(0)
+            == 0
+            || lib.files.page_files(&lib.id, "c1").is_empty()
+    );
+    let _ = fs::remove_dir_all(lib.root);
+}
+
+#[tokio::test]
+async fn cancelling_stops_at_once_even_with_requests_in_flight() {
+    let lib = library("cancel-fast");
+    let c = FakeCatalog::new();
+    c.set_latency_ms(1500); // every page takes 1.5 s
+    add_chapter(&c, 1, 6);
+    let cancel = CancelFlag::new();
+    let stopper = cancel.clone();
+    let policy = quick();
+    let reqs = [request(1.0, &[("s", 1)])];
+    let run = download_chapters(
+        &c,
+        &lib.files,
+        &lib.id,
+        &reqs,
+        false,
+        limits(1, 6),
+        &policy,
+        None,
+        &cancel,
+    );
+    let started = std::time::Instant::now();
+    let press = async move {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        stopper.cancel();
+    };
+    let (result, ()) = tokio::join!(run, press);
+    assert!(matches!(result, Err(PipelineError::Cancelled)));
+    assert!(
+        started.elapsed() < std::time::Duration::from_millis(600),
+        "took {:?}",
+        started.elapsed()
+    );
     let _ = fs::remove_dir_all(lib.root);
 }

@@ -46,6 +46,8 @@ struct State {
     calls: Vec<String>,
     /// How long each `get_bytes` takes.
     latency_ms: u64,
+    /// Extra time for paths starting with a prefix.
+    path_latency: Vec<(String, u64)>,
     in_flight: usize,
     max_in_flight: usize,
 }
@@ -133,6 +135,15 @@ impl FakeCatalog {
     /// Make every `get_bytes` take this long, so tests can overlap requests.
     pub fn set_latency_ms(&self, ms: u64) {
         self.state.lock().unwrap().latency_ms = ms;
+    }
+
+    /// Make `get_bytes` of paths starting with `prefix` take this much longer.
+    pub fn set_path_latency_ms(&self, prefix: &str, ms: u64) {
+        self.state
+            .lock()
+            .unwrap()
+            .path_latency
+            .push((prefix.to_string(), ms));
     }
 
     /// The most `get_bytes` calls that were ever running at the same moment.
@@ -285,6 +296,11 @@ impl Catalog for FakeCatalog {
             s.in_flight += 1;
             s.max_in_flight = s.max_in_flight.max(s.in_flight);
             s.latency_ms
+                + s.path_latency
+                    .iter()
+                    .filter(|(prefix, _)| path.starts_with(prefix.as_str()))
+                    .map(|(_, ms)| *ms)
+                    .sum::<u64>()
         };
         if latency > 0 {
             tokio::time::sleep(std::time::Duration::from_millis(latency)).await;

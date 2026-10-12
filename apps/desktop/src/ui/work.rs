@@ -359,6 +359,19 @@ pub fn start_download(state: AppState) {
     });
 }
 
+/// Stop the running download or export. The screen says so at once; the job
+/// itself ends as soon as the pages already on their way are dropped.
+pub fn cancel_job(state: AppState) {
+    let mut job = state.job;
+    let mut guard = job.write();
+    if let Some(view) = guard.as_mut() {
+        if view.result.is_none() {
+            view.cancel.cancel();
+            view.progress.stopping = true;
+        }
+    }
+}
+
 // ---- Previewing ------------------------------------------------------------
 
 fn data_url(image: &PreviewImage) -> String {
