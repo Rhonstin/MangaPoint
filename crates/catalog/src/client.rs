@@ -69,6 +69,8 @@ pub struct BrowsePage {
     pub has_next_page: bool,
 }
 
+const MANGA_FIELDS: &str = "id title description author artist genre status thumbnailUrl";
+
 /// What a source says about a series itself.
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -367,9 +369,6 @@ impl SuwayomiClient {
     /// The series a chapter belongs to, with its description, author, genres,
     /// status and cover. Works for any chapter the server has seen, so it can
     /// describe a series downloaded long ago.
-    ///
-    /// A server only knows a series' title and cover from a search; the rest
-    /// is read from the source on request, so if it is missing this asks.
     pub async fn manga_of_chapter(&self, chapter_id: i64) -> Result<MangaDetails> {
         #[derive(Deserialize)]
         struct Inner {
@@ -379,9 +378,26 @@ impl SuwayomiClient {
         struct R {
             chapter: Inner,
         }
-        const FIELDS: &str = "id title description author artist genre status thumbnailUrl";
-        let q = format!("{{ chapter(id:{chapter_id}) {{ manga {{ {FIELDS} }} }} }}");
+        let q = format!("{{ chapter(id:{chapter_id}) {{ manga {{ {MANGA_FIELDS} }} }} }}");
         let known: MangaDetails = self.graphql::<R>(&q).await?.chapter.manga;
+        self.fill_in_details(known).await
+    }
+
+    /// A series by its id on the server, with its details; for a series that
+    /// was saved without downloading anything.
+    pub async fn manga_details(&self, manga_id: i64) -> Result<MangaDetails> {
+        #[derive(Deserialize)]
+        struct R {
+            manga: MangaDetails,
+        }
+        let q = format!("{{ manga(id:{manga_id}) {{ {MANGA_FIELDS} }} }}");
+        let known: MangaDetails = self.graphql::<R>(&q).await?.manga;
+        self.fill_in_details(known).await
+    }
+
+    /// A server only knows a series' title and cover from a search; the rest
+    /// is read from the source on request, so if it is missing this asks.
+    async fn fill_in_details(&self, known: MangaDetails) -> Result<MangaDetails> {
         let missing = known.description.as_deref().is_none_or(str::is_empty)
             && known.author.is_none()
             && known.genre.is_empty();
@@ -398,7 +414,7 @@ impl SuwayomiClient {
             fetch_manga: Fetched,
         }
         let q = format!(
-            "mutation {{ fetchManga(input:{{id:{}}}) {{ manga {{ {FIELDS} }} }} }}",
+            "mutation {{ fetchManga(input:{{id:{}}}) {{ manga {{ {MANGA_FIELDS} }} }} }}",
             known.id
         );
         // If the source cannot be reached, what was already known is still useful.

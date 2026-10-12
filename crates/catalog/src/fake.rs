@@ -41,6 +41,8 @@ struct State {
     pages: HashMap<i64, Vec<String>>,
     /// chapter id -> details of its series
     details: HashMap<i64, MangaDetails>,
+    /// manga id -> its details
+    manga_details: HashMap<i64, MangaDetails>,
     bytes: HashMap<String, Vec<u8>>,
     faults: HashMap<String, Fault>,
     /// Fail the first N calls to each path in `get_bytes`.
@@ -123,6 +125,14 @@ impl FakeCatalog {
             .unwrap()
             .details
             .insert(chapter_id, details);
+    }
+
+    pub fn set_manga_details(&self, manga_id: i64, details: MangaDetails) {
+        self.state
+            .lock()
+            .unwrap()
+            .manga_details
+            .insert(manga_id, details);
     }
 
     pub fn set_bytes(&self, path: &str, data: Vec<u8>) {
@@ -296,6 +306,17 @@ impl Catalog for FakeCatalog {
             .get(&chapter_id)
             .cloned()
             .ok_or_else(|| CatalogError::BadResponse("no such chapter".into()))
+    }
+
+    async fn manga_details(&self, manga_id: i64) -> Result<MangaDetails> {
+        self.record(format!("manga {manga_id}"));
+        self.state
+            .lock()
+            .unwrap()
+            .manga_details
+            .get(&manga_id)
+            .cloned()
+            .ok_or_else(|| CatalogError::BadResponse("no such series".into()))
     }
 
     async fn chapter_pages(&self, chapter_id: i64) -> Result<Vec<String>> {

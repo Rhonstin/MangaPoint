@@ -21,6 +21,8 @@ pub trait Catalog: Send + Sync {
     async fn fetch_chapters(&self, manga_id: i64) -> Result<Vec<Chapter>>;
     /// The series a chapter belongs to, with its description and cover.
     async fn manga_of_chapter(&self, chapter_id: i64) -> Result<MangaDetails>;
+    /// A series by its id, with its description and cover.
+    async fn manga_details(&self, manga_id: i64) -> Result<MangaDetails>;
     /// Paths of the page images of a chapter, usable with [`Catalog::get_bytes`].
     async fn chapter_pages(&self, chapter_id: i64) -> Result<Vec<String>>;
     /// Fetch a page image or cover by the path the catalog gave out.
@@ -52,6 +54,9 @@ impl Catalog for SuwayomiClient {
     }
     async fn manga_of_chapter(&self, chapter_id: i64) -> Result<MangaDetails> {
         SuwayomiClient::manga_of_chapter(self, chapter_id).await
+    }
+    async fn manga_details(&self, manga_id: i64) -> Result<MangaDetails> {
+        SuwayomiClient::manga_details(self, manga_id).await
     }
     async fn chapter_pages(&self, chapter_id: i64) -> Result<Vec<String>> {
         SuwayomiClient::chapter_pages(self, chapter_id).await

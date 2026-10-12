@@ -78,6 +78,20 @@ pub struct DownloadedChapter {
     pub downloaded_at: u64,
 }
 
+/// A source's copy of a series, saved with it so the series can be opened and
+/// its chapters listed later without searching again.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SavedSource {
+    pub source_id: String,
+    pub source_name: String,
+    pub lang: String,
+    /// The series' id on the catalog server for this source.
+    pub manga_id: i64,
+    /// Where the cover is on the server, if it said.
+    pub thumbnail: Option<String>,
+}
+
 /// What the sources say about a series, saved so the Library can describe it
 /// long after the search that found it.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -134,6 +148,11 @@ pub struct DownloadedSeries {
     pub preset_id: Option<String>,
     /// Description, author, genres and so on, once they have been fetched.
     pub info: Option<SeriesInfo>,
+    /// Where to find the series again: the sources that carry it. A series can
+    /// be in the library with these and no downloaded chapters.
+    pub sources: Vec<SavedSource>,
+    /// When it was added to the library (seconds since the Unix epoch).
+    pub added_at: u64,
     pub updated_at: u64,
 }
 
@@ -183,6 +202,8 @@ impl LibraryDb {
                     settings: defaults.clone(),
                     preset_id: None,
                     info: None,
+                    sources: Vec::new(),
+                    added_at: now,
                     updated_at: now,
                 });
                 self.series.len() - 1
@@ -202,17 +223,49 @@ impl LibraryDb {
     }
 
     /// Forget one chapter; the series goes too when its last chapter does.
+    /// Forget one downloaded chapter. The series stays in the library even
+    /// when its last chapter goes; only [`LibraryDb::remove_series`] takes it out.
     pub fn remove_chapter(&mut self, series_id: &str, key: &str) -> bool {
-        let Some(i) = self.series.iter().position(|s| s.id == series_id) else {
+        let Some(s) = self.series.iter_mut().find(|s| s.id == series_id) else {
             return false;
         };
-        let before = self.series[i].chapters.len();
-        self.series[i].chapters.retain(|c| c.key != key);
-        let removed = self.series[i].chapters.len() != before;
-        if self.series[i].chapters.is_empty() {
-            self.series.remove(i);
+        let before = s.chapters.len();
+        s.chapters.retain(|c| c.key != key);
+        s.chapters.len() != before
+    }
+
+    /// Put a series in the library without downloading anything. If it is
+    /// already there its sources are brought up to date. Returns its id.
+    pub fn add_saved(
+        &mut self,
+        title: &str,
+        sources: Vec<SavedSource>,
+        defaults: &ConversionSettings,
+        now: u64,
+    ) -> String {
+        let id = series_id(title);
+        match self.series.iter_mut().find(|s| s.id == id) {
+            Some(existing) => merge_sources(&mut existing.sources, sources),
+            None => self.series.push(DownloadedSeries {
+                id: id.clone(),
+                title: title.to_string(),
+                chapters: Vec::new(),
+                settings: defaults.clone(),
+                preset_id: None,
+                info: None,
+                sources,
+                added_at: now,
+                updated_at: now,
+            }),
         }
-        removed
+        id
+    }
+
+    /// Note more sources a series can be found at.
+    pub fn add_sources(&mut self, series_id: &str, sources: Vec<SavedSource>) {
+        if let Some(s) = self.series.iter_mut().find(|s| s.id == series_id) {
+            merge_sources(&mut s.sources, sources);
+        }
     }
 
     pub fn remove_series(&mut self, series_id: &str) -> Option<DownloadedSeries> {
@@ -265,6 +318,24 @@ impl LibraryDb {
 #[derive(Clone, Debug)]
 pub struct LibraryFiles {
     root: PathBuf,
+}
+
+/// Add the sources that are new (same source and series id counts as known).
+fn merge_sources(known: &mut Vec<SavedSource>, more: Vec<SavedSource>) {
+    for source in more {
+        match known
+            .iter_mut()
+            .find(|k| k.source_id == source.source_id && k.manga_id == source.manga_id)
+        {
+            // Keep what was there but fill in a cover path that was missing.
+            Some(k) => {
+                if k.thumbnail.is_none() {
+                    k.thumbnail = source.thumbnail;
+                }
+            }
+            None => known.push(source),
+        }
+    }
 }
 
 /// Make a value safe to use as one folder or file name, whatever the index
@@ -516,17 +587,81 @@ mod tests {
     }
 
     #[test]
-    fn removing_the_last_chapter_removes_the_series() {
+    fn removing_the_last_chapter_keeps_the_series_in_the_library() {
         let mut db = LibraryDb::default();
         let d = ConversionSettings::default();
         let id = db.record_chapter("X", &d, chapter(Some(1.0), 1, "a"), 1);
         db.record_chapter("X", &d, chapter(Some(2.0), 2, "b"), 1);
         assert!(db.remove_chapter(&id, "c1"));
         assert!(!db.remove_chapter(&id, "c1"), "already gone");
-        assert!(db.find(&id).is_some());
         assert!(db.remove_chapter(&id, "c2"));
-        assert!(db.find(&id).is_none());
+        let series = db.find(&id).expect("the series is still in the library");
+        assert!(series.chapters.is_empty());
         assert_eq!(db.total_bytes(), 0);
+        // Only an explicit removal takes it out.
+        assert!(db.remove_series(&id).is_some());
+        assert!(db.find(&id).is_none());
+    }
+
+    fn source(id: &str, manga: i64) -> SavedSource {
+        SavedSource {
+            source_id: id.into(),
+            source_name: format!("Source {id}"),
+            lang: "en".into(),
+            manga_id: manga,
+            thumbnail: None,
+        }
+    }
+
+    #[test]
+    fn a_series_can_be_saved_without_downloading_anything() {
+        let mut db = LibraryDb::default();
+        let d = ConversionSettings::default();
+        let id = db.add_saved("Berserk", vec![source("a", 1), source("b", 2)], &d, 50);
+        let series = db.find(&id).unwrap();
+        assert!(series.chapters.is_empty());
+        assert_eq!(series.sources.len(), 2);
+        assert_eq!(series.added_at, 50);
+        assert_eq!(db.total_bytes(), 0);
+
+        // Saving it again does not duplicate it, and learns of new sources.
+        let again = db.add_saved("berserk", vec![source("a", 1), source("c", 3)], &d, 99);
+        assert_eq!(again, id);
+        assert_eq!(db.series.len(), 1);
+        let series = db.find(&id).unwrap();
+        assert_eq!(series.sources.len(), 3, "a, b and the new c");
+        assert_eq!(series.added_at, 50, "the original date is kept");
+
+        // Downloading a chapter later puts it on the same series.
+        let same = db.record_chapter("Berserk", &d, chapter(Some(1.0), 1, "One"), 120);
+        assert_eq!(same, id);
+        assert_eq!(db.find(&id).unwrap().chapters.len(), 1);
+        assert_eq!(
+            db.find(&id).unwrap().sources.len(),
+            3,
+            "its sources are kept"
+        );
+    }
+
+    #[test]
+    fn a_known_source_only_fills_in_a_missing_cover_path() {
+        let mut db = LibraryDb::default();
+        let d = ConversionSettings::default();
+        let id = db.add_saved("X", vec![source("a", 1)], &d, 1);
+        let mut with_cover = source("a", 1);
+        with_cover.thumbnail = Some("/cover".into());
+        db.add_sources(&id, vec![with_cover]);
+        let s = db.find(&id).unwrap();
+        assert_eq!(s.sources.len(), 1);
+        assert_eq!(s.sources[0].thumbnail.as_deref(), Some("/cover"));
+        // A later, different path does not replace the first.
+        let mut other = source("a", 1);
+        other.thumbnail = Some("/other".into());
+        db.add_sources(&id, vec![other]);
+        assert_eq!(
+            db.find(&id).unwrap().sources[0].thumbnail.as_deref(),
+            Some("/cover")
+        );
     }
 
     #[test]
