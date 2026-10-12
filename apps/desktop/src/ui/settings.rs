@@ -125,24 +125,15 @@ pub fn SettingsPage() -> Element {
             p { class: "muted small", style: "margin: 8px 0 0",
                 {match s.download.speed {
                     DownloadSpeed::Gentle => "Slow and careful. Best for sources that block easily.",
-                    DownloadSpeed::Normal => "A good balance of speed and care. Recommended.",
+                    DownloadSpeed::Normal => "A good balance of speed and care.",
                     DownloadSpeed::Fast => "Quick. Some sources may start refusing requests.",
-                    DownloadSpeed::Ultra => "As fast as possible: every source that has a chapter is asked at the same time, and whichever finishes first is kept. It sends the most requests, so sources are more likely to slow you down or block you.",
+                    DownloadSpeed::Ultra => "The fastest: many chapters and pages at once. Every chapter comes from the same source, so the translation stays consistent. Recommended.",
                     DownloadSpeed::Custom => "Choose the numbers yourself.",
                 }}
-                if limits.race_sources { " Right now: {limits.chapters} chapter(s) at a time, {limits.pages} pages at once from each source." } else { " Right now: {limits.chapters} chapter(s) at a time, {limits.pages} pages at once." }
-            }
-            if s.download.speed != DownloadSpeed::Ultra {
-            label { class: "check-line", style: "margin-top: 12px",
-                input {
-                    r#type: "checkbox", checked: s.download.spread_sources,
-                    onchange: move |e| update(|s, v| s.download.spread_sources = v == "true", e.checked().to_string()),
-                }
-                span { "Use several sources at once" }
+                " Right now: {limits.chapters} chapter(s) at a time, {limits.pages} pages in flight."
             }
             p { class: "muted small", style: "margin: 4px 0 0",
-                "When a chapter is offered by more than one source, different chapters download from different sources at the same time. Some sources limit their own speed (MangaFire hands out about 2 pages a second however you ask), so this adds the speeds together."
-            }
+                "If a source starts refusing requests, MangaPoint slows down by itself and speeds up again after a while. Some sources cap their own speed (MangaFire gives about 2 pages a second however you ask)."
             }
             if s.download.speed == DownloadSpeed::Custom {
                 div { class: "field",
@@ -154,16 +145,40 @@ pub fn SettingsPage() -> Element {
                     span { class: "hint muted small", "1 to {DownloadLimits::MAX_CHAPTERS}" }
                 }
                 div { class: "field",
-                    label { "Pages at once" }
+                    label { "Pages in flight" }
                     input {
                         r#type: "number", min: "1", max: "{DownloadLimits::MAX_PAGES}", value: "{s.download.custom_pages}",
                         oninput: move |e| update(|s, v| s.download.custom_pages = v.trim().parse().unwrap_or(1), e.value()),
                     }
-                    span { class: "hint muted small", "1 to {DownloadLimits::MAX_PAGES}, shared by all the chapters downloading together." }
+                    span { class: "hint muted small", "1 to {DownloadLimits::MAX_PAGES}, shared by all the chapters downloading together. In the tests, going past about 50 made no difference." }
                 }
                 div { class: "banner warn small",
                     Icon { name: "triangle-alert", size: 16 }
-                    "High numbers can get you blocked. If a source starts refusing requests, MangaPoint slows down by itself and speeds up again after a while."
+                    "High numbers can get you blocked."
+                }
+                h3 { class: "group", style: "margin: 14px 0 4px; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted)", "Mixing sources" }
+                p { class: "muted small", style: "margin: 0 0 6px",
+                    "Both options below can put chapters of one series from different sources, and so from different translations. Leave them off if you want a consistent series."
+                }
+                label { class: "check-line",
+                    input {
+                        r#type: "checkbox", checked: s.download.spread_sources,
+                        onchange: move |e| update(|s, v| s.download.spread_sources = v == "true", e.checked().to_string()),
+                    }
+                    span { "Share chapters between sources" }
+                }
+                p { class: "muted small", style: "margin: 2px 0 8px",
+                    "When several sources offer a chapter, different chapters download from different sources at once, which adds their speeds together."
+                }
+                label { class: "check-line",
+                    input {
+                        r#type: "checkbox", checked: s.download.race_sources,
+                        onchange: move |e| update(|s, v| s.download.race_sources = v == "true", e.checked().to_string()),
+                    }
+                    span { "Race every source" }
+                }
+                p { class: "muted small", style: "margin: 2px 0 0",
+                    "Asks every source that has a chapter at the same time and keeps whichever finishes first. Fastest per chapter, but wastes downloads and sends the most requests."
                 }
             }
         }

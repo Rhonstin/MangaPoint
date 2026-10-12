@@ -60,7 +60,8 @@ pub enum DownloadSpeed {
     #[default]
     Normal,
     Fast,
-    /// Every source that has a chapter is asked at once; the first to finish wins.
+    /// The most chapters and pages at once, all from the one best source, so
+    /// every chapter stays from the same translation.
     Ultra,
     /// The user's own numbers.
     Custom,
@@ -82,8 +83,8 @@ pub struct DownloadLimits {
 }
 
 impl DownloadLimits {
-    pub const MAX_CHAPTERS: u8 = 4;
-    pub const MAX_PAGES: u8 = 16;
+    pub const MAX_CHAPTERS: u8 = 10;
+    pub const MAX_PAGES: u8 = 100;
 }
 
 impl Default for DownloadLimits {
@@ -99,33 +100,42 @@ pub struct DownloadSettings {
     /// Used when `speed` is Custom.
     pub custom_chapters: u8,
     pub custom_pages: u8,
-    /// Download different chapters from different sources at the same time
-    /// when several offer them. Some sources cap their own speed, so this
-    /// adds the sources' speeds together.
+    /// Advanced only: download different chapters from different sources at
+    /// the same time. Adds the sources' speeds together, but chapters can then
+    /// come from different translations.
     pub spread_sources: bool,
+    /// Advanced only: ask every source that has a chapter at once and keep the
+    /// first to finish. Fastest per chapter, and chapters can then come from
+    /// different translations.
+    pub race_sources: bool,
 }
 
 impl Default for DownloadSettings {
     fn default() -> Self {
         Self {
-            speed: DownloadSpeed::Normal,
-            custom_chapters: 2,
-            custom_pages: 6,
-            spread_sources: true,
+            speed: DownloadSpeed::Ultra,
+            custom_chapters: 4,
+            custom_pages: 24,
+            spread_sources: false,
+            race_sources: false,
         }
     }
 }
 
 impl DownloadSettings {
-    /// The numbers behind the choice. The three named speeds were picked from
-    /// measuring real sources: gains level off around 8 to 12 requests at
-    /// once, and some sources gain nothing at all.
+    /// The numbers behind the choice, from measuring real sources: gains
+    /// level off at about 50 requests in flight, some sources gain nothing at
+    /// all (they cap themselves), and none pushed back even at 200.
+    ///
+    /// Mixing sources is only ever done in Advanced, because it can mix
+    /// translations within one series.
     pub fn limits(&self) -> DownloadLimits {
+        let custom = self.speed == DownloadSpeed::Custom;
         let (chapters, pages) = match self.speed {
             DownloadSpeed::Gentle => (1, 2),
             DownloadSpeed::Normal => (2, 6),
-            DownloadSpeed::Fast => (3, 12),
-            DownloadSpeed::Ultra => (3, 8),
+            DownloadSpeed::Fast => (4, 24),
+            DownloadSpeed::Ultra => (8, 48),
             DownloadSpeed::Custom => (
                 self.custom_chapters.clamp(1, DownloadLimits::MAX_CHAPTERS) as usize,
                 self.custom_pages.clamp(1, DownloadLimits::MAX_PAGES) as usize,
@@ -134,8 +144,8 @@ impl DownloadSettings {
         DownloadLimits {
             chapters,
             pages,
-            spread_sources: self.spread_sources,
-            race_sources: self.speed == DownloadSpeed::Ultra,
+            spread_sources: custom && self.spread_sources,
+            race_sources: custom && self.race_sources,
         }
     }
 }
@@ -221,31 +231,58 @@ mod tests {
 
     #[test]
     fn download_speeds_map_to_limits_and_custom_numbers_are_held_in_range() {
-        let both = |chapters, pages| DownloadLimits {
+        let plain = |chapters, pages| DownloadLimits {
             chapters,
             pages,
-            spread_sources: true,
+            spread_sources: false,
             race_sources: false,
         };
         let mut d = DownloadSettings::default();
-        assert_eq!(d.limits(), both(2, 6));
+        assert_eq!(
+            d.speed,
+            DownloadSpeed::Ultra,
+            "the fastest mode is the default"
+        );
+        assert_eq!(d.limits(), plain(8, 48));
         d.speed = DownloadSpeed::Gentle;
-        assert_eq!(d.limits(), both(1, 2));
+        assert_eq!(d.limits(), plain(1, 2));
+        d.speed = DownloadSpeed::Normal;
+        assert_eq!(d.limits(), plain(2, 6));
         d.speed = DownloadSpeed::Fast;
-        assert_eq!(d.limits(), both(3, 12));
-        d.speed = DownloadSpeed::Ultra;
-        assert!(d.limits().race_sources);
-        assert_eq!((d.limits().chapters, d.limits().pages), (3, 8));
+        assert_eq!(d.limits(), plain(4, 24));
         d.speed = DownloadSpeed::Custom;
-        assert!(!d.limits().race_sources);
         d.custom_chapters = 0;
-        d.custom_pages = 200;
-        assert_eq!(d.limits(), both(1, 16));
-        d.custom_chapters = 9;
+        d.custom_pages = 250;
+        assert_eq!(d.limits(), plain(1, 100));
+        d.custom_chapters = 99;
         d.custom_pages = 0;
-        assert_eq!(d.limits(), both(4, 1));
+        assert_eq!(d.limits(), plain(10, 1));
+    }
+
+    #[test]
+    fn mixing_sources_only_ever_happens_in_advanced() {
+        let mut d = DownloadSettings {
+            spread_sources: true,
+            race_sources: true,
+            ..Default::default()
+        };
+        for speed in [
+            DownloadSpeed::Gentle,
+            DownloadSpeed::Normal,
+            DownloadSpeed::Fast,
+            DownloadSpeed::Ultra,
+        ] {
+            d.speed = speed;
+            let l = d.limits();
+            assert!(!l.spread_sources && !l.race_sources, "{speed:?}");
+        }
+        d.speed = DownloadSpeed::Custom;
+        let l = d.limits();
+        assert!(l.spread_sources && l.race_sources);
         d.spread_sources = false;
-        assert!(!d.limits().spread_sources);
+        d.race_sources = false;
+        let l = d.limits();
+        assert!(!l.spread_sources && !l.race_sources);
     }
 
     #[test]
