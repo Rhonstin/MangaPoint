@@ -3,9 +3,10 @@
 use crate::logic::{self, SortKey};
 use crate::state::{AppState, ChaptersState, Page, SeriesTab};
 use crate::ui::search::run_search;
-use crate::ui::widgets::{EmptyState, Icon};
+use crate::ui::widgets::{Chip, EmptyState, Icon};
 use crate::ui::work::{downloaded_keys, merged_key, start_download};
 use dioxus::prelude::*;
+use pipeline::SourceChoice;
 use search::missing_numbers;
 use std::collections::HashSet;
 
@@ -86,6 +87,60 @@ pub fn ChaptersTab() -> Element {
         })
         .count();
     let to_download = picked - already;
+    // Which sources can supply the chapters still to download, and how many each.
+    let mut per_source: Vec<(String, String, usize)> = Vec::new();
+    for &i in selected_now.iter() {
+        let Some(ch) = loaded.merged.get(i) else {
+            continue;
+        };
+        if have.contains(&merged_key(ch)) {
+            continue;
+        }
+        let mut seen: Vec<&str> = Vec::new();
+        for option in &ch.options {
+            let Some(id) = loaded.member_sources.get(option.member) else {
+                continue;
+            };
+            if seen.contains(&id.as_str()) {
+                continue;
+            }
+            seen.push(id);
+            match per_source.iter_mut().find(|(source, _, _)| source == id) {
+                Some((_, _, n)) => *n += 1,
+                None => {
+                    let name = loaded
+                        .member_names
+                        .get(option.member)
+                        .cloned()
+                        .unwrap_or_else(|| id.clone());
+                    per_source.push((id.clone(), name, 1));
+                }
+            }
+        }
+    }
+    per_source.sort_by(|a, b| b.2.cmp(&a.2).then(a.1.cmp(&b.1)));
+    let choice_id = match &*state.download_source.read() {
+        SourceChoice::Only(id) if per_source.iter().any(|(source, _, _)| source == id) => {
+            id.clone()
+        }
+        _ => "adaptive".to_string(),
+    };
+    let not_offered = per_source
+        .iter()
+        .find(|(source, _, _)| *source == choice_id)
+        .map_or(0, |(_, _, n)| to_download - n);
+    let source_options: Vec<(String, String)> = {
+        let speeds = state.speeds.read();
+        per_source
+            .iter()
+            .map(|(id, name, n)| {
+                let speed = speeds
+                    .speed(id)
+                    .map_or(String::new(), |v| format!(" · about {v:.0} pages/s"));
+                (id.clone(), format!("{name} · {n} of {to_download}{speed}"))
+            })
+            .collect()
+    };
     let all_visible_picked = !order.is_empty() && order.iter().all(|i| selected_now.contains(i));
     let current_sort = (sort_key, sort_desc);
     let order_for_header = order.clone();
@@ -236,23 +291,44 @@ pub fn ChaptersTab() -> Element {
             if !missing.is_empty() { " Not available from any source: {missing_text}." }
         }
 
-        div { class: "action-bar",
-            div { class: "grow",
-                strong { "{picked} selected" }
-                if already > 0 { span { class: "muted", " · {already} already downloaded" } }
-            }
-            if picked == 0 {
-                span { class: "muted small", "Tick the chapters you want to read." }
-            } else if to_download == 0 {
-                button { class: "btn primary", onclick: move |_| {
-                    state.open_tab(SeriesTab::Preview);
-                    crate::ui::work::prepare_preview(state);
-                },
-                    Icon { name: "eye", size: 16 } "Preview them"
+        if picked > 0 {
+            div { class: "action-bar",
+                div { class: "bar-count",
+                    strong { "{picked} selected" }
+                    if already > 0 { span { class: "muted small", "{already} already downloaded" } }
                 }
-            } else {
-                button { class: "btn primary", onclick: move |_| start_download(state),
-                    Icon { name: "download", size: 16 } "Download {to_download} chapter(s)"
+                if per_source.len() >= 2 && to_download > 0 {
+                    div { class: "bar-source",
+                        title: "Adaptive uses the source with the most of your chapters, tests which is fastest, and fills any gaps from the others. Pick one source to use only that one.",
+                        Icon { name: "layers", size: 15 }
+                        select {
+                            value: "{choice_id}",
+                            onchange: move |e| {
+                                let mut source = state.download_source;
+                                let value = e.value();
+                                source.set(if value == "adaptive" { SourceChoice::Adaptive } else { SourceChoice::Only(value) });
+                            },
+                            option { value: "adaptive", selected: choice_id == "adaptive", "Adaptive (recommended)" }
+                            for (id, label) in source_options.iter() {
+                                option { key: "{id}", value: "{id}", selected: *id == choice_id, "{label}" }
+                            }
+                        }
+                    }
+                }
+                if not_offered > 0 {
+                    Chip { text: format!("{not_offered} not offered"), kind: Some("warn".to_string()) }
+                }
+                if to_download == 0 {
+                    button { class: "btn primary", onclick: move |_| {
+                        state.open_tab(SeriesTab::Preview);
+                        crate::ui::work::prepare_preview(state);
+                    },
+                        Icon { name: "eye", size: 16 } "Preview them"
+                    }
+                } else {
+                    button { class: "btn primary", onclick: move |_| start_download(state),
+                        Icon { name: "download", size: 16 } "Download {to_download - not_offered}"
+                    }
                 }
             }
         }

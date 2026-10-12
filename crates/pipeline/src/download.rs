@@ -20,6 +20,7 @@ use converter::decode::{image_dimensions, shrink_for_storage, STORAGE_MAX_HEIGHT
 use futures_util::stream::{self, FuturesUnordered, StreamExt};
 use library::{chapter_key, DownloadLimits, DownloadedChapter, LibraryFiles};
 use std::fs;
+use std::future::Future;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -125,7 +126,11 @@ pub async fn download_chapters<C: Catalog>(
     let pages_at_once = limits.pages.max(1);
     // When every source is asked at once, each gets its own allowance;
     // otherwise one allowance is shared by everything.
-    let limiters = LimiterSet::new(pages_at_once, limits.race_sources);
+    // Unless sources are being mixed on purpose, each source works through
+    // its own chapters with its own allowance, so a slow source can only slow
+    // itself and never hold up a fast one.
+    let grouped = !limits.race_sources && !limits.spread_sources;
+    let limiters = LimiterSet::new(pages_at_once, grouped || limits.race_sources);
     let balancer = Balancer::new(limits.spread_sources && !limits.race_sources);
     let cx = Context {
         catalog,
@@ -145,12 +150,8 @@ pub async fn download_chapters<C: Catalog>(
     let total = requests.len();
     let cx = &cx;
 
-    let work = stream::iter(requests.iter().enumerate())
-        .map(|(index, request)| async move {
-            (index, download_request(cx, index, total, request).await)
-        })
-        .buffer_unordered(limits.chapters.max(1))
-        .collect::<Vec<_>>();
+    let chapters_at_once = limits.chapters.max(1);
+    let work = run_chapters(cx, requests, total, chapters_at_once, grouped);
     // Dropping the work on cancel stops every request in flight right away.
     let mut results = tokio::select! {
         done = work => done,
@@ -169,6 +170,46 @@ pub async fn download_chapters<C: Catalog>(
         return Err(PipelineError::NothingDownloaded);
     }
     Ok(outcome)
+}
+
+/// Work through the chapters. Grouped, every source has its own line of
+/// chapters (those it is the first choice for), `chapters_at_once` at a
+/// time, and the lines run side by side. Otherwise there is one line.
+fn run_chapters<'a, C: Catalog>(
+    cx: &'a Context<'a, C>,
+    requests: &'a [ChapterRequest],
+    total: usize,
+    chapters_at_once: usize,
+    grouped: bool,
+) -> impl Future<Output = Vec<(usize, Result<ChapterResult>)>> + 'a {
+    let mut lines: Vec<Vec<(usize, &'a ChapterRequest)>> = Vec::new();
+    if grouped {
+        let mut sources: Vec<&str> = Vec::new();
+        for (index, request) in requests.iter().enumerate() {
+            let source = request.options.first().map_or("", |o| o.source_id.as_str());
+            match sources.iter().position(|s| *s == source) {
+                Some(line) => lines[line].push((index, request)),
+                None => {
+                    sources.push(source);
+                    lines.push(vec![(index, request)]);
+                }
+            }
+        }
+    } else {
+        lines.push(requests.iter().enumerate().collect());
+    }
+    let streams = lines
+        .into_iter()
+        .map(|line| {
+            stream::iter(line)
+                .map(move |(index, request)| async move {
+                    (index, download_request(cx, index, total, request).await)
+                })
+                .buffer_unordered(chapters_at_once)
+                .boxed_local()
+        })
+        .collect::<Vec<_>>();
+    stream::select_all(streams).collect::<Vec<_>>()
 }
 
 /// One requested chapter: get it from a source, trying others if it fails.
@@ -192,10 +233,12 @@ async fn download_request<C: Catalog>(
         },
     );
     // Named after the first (best) source, whichever one ends up supplying it.
-    let key = chapter_key(
-        request.number,
-        request.options.first().map_or(0, |o| o.chapter_id),
-    );
+    let key = request.key.clone().unwrap_or_else(|| {
+        chapter_key(
+            request.number,
+            request.options.first().map_or(0, |o| o.chapter_id),
+        )
+    });
 
     let (saved, source_use, last_reason) = if cx.race && request.options.len() > 1 {
         race_sources(cx, &key, &request.options, index).await?

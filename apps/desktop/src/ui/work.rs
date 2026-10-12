@@ -16,7 +16,7 @@ use futures_util::stream::{self, StreamExt};
 use library::{chapter_key, ExportRecord, ExportedFileRecord};
 use pipeline::{
     download_chapters, export_series, requests_from_merged, CancelFlag, ExportJob, ExportTarget,
-    Grouping, JobEvent, PipelineError, PreviewImage, RetryPolicy,
+    Grouping, JobEvent, PipelineError, PreviewImage, RetryPolicy, SourceChoice,
 };
 use search::{merge_chapters, RankedSeries, ScoredMember};
 use std::collections::{HashMap, HashSet};
@@ -43,6 +43,8 @@ fn reset_workspace_state(state: AppState) {
         ..Default::default()
     });
     opts.set(ExportOpts::default());
+    let mut source = state.download_source;
+    source.set(SourceChoice::Adaptive);
 }
 
 /// Open a search result: show its chapters and fetch their lists.
@@ -214,6 +216,31 @@ pub fn start_download(state: AppState) {
         ));
         plan.push(key);
     }
+    // A single chosen source: leave out what it does not have, and say so.
+    let choice = state.download_source.peek().clone();
+    let source_names: HashMap<String, String> = loaded
+        .member_sources
+        .iter()
+        .cloned()
+        .zip(loaded.member_names.iter().cloned())
+        .collect();
+    let mut not_offered: Vec<(String, String)> = Vec::new();
+    if let SourceChoice::Only(source) = &choice {
+        let names: Vec<String> = requests.iter().map(|r| r.name.clone()).collect();
+        let chosen = pipeline::apply_choice(std::mem::take(&mut requests), &choice, &[]);
+        for &i in &chosen.unavailable {
+            not_offered.push((plan[i].clone(), names[i].clone()));
+        }
+        plan = chosen.kept.iter().map(|&i| plan[i].clone()).collect();
+        requests = chosen.requests;
+        if requests.is_empty() {
+            let name = source_names.get(source).cloned().unwrap_or_default();
+            state.error(format!(
+                "{name} does not have the chapters you picked. Choose Adaptive, or another source."
+            ));
+            return;
+        }
+    }
     if requests.is_empty() {
         state.notify("Everything you picked is already downloaded.");
         if !have.is_empty() {
@@ -232,8 +259,17 @@ pub fn start_download(state: AppState) {
         plan,
         progress: JobProgress::default(),
         result: None,
-        skipped: Vec::new(),
-        failed: Vec::new(),
+        skipped: not_offered
+            .iter()
+            .map(|(_, name)| {
+                let source = match &choice {
+                    SourceChoice::Only(id) => source_names.get(id).cloned().unwrap_or_default(),
+                    SourceChoice::Adaptive => String::new(),
+                };
+                format!("{name}: {source} does not have it")
+            })
+            .collect(),
+        failed: not_offered.iter().map(|(key, _)| key.clone()).collect(),
         cancel: cancel.clone(),
     }));
     state.open_tab(SeriesTab::Downloads);
@@ -255,6 +291,13 @@ pub fn start_download(state: AppState) {
         let default_preset = state.settings.peek().default_preset_id.clone();
         let policy = RetryPolicy::default();
         let limits = state.settings.peek().download.limits();
+        // Adaptive: test the sources that cover about the same, then put the
+        // best first for every chapter (the others stay as fallbacks).
+        let requests = if choice == SourceChoice::Adaptive {
+            order_sources(state, &client, requests, &source_names).await
+        } else {
+            requests
+        };
         let (tx, mut rx) = unbounded_channel();
         let run = download_chapters(
             &*client,
@@ -357,6 +400,72 @@ pub fn start_download(state: AppState) {
             }
         }
     });
+}
+
+/// Rank the sources for these chapters, speed-testing the ones that matter
+/// and have not been tested lately, and put the best first for every chapter.
+async fn order_sources(
+    state: AppState,
+    client: &catalog::SuwayomiClient,
+    requests: Vec<pipeline::ChapterRequest>,
+    names: &HashMap<String, String>,
+) -> Vec<pipeline::ChapterRequest> {
+    let name_of = |id: &str| names.get(id).cloned().unwrap_or_else(|| id.to_string());
+    let now = now_secs();
+    let ranked = pipeline::rank_sources(&requests, |s| state.speeds.peek().speed(s));
+    // Sources that cover about as much as the best are worth comparing; one
+    // that was tested recently does not need testing again.
+    let to_test: Vec<(String, pipeline::ChapterRef)> = {
+        let speeds = state.speeds.peek();
+        let tier = pipeline::top_tier(&ranked);
+        if tier.len() < 2 {
+            Vec::new()
+        } else {
+            tier.iter()
+                .filter(|r| !speeds.is_fresh(&r.source_id, now))
+                .filter_map(|r| {
+                    let option = requests
+                        .iter()
+                        .find_map(|q| q.options.iter().find(|o| o.source_id == r.source_id))?;
+                    Some((r.source_id.clone(), option.clone()))
+                })
+                .collect()
+        }
+    };
+    if !to_test.is_empty() {
+        let mut job = state.job;
+        if let Some(view) = job.write().as_mut() {
+            view.progress.note = Some("Checking which source is fastest…".into());
+        }
+        let results = pipeline::probe_sources(client, &to_test, &RetryPolicy::default()).await;
+        for (source, speed) in results {
+            match speed {
+                Some(pages_per_second) => {
+                    info!(
+                        "Speed test: {} {pages_per_second:.1} pages/s",
+                        name_of(&source)
+                    );
+                    state.edit_speeds(|db| db.record(&source, pages_per_second, now_secs()));
+                }
+                None => {
+                    warn!("Speed test: {} gave no usable pages", name_of(&source));
+                    state.edit_speeds(|db| db.record_failure(&source, now_secs()));
+                }
+            }
+        }
+        state.save_speeds();
+    }
+    let ranked = pipeline::rank_sources(&requests, |s| state.speeds.peek().speed(s));
+    for r in &ranked {
+        info!(
+            "Source order: {} covers {} chapter(s), {}",
+            name_of(&r.source_id),
+            r.coverage,
+            r.speed
+                .map_or("not measured".to_string(), |v| format!("{v:.1} pages/s"))
+        );
+    }
+    pipeline::apply_choice(requests, &SourceChoice::Adaptive, &ranked).requests
 }
 
 /// Stop the running download or export. The screen says so at once; the job

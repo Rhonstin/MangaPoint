@@ -5,9 +5,9 @@ use catalog::SuwayomiClient;
 use dioxus::prelude::*;
 use library::{
     AppPaths, ExportsDb, HealthDb, JsonFile, LibraryDb, LibraryFiles, PresetsDb, Settings,
-    SourceState,
+    SourceState, SpeedDb,
 };
-use pipeline::CancelFlag;
+use pipeline::{CancelFlag, SourceChoice};
 use search::{MergedChapter, RankedSeries};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -325,6 +325,10 @@ pub struct AppState {
     pub exports: Signal<ExportsDb>,
     /// The user's conversion presets (and changes to the built-in ones).
     pub presets: Signal<PresetsDb>,
+    /// How fast each source has been, from short speed tests.
+    pub speeds: Signal<SpeedDb>,
+    /// Where the next download takes its chapters from.
+    pub download_source: Signal<SourceChoice>,
     pub workspace: Signal<Option<Workspace>>,
     pub chapters: Signal<ChaptersState>,
     /// Chapters ticked in the table, by position in the merged list.
@@ -381,6 +385,8 @@ impl AppState {
             library: sig(JsonFile::<LibraryDb>::new(paths().library_file()).load()),
             exports: sig(JsonFile::<ExportsDb>::new(paths().exports_file()).load()),
             presets: sig(JsonFile::<PresetsDb>::new(paths().presets_file()).load()),
+            speeds: sig(JsonFile::<SpeedDb>::new(paths().speeds_file()).load()),
+            download_source: sig(SourceChoice::Adaptive),
             workspace: sig(None),
             chapters: sig(ChaptersState::Idle),
             selected: sig(HashSet::new()),
@@ -452,6 +458,17 @@ impl AppState {
         let mut presets = self.presets;
         let mut guard = presets.write();
         edit(&mut guard)
+    }
+
+    /// Change the saved source speeds.
+    pub fn edit_speeds<R>(&self, edit: impl FnOnce(&mut SpeedDb) -> R) -> R {
+        let mut speeds = self.speeds;
+        let mut guard = speeds.write();
+        edit(&mut guard)
+    }
+
+    pub fn save_speeds(&self) {
+        let _ = JsonFile::new(paths().speeds_file()).save(&*self.speeds.read());
     }
 
     pub fn save_presets(&self) {

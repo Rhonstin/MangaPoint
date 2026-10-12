@@ -15,7 +15,9 @@ pub mod export;
 pub mod fetch;
 pub mod limiter;
 pub mod options;
+pub mod plan;
 pub mod preview;
+pub mod probe;
 pub mod types;
 
 pub use compose::{export_series, ExportJob, ExportOutcome, Grouping};
@@ -25,10 +27,14 @@ pub use export::{ExportTarget, ExportedFile};
 pub use fetch::RetryPolicy;
 pub use limiter::Limiter;
 pub use options::{process_options, process_options_for};
+pub use plan::{
+    apply_choice, coverage, rank_sources, top_tier, Chosen, RankedSource, SourceChoice,
+};
 pub use preview::{
     decode_page, levels_to_previews, render_levels, render_original, render_page, OriginalPreview,
     PreviewImage, RenderedPage,
 };
+pub use probe::{probe_source, probe_sources, PROBE_PAGES};
 pub use types::{
     requests_from_merged, CancelFlag, ChapterRef, ChapterRequest, JobEvent, SkippedChapter,
     SourceUse,

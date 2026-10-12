@@ -15,6 +15,7 @@ pub mod paths;
 pub mod presets;
 pub mod settings;
 pub mod sources;
+pub mod speeds;
 
 pub use downloads::{
     chapter_key, remove_inside, series_id, DownloadedChapter, DownloadedSeries, LibraryDb,
@@ -31,3 +32,4 @@ pub use settings::{
     ConversionSettings, DownloadLimits, DownloadSettings, DownloadSpeed, ExportSettings, Settings,
 };
 pub use sources::{Choice, SourceState};
+pub use speeds::{SourceSpeed, SpeedDb};

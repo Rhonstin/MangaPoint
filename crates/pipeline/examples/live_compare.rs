@@ -58,6 +58,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(|c| ChapterRequest {
             number: Some(c.chapter_number),
             name: c.name.clone(),
+            key: None,
             options: vec![ChapterRef {
                 source_id: source.id.clone(),
                 chapter_id: c.id,

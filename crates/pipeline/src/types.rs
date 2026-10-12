@@ -19,6 +19,11 @@ pub struct ChapterRef {
 pub struct ChapterRequest {
     pub number: Option<f64>,
     pub name: String,
+    /// The library key the chapter is saved under. When it is not given it is
+    /// worked out from the first source's copy, which changes if the sources
+    /// are put in a different order, so callers that reorder them set it.
+    #[serde(default)]
+    pub key: Option<String>,
     pub options: Vec<ChapterRef>,
 }
 
@@ -33,6 +38,10 @@ pub fn requests_from_merged(
         .map(|m| ChapterRequest {
             number: m.number,
             name: m.name.clone(),
+            key: Some(library::chapter_key(
+                m.number,
+                m.options.first().map_or(0, |o| o.chapter_id),
+            )),
             options: m
                 .options
                 .iter()

@@ -61,6 +61,7 @@ fn request(number: f64, options: &[(&str, i64)]) -> ChapterRequest {
     ChapterRequest {
         number: Some(number),
         name: format!("Chapter {number}"),
+        key: None,
         options: options
             .iter()
             .map(|(s, id)| ChapterRef {
@@ -1110,5 +1111,99 @@ async fn cancelling_stops_at_once_even_with_requests_in_flight() {
         "took {:?}",
         started.elapsed()
     );
+    let _ = fs::remove_dir_all(lib.root);
+}
+
+// ---- One source per line of chapters ----------------------------------------
+
+/// The limits a normal download uses: no mixing of sources.
+fn separate(chapters: usize, pages: usize) -> DownloadLimits {
+    DownloadLimits {
+        spread_sources: false,
+        ..limits(chapters, pages)
+    }
+}
+
+#[tokio::test]
+async fn a_slow_source_does_not_hold_back_a_fast_one() {
+    // Interleaved like a real series: whole numbers on a slow source, ".1"
+    // chapters on a fast one. Every slow page takes 400 ms.
+    let lib = library("lines");
+    let c = FakeCatalog::new();
+    for id in [1, 3, 5] {
+        add_chapter(&c, id, 30);
+        c.set_path_latency_ms(&format!("/c{id}/"), 400);
+    }
+    for id in [2, 4, 6] {
+        add_chapter(&c, id, 10);
+        c.set_path_latency_ms(&format!("/c{id}/"), 5);
+    }
+    let reqs = [
+        request(1.0, &[("slow", 1)]),
+        request(1.5, &[("fast", 2)]),
+        request(2.0, &[("slow", 3)]),
+        request(2.5, &[("fast", 4)]),
+        request(3.0, &[("slow", 5)]),
+        request(3.5, &[("fast", 6)]),
+    ];
+    let (tx, mut rx) = unbounded_channel();
+    let started = std::time::Instant::now();
+    let run = download_with(&c, &lib, &reqs, separate(6, 12), Some(tx));
+    let watch = async {
+        let mut fast_done = Vec::new();
+        while let Some(e) = rx.recv().await {
+            if let JobEvent::ChapterSaved { chapter } = e {
+                if ["c1_5", "c2_5", "c3_5"].contains(&chapter.key.as_str()) {
+                    fast_done.push(started.elapsed());
+                }
+            }
+        }
+        fast_done
+    };
+    let (out, fast_done) = tokio::join!(run, watch);
+    out.unwrap();
+    assert_eq!(fast_done.len(), 3);
+    let last_fast = fast_done.iter().max().unwrap();
+    assert!(
+        *last_fast < std::time::Duration::from_millis(500),
+        "the fast chapters waited for the slow source: {last_fast:?}"
+    );
+    let _ = fs::remove_dir_all(lib.root);
+}
+
+#[tokio::test]
+async fn chapters_start_only_when_their_sources_line_has_room() {
+    // Three chapters from one source, one at a time: they run one after another
+    // even though another source is idle.
+    let lib = library("lines-serial");
+    let c = FakeCatalog::new();
+    c.set_latency_ms(10);
+    for id in [1, 2, 3, 4] {
+        add_chapter(&c, id, 4);
+    }
+    let reqs = [
+        request(1.0, &[("a", 1)]),
+        request(2.0, &[("a", 2)]),
+        request(3.0, &[("b", 3)]),
+        request(4.0, &[("a", 4)]),
+    ];
+    let (tx, mut rx) = unbounded_channel();
+    download_with(&c, &lib, &reqs, separate(1, 4), Some(tx))
+        .await
+        .unwrap();
+    let mut order = Vec::new();
+    while let Ok(e) = rx.try_recv() {
+        match e {
+            JobEvent::ChapterStarted { index, .. } => order.push(format!("start {index}")),
+            JobEvent::ChapterDone { index } => order.push(format!("done {index}")),
+            _ => {}
+        }
+    }
+    let position = |what: &str| order.iter().position(|e| e == what).unwrap();
+    // Source "a" never has two chapters under way at once.
+    assert!(position("done 0") < position("start 1"), "{order:?}");
+    assert!(position("done 1") < position("start 3"), "{order:?}");
+    // Source "b" did not have to wait for "a" to finish.
+    assert!(position("start 2") < position("done 1"), "{order:?}");
     let _ = fs::remove_dir_all(lib.root);
 }
