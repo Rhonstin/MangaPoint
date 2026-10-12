@@ -12,6 +12,7 @@ use pipeline::export::removable_drives;
 use search::{merge_chapters, missing_numbers, MergedChapter, ScoredMember};
 use std::collections::HashSet;
 use std::time::Duration;
+use tracing::info;
 
 struct Loaded {
     merged: Vec<MergedChapter>,
@@ -23,6 +24,12 @@ struct Loaded {
 
 async fn load(state: AppState, members: Vec<ScoredMember>) -> Option<Loaded> {
     let client = state.client()?;
+    let names: Vec<&str> = members
+        .iter()
+        .map(|m| m.candidate.source_name.as_str())
+        .collect();
+    info!("Loading chapter lists from {}", names.join(", "));
+    let started = std::time::Instant::now();
     let fetches = members.iter().map(|m| {
         let client = client.clone();
         let id = m.candidate.manga_id;
@@ -39,8 +46,20 @@ async fn load(state: AppState, members: Vec<ScoredMember>) -> Option<Loaded> {
             }
         }
     }
+    let merged = merge_chapters(&lists);
+    let both = merged.iter().filter(|m| m.options.len() > 1).count();
+    info!(
+        "{} chapters in total ({both} available from more than one source) in {:.1}s{}",
+        merged.len(),
+        started.elapsed().as_secs_f32(),
+        if unreachable > 0 {
+            format!("; {unreachable} source(s) did not answer")
+        } else {
+            String::new()
+        }
+    );
     Some(Loaded {
-        merged: merge_chapters(&lists),
+        merged,
         member_sources: members
             .iter()
             .map(|m| m.candidate.source_id.clone())

@@ -241,6 +241,7 @@ fn run_action(state: AppState, action: ModalAction) {
             ModalAction::DisableBrowser => backend::disable_browser(state).await,
             ModalAction::RemoveExtension(pkg) => {
                 let Some(client) = state.client() else { return };
+                tracing::info!("Removing source {pkg}");
                 let mut sources_state = state.sources.read().clone();
                 let result = SourceManager::new(&*client)
                     .remove(&mut sources_state, &pkg)

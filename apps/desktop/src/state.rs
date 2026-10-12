@@ -126,8 +126,21 @@ pub struct AppState {
 }
 
 impl AppState {
-    /// Create the state inside the root component, loading saved files.
+    /// Create the state once, inside the app's root component, loading saved
+    /// files.
+    ///
+    /// The signals are owned by Dioxus's root scope rather than by the
+    /// component that creates them. Background tasks (exports, searches,
+    /// retests) run in the root scope and write to this state, and a signal
+    /// may only be used from its owner or the owner's descendants.
     pub fn init() -> Self {
+        use_hook(Self::build)
+    }
+
+    fn build() -> Self {
+        fn sig<T: 'static>(value: T) -> Signal<T> {
+            Signal::new_in_scope(value, ScopeId::ROOT)
+        }
         let sources: SourceState = JsonFile::new(paths().sources_file()).load();
         let first_page = if sources.onboarding_done {
             Page::Search
@@ -135,25 +148,25 @@ impl AppState {
             Page::Setup
         };
         Self {
-            boot: use_signal(|| BootState::Starting {
+            boot: sig(BootState::Starting {
                 message: "Starting…".into(),
                 percent: None,
             }),
-            services: use_signal(|| None),
-            settings: use_signal(|| JsonFile::<Settings>::new(paths().settings_file()).load()),
-            sources: use_signal(move || sources.clone()),
-            health: use_signal(|| JsonFile::<HealthDb>::new(paths().health_file()).load()),
-            page: use_signal(move || first_page),
-            series: use_signal(|| None),
-            search: use_signal(SearchView::default),
-            covers: use_signal(HashMap::new),
-            notice: use_signal(|| None),
-            modal: use_signal(|| None),
-            job: use_signal(|| None),
-            jobs_version: use_signal(|| 0),
-            sources_version: use_signal(|| 0),
-            testing: use_signal(HashSet::new),
-            installing: use_signal(|| false),
+            services: sig(None),
+            settings: sig(JsonFile::<Settings>::new(paths().settings_file()).load()),
+            sources: sig(sources),
+            health: sig(JsonFile::<HealthDb>::new(paths().health_file()).load()),
+            page: sig(first_page),
+            series: sig(None),
+            search: sig(SearchView::default()),
+            covers: sig(HashMap::new()),
+            notice: sig(None),
+            modal: sig(None),
+            job: sig(None),
+            jobs_version: sig(0),
+            sources_version: sig(0),
+            testing: sig(HashSet::new()),
+            installing: sig(false),
         }
     }
 
@@ -167,19 +180,17 @@ impl AppState {
     }
 
     pub fn notify(&self, text: impl Into<String>) {
+        let text = text.into();
+        tracing::info!("{text}");
         let mut n = self.notice;
-        n.set(Some(Notice {
-            text: text.into(),
-            error: false,
-        }));
+        n.set(Some(Notice { text, error: false }));
     }
 
     pub fn error(&self, text: impl Into<String>) {
+        let text = text.into();
+        tracing::warn!("{text}");
         let mut n = self.notice;
-        n.set(Some(Notice {
-            text: text.into(),
-            error: true,
-        }));
+        n.set(Some(Notice { text, error: true }));
     }
 
     pub fn ask(&self, modal: Modal) {

@@ -6,8 +6,10 @@ use crate::state::spawn_forever;
 use crate::state::{now_secs, paths, AppState, JobView};
 use dioxus::prelude::*;
 use pipeline::store::{JobState, JobStore};
-use pipeline::{run_job, CancelFlag, JobSpec, PageCache, PipelineError, RetryPolicy};
+use pipeline::{run_job, CancelFlag, JobEvent, JobSpec, PageCache, PipelineError, RetryPolicy};
+use std::time::Instant;
 use tokio::sync::mpsc::unbounded_channel;
+use tracing::{info, warn};
 
 /// Start an export in the background. It keeps running if you leave the screen.
 pub fn start_job(state: AppState, spec: JobSpec) {
@@ -36,14 +38,24 @@ pub fn start_job(state: AppState, spec: JobSpec) {
     let store = JobStore::new(paths().jobs_file());
     let _ = store.started(&spec);
     state.bump_jobs();
+    info!(
+        "Export started: \"{}\", {} chapter(s) as {}, to {}",
+        spec.series_title,
+        spec.chapters.len(),
+        spec.settings.conversion.format.extension().to_uppercase(),
+        describe_target(&spec.target)
+    );
 
     spawn_forever(async move {
+        let started = Instant::now();
         let cache = PageCache::new(paths().page_cache_dir());
         let policy = RetryPolicy::default();
         let (tx, mut rx) = unbounded_channel();
         let run = run_job(&*client, &spec, &cache, &policy, Some(tx), &cancel);
         let watch = async {
+            let mut logged_pages = 0;
             while let Some(event) = rx.recv().await {
+                log_event(&event, &mut logged_pages);
                 if let Some(view) = job.write().as_mut() {
                     view.progress.apply(&event);
                 }
@@ -53,6 +65,24 @@ pub fn start_job(state: AppState, spec: JobSpec) {
 
         match result {
             Ok(outcome) => {
+                info!(
+                    "Export finished in {:.0}s: {} pages from {} chapter(s){}",
+                    started.elapsed().as_secs_f32(),
+                    outcome.pages,
+                    outcome.chapters_done,
+                    if outcome.skipped.is_empty() {
+                        String::new()
+                    } else {
+                        format!(", {} chapter(s) skipped", outcome.skipped.len())
+                    }
+                );
+                for f in &outcome.files {
+                    info!(
+                        "Wrote {} ({})",
+                        f.location,
+                        crate::logic::human_bytes(f.bytes)
+                    );
+                }
                 {
                     let mut health = state.health;
                     let mut h = health.write();
@@ -76,6 +106,11 @@ pub fn start_job(state: AppState, spec: JobSpec) {
             Err(e) => {
                 let cancelled = matches!(e, PipelineError::Cancelled);
                 let message = e.to_string();
+                if cancelled {
+                    info!("Export cancelled");
+                } else {
+                    warn!("Export failed: {message}");
+                }
                 let _ = store.failed(&spec, &message, cancelled);
                 if let Some(view) = job.write().as_mut() {
                     view.result = Some(Err(message));
@@ -84,6 +119,43 @@ pub fn start_job(state: AppState, spec: JobSpec) {
         }
         state.bump_jobs();
     });
+}
+
+fn describe_target(target: &pipeline::ExportTarget) -> String {
+    match target {
+        pipeline::ExportTarget::Folder { path } => format!("folder {}", path.display()),
+        pipeline::ExportTarget::Device { mount, folder } => {
+            format!("the reader at {}\\{folder}", mount.display())
+        }
+        pipeline::ExportTarget::WebDav { base_url, .. } => {
+            format!("the reader over Wi-Fi ({base_url})")
+        }
+    }
+}
+
+/// One readable line per meaningful step; page progress every 25 pages.
+fn log_event(event: &JobEvent, logged_pages: &mut usize) {
+    match event {
+        JobEvent::ChapterStarted { index, total, name } => {
+            *logged_pages = 0;
+            info!("Chapter {}/{}: {name}", index + 1, total);
+        }
+        JobEvent::PageDone { done, total, .. } => {
+            if done / 25 > *logged_pages / 25 || done == total {
+                info!("  {done}/{total} pages downloaded and converted");
+            }
+            *logged_pages = *done;
+        }
+        JobEvent::UsedFallback {
+            from, to, reason, ..
+        } => {
+            warn!("  source {from} failed ({reason}); trying {to}");
+        }
+        JobEvent::ChapterSkipped { name, reason, .. } => {
+            warn!("  skipped {name}: {reason}");
+        }
+        JobEvent::Writing { file } => info!("Writing {file}"),
+    }
 }
 
 #[component]

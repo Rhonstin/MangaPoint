@@ -12,6 +12,7 @@ use library::Verdict;
 use sources::defaults::EXTENSION_TRUST_WARNING;
 use sources::{check_source, test_many, CheckOptions, InstalledSource, Requires, SourceManager};
 use std::time::Duration;
+use tracing::{info, warn};
 
 #[component]
 pub fn SourcesPage() -> Element {
@@ -298,11 +299,13 @@ pub fn retest(state: AppState, source: Source, reference_title: Option<String>) 
         let Some(client) = state.client() else { return };
         let mut testing = state.testing;
         testing.write().insert(source.id.clone());
+        info!("Testing source {}…", source.name);
         let options = CheckOptions {
             reference_title,
             ..Default::default()
         };
         let record = check_source(&*client, &source, &options).await;
+        log_test(&source.name, &record);
         {
             let mut health = state.health;
             health.write().record_test(&source.id, &source.name, record);
@@ -311,6 +314,16 @@ pub fn retest(state: AppState, source: Source, reference_title: Option<String>) 
         testing.write().remove(&source.id);
         state.bump_sources();
     });
+}
+
+/// One line per test: the verdict, how long it took, and why if it failed.
+fn log_test(name: &str, record: &library::TestRecord) {
+    let label = verdict_label(record.verdict);
+    if record.verdict == Verdict::Pass {
+        info!("  {name}: {label} ({} ms)", record.total_ms());
+    } else {
+        warn!("  {name}: {label}. {}", record.message);
+    }
 }
 
 fn retest_all(state: AppState) {
@@ -337,10 +350,12 @@ fn retest_all(state: AppState) {
             })
             .collect();
         let mut testing = state.testing;
+        info!("Testing all {} installed source(s)…", jobs.len());
         for (s, _) in &jobs {
             testing.write().insert(s.id.clone());
         }
         let _ = test_many(&*client, jobs, 3, |source, record| {
+            log_test(&source.name, record);
             let mut health = state.health;
             health
                 .write()

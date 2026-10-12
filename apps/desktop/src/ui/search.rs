@@ -7,10 +7,11 @@ use crate::state::{AppState, Page, SearchView};
 use dioxus::prelude::*;
 use futures_util::StreamExt;
 use search::fanout::record_health;
-use search::{rank_series, search_stream, RankContext, SearchState};
+use search::{rank_series, search_stream, RankContext, SearchEvent, SearchState};
 use sources::SourceManager;
 use std::collections::HashMap;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+use tracing::{info, warn};
 
 #[component]
 pub fn SearchPage() -> Element {
@@ -141,6 +142,8 @@ pub fn run_search(state: AppState, query: String) {
             return;
         }
 
+        info!("Searching for \"{query}\" on {} source(s)", sources.len());
+        let started = Instant::now();
         let mut search = SearchState::new(query.clone(), sources.len());
         let mut enrichment = HashMap::new();
         let mut stream = Box::pin(search_stream(
@@ -151,6 +154,16 @@ pub fn run_search(state: AppState, query: String) {
             8,
         ));
         while let Some(event) = stream.next().await {
+            match &event {
+                SearchEvent::Done { source, mangas, ms } => {
+                    info!("  {}: {} result(s) in {ms} ms", source.name, mangas.len());
+                }
+                SearchEvent::Failed {
+                    source, message, ..
+                } => {
+                    warn!("  {}: no answer ({message})", source.name);
+                }
+            }
             search.apply(&event);
             {
                 let mut health = state.health;
@@ -169,6 +182,11 @@ pub fn run_search(state: AppState, query: String) {
             .take(8)
             .flat_map(|s| s.members.iter().take(3).map(|m| m.candidate.clone()))
             .collect();
+        info!(
+            "Got {} result(s) in {:.1}s; checking chapter lists to pick the best source for each…",
+            search.candidates().len(),
+            started.elapsed().as_secs_f32()
+        );
         enrichment = search::enrich(&*client, &top, Duration::from_secs(25), 4).await;
         publish(
             state,
@@ -180,6 +198,11 @@ pub fn run_search(state: AppState, query: String) {
             false,
         );
         state.save_health();
+        info!(
+            "Search finished: {} series in {:.1}s",
+            state.search.read().ranked.len(),
+            started.elapsed().as_secs_f32()
+        );
     });
 }
 

@@ -44,9 +44,15 @@ pub fn Setup() -> Element {
         if let Some(client) = state.client() {
             SourceManager::new(&*client).finish_onboarding(&mut sources_state);
         }
+        let installed = sources_state
+            .choices
+            .values()
+            .filter(|c| **c == Choice::Install)
+            .count();
         let mut s = state.sources;
         s.set(sources_state);
         state.save_sources();
+        tracing::info!("First-run setup finished: {installed} source(s) installed");
         state.go(Page::Search);
     };
 
