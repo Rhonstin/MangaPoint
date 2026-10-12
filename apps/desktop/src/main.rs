@@ -43,7 +43,19 @@ fn main() {
         .with_title("MangaPoint")
         .with_inner_size(LogicalSize::new(1180.0, 800.0))
         .with_min_inner_size(LogicalSize::new(860.0, 560.0));
+    let mut config = Config::new().with_window(window).with_menu(None);
+    // Developer switch: let tools such as an automated UI test connect to the
+    // app's web view. Off unless MANGAPOINT_DEBUG_PORT is set; the port only
+    // listens on this computer.
+    if let Ok(port) = std::env::var("MANGAPOINT_DEBUG_PORT") {
+        if port.parse::<u16>().is_ok() {
+            tracing::info!("UI debugging enabled on 127.0.0.1:{port}");
+            config = config.with_windows_browser_args(format!(
+                "--remote-debugging-port={port} --remote-debugging-address=127.0.0.1"
+            ));
+        }
+    }
     dioxus::LaunchBuilder::desktop()
-        .with_cfg(Config::new().with_window(window).with_menu(None))
+        .with_cfg(config)
         .launch(ui::App);
 }

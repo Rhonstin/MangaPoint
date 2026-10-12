@@ -20,13 +20,6 @@ pub fn SearchPage() -> Element {
     let view = state.search.read().clone();
     let failed_text = view.failed.join(", ");
 
-    let go = move |_| {
-        let q = text.read().trim().to_string();
-        if !q.is_empty() {
-            run_search(state, q);
-        }
-    };
-
     rsx! {
         h1 { "Find a series" }
         p { class: "muted", "Searches all your sources at once and shows each series once, with the best source chosen for you." }
@@ -46,7 +39,8 @@ pub fn SearchPage() -> Element {
                 autofocus: true,
                 oninput: move |e| text.set(e.value()),
             }
-            button { class: "btn primary", r#type: "submit", onclick: go, disabled: view.searching, "Search" }
+            // Submitting the form (this button or Enter) starts the search; no separate click handler.
+            button { class: "btn primary", r#type: "submit", disabled: view.searching, "Search" }
         }
 
         if view.no_sources {
@@ -122,9 +116,11 @@ pub fn run_search(state: AppState, query: String) {
         let preferred = state.settings.read().preferred_sources.clone();
 
         let mut view = state.search;
+        let generation = state.search.peek().generation + 1;
         view.set(SearchView {
             query: query.clone(),
             searching: true,
+            generation,
             ..Default::default()
         });
 
@@ -137,6 +133,7 @@ pub fn run_search(state: AppState, query: String) {
             view.set(SearchView {
                 query,
                 no_sources: true,
+                generation,
                 ..Default::default()
             });
             return;
@@ -169,7 +166,19 @@ pub fn run_search(state: AppState, query: String) {
                 let mut health = state.health;
                 record_health(&mut health.write(), &event);
             }
-            publish(state, &search, &query, &enrichment, &lang, &preferred, true);
+            if !publish(
+                state,
+                generation,
+                &search,
+                &query,
+                &enrichment,
+                &lang,
+                &preferred,
+                true,
+            ) {
+                info!("Search for \"{query}\" was replaced by a newer search");
+                return;
+            }
         }
         drop(stream);
 
@@ -188,8 +197,9 @@ pub fn run_search(state: AppState, query: String) {
             started.elapsed().as_secs_f32()
         );
         enrichment = search::enrich(&*client, &top, Duration::from_secs(25), 4).await;
-        publish(
+        let current = publish(
             state,
+            generation,
             &search,
             &query,
             &enrichment,
@@ -198,6 +208,9 @@ pub fn run_search(state: AppState, query: String) {
             false,
         );
         state.save_health();
+        if !current {
+            return;
+        }
         info!(
             "Search finished: {} series in {:.1}s",
             state.search.read().ranked.len(),
@@ -206,15 +219,22 @@ pub fn run_search(state: AppState, query: String) {
     });
 }
 
+/// Show the results so far. Returns false, doing nothing, if a newer search
+/// has replaced this one.
+#[allow(clippy::too_many_arguments)]
 fn publish(
     state: AppState,
+    generation: u64,
     search: &SearchState,
     query: &str,
     enrichment: &HashMap<(String, i64), search::Enrichment>,
     lang: &str,
     preferred: &[String],
     still_searching: bool,
-) {
+) -> bool {
+    if state.search.peek().generation != generation {
+        return false;
+    }
     let health = state.health.read().clone();
     let ctx = RankContext {
         health: &health,
@@ -250,5 +270,7 @@ fn publish(
             .map(|(s, _)| s.name.clone())
             .collect(),
         no_sources: false,
+        generation,
     });
+    true
 }

@@ -2,8 +2,25 @@
 
 use library::{Settings, Verdict};
 use pipeline::{ChapterRequest, ExportTarget, JobEvent, JobSpec};
-use search::MergedChapter;
+use search::{MergedChapter, ScoredMember};
+use std::collections::HashSet;
 use std::path::Path;
+
+/// The best entry from each source, at most `limit` of them. `members` must
+/// be ordered best first, as search results are.
+///
+/// A source can list one series twice (a duplicate page, another edition).
+/// Loading and merging both adds nothing, and the screens key their lists on
+/// the source, so each source appears once.
+pub fn one_per_source(members: &[ScoredMember], limit: usize) -> Vec<ScoredMember> {
+    let mut seen = HashSet::new();
+    members
+        .iter()
+        .filter(|m| seen.insert(m.candidate.source_id.clone()))
+        .take(limit)
+        .cloned()
+        .collect()
+}
 
 // ---- Choosing chapters -----------------------------------------------------
 
@@ -247,6 +264,46 @@ mod tests {
 
     fn nums(v: &[f64]) -> Vec<Option<f64>> {
         v.iter().map(|&n| Some(n)).collect()
+    }
+
+    fn member(source: &str, manga_id: i64, score: f32) -> ScoredMember {
+        ScoredMember {
+            candidate: search::Candidate::new(
+                &catalog::Source {
+                    id: source.into(),
+                    name: format!("Source {source}"),
+                    lang: "en".into(),
+                    is_nsfw: false,
+                },
+                &catalog::MangaSummary {
+                    id: manga_id,
+                    title: "Solo Leveling".into(),
+                    thumbnail_url: None,
+                },
+            ),
+            score,
+            enrichment: None,
+        }
+    }
+
+    #[test]
+    fn a_source_listing_a_series_twice_appears_once_with_its_best_entry() {
+        // MangaFire lists the series twice; the better-scored entry comes first.
+        let members = vec![
+            member("fire", 1, 0.9),
+            member("dex", 2, 0.8),
+            member("fire", 3, 0.7),
+            member("pill", 4, 0.6),
+        ];
+        let picked = one_per_source(&members, 10);
+        let ids: Vec<_> = picked
+            .iter()
+            .map(|m| (m.candidate.source_id.as_str(), m.candidate.manga_id))
+            .collect();
+        assert_eq!(ids, [("fire", 1), ("dex", 2), ("pill", 4)]);
+        // The limit applies after de-duplication.
+        assert_eq!(one_per_source(&members, 2).len(), 2);
+        assert!(one_per_source(&[], 4).is_empty());
     }
 
     #[test]

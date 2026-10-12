@@ -83,7 +83,9 @@ pub fn SeriesPage() -> Element {
         };
     };
 
-    let members: Vec<ScoredMember> = series.members.iter().take(4).cloned().collect();
+    // One entry per source (a source can list a series twice), best first.
+    let shown: Vec<ScoredMember> = logic::one_per_source(&series.members, 4);
+    let members = shown.clone();
     let loaded = use_resource(move || {
         let members = members.clone();
         async move { load(state, members).await }
@@ -114,9 +116,9 @@ pub fn SeriesPage() -> Element {
             div { class: "grow",
                 h1 { "{series.title}" }
                 div { class: "row wrap",
-                    for (i, m) in series.members.iter().enumerate() {
+                    for (i, m) in shown.iter().enumerate() {
                         Chip {
-                            key: "{m.candidate.source_id}",
+                            key: "{i}",
                             text: if i == 0 { format!("{} (best)", m.candidate.source_name) } else { m.candidate.source_name.clone() },
                             kind: if i == 0 { Some("ok".to_string()) } else { None },
                         }
@@ -130,7 +132,7 @@ pub fn SeriesPage() -> Element {
         div { class: "spacer" }
 
         {match &*loaded.read() {
-            None => rsx! { p { class: "muted", "Loading chapters from {series.members.len().min(4)} source(s)…" } },
+            None => rsx! { p { class: "muted", "Loading chapters from {shown.len()} source(s)…" } },
             Some(None) => rsx! { div { class: "banner bad", "The catalog engine is not running." } },
             Some(Some(l)) => {
                 let numbers: Vec<Option<f64>> = l.merged.iter().map(|m| m.number).collect();

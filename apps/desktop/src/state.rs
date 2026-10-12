@@ -88,6 +88,9 @@ pub struct SearchView {
     /// Sources that did not answer, by name.
     pub failed: Vec<String>,
     pub no_sources: bool,
+    /// Which search these results belong to. A newer search bumps it, and an
+    /// older one still running then stops publishing.
+    pub generation: u64,
 }
 
 #[derive(Clone)]
