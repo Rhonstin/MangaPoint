@@ -116,22 +116,24 @@ pub fn SearchPage() -> Element {
                     oninput: move |e| text.set(e.value()),
                 }
                 div { class: "searchbox-row",
-                    div { class: "sort-pill",
-                        select {
-                            value: "{sort.key()}",
-                            title: "How the results are ordered",
-                            onchange: move |e| { let mut s = state.search_sort; s.set(SearchSort::from_key(&e.value())); },
-                            for option_sort in SearchSort::ALL {
-                                option { key: "{option_sort.key()}", value: "{option_sort.key()}", selected: option_sort == sort, "Sort: {option_sort.label()}" }
+                    // The sort and the sources flow together and wrap together, so
+                    // a second row starts under the sort pill.
+                    //
+                    // Sources are one pill each, except while the pointer is over
+                    // the text, the box is being typed in, or the panel is open:
+                    // then they fold into a single dropdown (see style.css).
+                    div { class: "pills-flow",
+                        div { class: "sort-pill",
+                            select {
+                                value: "{sort.key()}",
+                                title: "How the results are ordered",
+                                onchange: move |e| { let mut s = state.search_sort; s.set(SearchSort::from_key(&e.value())); },
+                                for option_sort in SearchSort::ALL {
+                                    option { key: "{option_sort.key()}", value: "{option_sort.key()}", selected: option_sort == sort, "Sort: {option_sort.label()}" }
+                                }
                             }
+                            span { class: "chev", Icon { name: "chevron-down", size: 14 } }
                         }
-                        span { class: "chev", Icon { name: "chevron-down", size: 14 } }
-                    }
-                    // Two versions of the sources, stacked in the same place so
-                    // the box never changes height: one pill per source while
-                    // the pointer is away, and a single dropdown while it is
-                    // over the box, being typed in, or the panel is open.
-                    div { class: "sources-area",
                         div { class: "layer compact",
                             button {
                                 class: "pill-btn", r#type: "button",
@@ -165,7 +167,7 @@ pub fn SearchPage() -> Element {
                                 }
                             }
                             if total > 0 && included.is_empty() {
-                                span { class: "muted small", style: "padding: 5px 4px", "No source is chosen. Hover here and open the sources list." }
+                                span { class: "muted small", style: "padding: 5px 4px", "No source is chosen. Hover over the text and open the sources list." }
                             }
                         }
                     }

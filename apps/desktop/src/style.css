@@ -386,81 +386,68 @@ td.status, th.status { width: 170px; }
 .popover input[type="search"] { width: 100%; }
 @media (max-width: 980px) { .settings { grid-template-columns: 1fr; } .settings-nav { position: static; flex-direction: row; flex-wrap: wrap; } .lab { grid-template-columns: 1fr; } }
 
-/* ---- search: filter button, sort pill and source pills ---- */
-.searchwrap { position: relative; }
-.searchwrap .popover { left: auto; right: 0; }
-.icon-btn {
-  position: relative; display: inline-flex; align-items: center; justify-content: center; gap: 6px;
-  min-width: 46px; padding: 0 12px; border: 1px solid var(--line-strong); border-radius: 10px;
-  background: var(--panel); color: var(--text); cursor: pointer; font: inherit;
-}
-.icon-btn:hover { border-color: var(--accent); }
-.icon-btn.on { border-color: var(--accent); background: var(--panel-3); }
-.icon-btn:disabled { opacity: 0.45; cursor: default; }
-.icon-btn .badge { font-size: 0.75rem; }
-.pill-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 12px 0 4px; }
-.sort-pill { position: relative; display: inline-flex; align-items: center; }
-.sort-pill select {
-  appearance: none; -webkit-appearance: none; padding: 5px 30px 5px 14px; border-radius: 999px;
-  border: 1px solid var(--accent); background: var(--panel-2); color: var(--text); font-size: 0.88rem; cursor: pointer;
-}
-.sort-pill .chev { position: absolute; right: 11px; pointer-events: none; color: var(--muted); display: inline-flex; }
-.src-pill {
-  position: relative; display: inline-flex; align-items: center; padding: 5px 28px 5px 14px; font-size: 0.88rem;
-  border: 1px solid var(--line-strong); border-radius: 999px; background: var(--panel-2); transition: border-color 0.15s;
-}
-.src-pill:hover { border-color: var(--accent); }
-/* The x always has its place, so showing it never changes the pill's width. */
-.src-pill .x {
-  position: absolute; right: 5px; top: 50%; transform: translateY(-50%); width: 19px; height: 19px; padding: 0;
-  display: flex; align-items: center; justify-content: center; border: 0; border-radius: 50%;
-  background: transparent; color: var(--muted); opacity: 0; cursor: pointer; transition: opacity 0.12s, background 0.12s;
-}
-.src-pill:hover .x, .src-pill .x:focus-visible { opacity: 1; }
-.src-pill .x:hover { background: var(--line-strong); color: var(--text); }
-
 /* ---- the search box: text on top, pills along the bottom ---- */
+.searchwrap { position: sticky; top: 8px; z-index: 12; }
+.searchwrap .popover { left: auto; right: 0; }
 .searchbox {
-  display: flex; flex-direction: column; gap: 14px; padding: 18px 20px 16px 24px;
+  display: flex; flex-direction: column; gap: 12px; padding: 16px 20px 14px 24px;
   background: var(--panel); border: 1px solid var(--line-strong); border-radius: 28px;
-  transition: border-color 0.15s;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.6); transition: border-color 0.15s;
 }
 .searchbox:hover, .searchbox:focus-within, .searchbox.open { border-color: #4a4a4a; }
-.searchbox-input {
-  width: 100%; border: 0; outline: 0; background: transparent; color: var(--text);
-  font: inherit; font-size: 1.15rem; padding: 4px 0; box-shadow: none;
+.searchbox .searchbox-input {
+  width: 100%; border: 0; outline: 0; background: transparent; color: var(--text); font: inherit;
+  font-size: 1.15rem; padding: 4px 0; border-radius: 0; box-shadow: none;
 }
+.searchbox .searchbox-input:focus { border: 0; box-shadow: none; outline: 0; }
 .searchbox-input::placeholder { color: #4d4d4d; }
 .searchbox-input::-webkit-search-cancel-button { display: none; }
-.searchbox-row { display: flex; align-items: flex-end; gap: 10px; }
-.searchbox .sort-pill { flex: none; }
-.searchbox .sort-pill select { border-color: var(--line-strong); color: var(--muted); background: transparent; }
-.searchbox .sort-pill select:hover { border-color: var(--accent); color: var(--text); }
-.sources-area { flex: 1; min-width: 0; display: grid; }
-.sources-area .layer { grid-area: 1 / 1; display: flex; flex-wrap: wrap; align-items: flex-start; align-content: flex-start; gap: 8px; transition: opacity 0.14s; }
-.searchbox .src-pill { background: transparent; color: var(--muted); }
-.searchbox .src-pill:hover { color: var(--text); }
+/* The pills and the round button share a row; the button lines up with the last row of pills. */
+.searchbox-row { display: flex; align-items: flex-end; gap: 12px; }
+.pills-flow { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.layer { display: contents; }
+.layer.compact { display: none; }
+/* While the pointer is over the text, the box is typed in, or the panel is open:
+   one dropdown instead of a pill for every source. Hovering the pills themselves
+   keeps them, so their x can be reached. */
+.searchbox:focus-within .layer.full, .searchbox.open .layer.full,
+.searchbox:has(.searchbox-input:hover) .layer.full { display: none; }
+.searchbox:focus-within .layer.compact, .searchbox.open .layer.compact,
+.searchbox:has(.searchbox-input:hover) .layer.compact { display: contents; }
+
+/* The sort is a muted blue so it stands apart from the sources. */
+.sort-pill { position: relative; display: inline-flex; align-items: center; }
+.sort-pill select {
+  appearance: none; -webkit-appearance: none; padding: 5px 30px 5px 14px; border-radius: 999px; font-size: 0.88rem;
+  border: 1px solid #3b4d73; background: #111a2e; color: #a9bce2; cursor: pointer; transition: border-color 0.15s, color 0.15s;
+}
+.sort-pill select:hover { border-color: #5a74ab; color: #c5d3f0; }
+.sort-pill .chev { position: absolute; right: 11px; pointer-events: none; color: #7f93b5; display: inline-flex; }
 .pill-btn {
   display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px 5px 14px; font: inherit; font-size: 0.88rem;
   border: 1px solid var(--line-strong); border-radius: 999px; background: transparent; color: var(--muted); cursor: pointer;
 }
 .pill-btn:hover { border-color: var(--accent); color: var(--text); }
 .pill-btn:disabled { opacity: 0.45; cursor: default; }
-/* Pointer away: every source as a pill. Pointer over the box, typing, or the
-   panel open: the single dropdown. Both occupy the same place. */
-.sources-area .layer.compact { opacity: 0; visibility: hidden; }
-.searchbox:hover .layer.compact, .searchbox:focus-within .layer.compact, .searchbox.open .layer.compact { opacity: 1; visibility: visible; }
-.searchbox:hover .layer.full, .searchbox:focus-within .layer.full, .searchbox.open .layer.full { opacity: 0; visibility: hidden; }
+/* A source pill is as wide as its name. Hovering it makes room for an x. */
+.src-pill {
+  display: inline-flex; align-items: center; padding: 5px 14px; font-size: 0.88rem; color: var(--muted);
+  border: 1px solid var(--line-strong); border-radius: 999px; background: transparent; transition: border-color 0.15s, color 0.15s, padding 0.12s;
+}
+.src-pill:hover { border-color: var(--accent); color: var(--text); padding-right: 7px; }
+.src-pill .x {
+  width: 0; height: 19px; margin-left: 0; padding: 0; overflow: hidden; opacity: 0; border: 0; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center; background: transparent; color: var(--muted); cursor: pointer;
+  transition: width 0.12s, margin 0.12s, opacity 0.12s, background 0.12s;
+}
+.src-pill:hover .x, .src-pill .x:focus-visible { width: 19px; margin-left: 6px; opacity: 1; }
+.src-pill .x:hover { background: var(--line-strong); color: var(--text); }
 .search-circle {
-  flex: none; width: 40px; height: 40px; border-radius: 50%; border: 0; display: flex; align-items: center; justify-content: center;
-  background: var(--accent); color: var(--accent-text); cursor: pointer; margin-left: auto; transition: background 0.15s, transform 0.1s;
+  flex: none; width: 40px; height: 40px; margin-bottom: -5px; border-radius: 50%; border: 0; display: flex; align-items: center;
+  justify-content: center; background: var(--accent); color: var(--accent-text); cursor: pointer; transition: background 0.15s, transform 0.1s;
 }
 .search-circle:hover { background: var(--accent-hover); }
 .search-circle:active { transform: scale(0.94); }
 .search-circle:disabled { opacity: 0.6; cursor: default; }
-
-/* the search box: no border of its own on the text, pills start at the top */
-.searchbox .searchbox-input { border: 0; background: transparent; box-shadow: none; border-radius: 0; padding: 4px 0; }
-.searchbox .searchbox-input:focus { border: 0; box-shadow: none; outline: 0; }
-.searchbox-row { align-items: flex-start; }
-.searchbox .search-circle { align-self: flex-end; }
+/* A gap between the box and the results. */
+.searchwrap ~ .grid { margin-top: 20px; }
