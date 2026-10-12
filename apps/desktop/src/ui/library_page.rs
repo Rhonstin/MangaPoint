@@ -7,6 +7,7 @@ use super::work::{
 };
 use crate::logic::{human_bytes, library_order, plural, LibrarySort, LibraryView};
 use crate::state::{library_files, AppState, Modal, ModalAction, Page};
+use crate::state::{paths, SeriesTab};
 use dioxus::prelude::*;
 use std::collections::HashSet;
 
@@ -96,6 +97,32 @@ pub fn LibraryPage() -> Element {
             series_ids: chosen_ids.clone(),
         },
     };
+    let export_folder = state
+        .settings
+        .read()
+        .export
+        .output_dir
+        .clone()
+        .unwrap_or_else(|| paths().default_export_dir())
+        .display()
+        .to_string();
+    let export_modal = Modal {
+        title: format!(
+            "Export {}?",
+            plural(chosen_with_downloads.len(), "series")
+        ),
+        body: format!(
+            "All their downloaded chapters are exported, one file per series, to {export_folder}. They go one after another. To choose the folder, a reader or how chapters are split, export one series at a time from its Export tab."
+        ),
+        confirm: "Export".into(),
+        cancel: "Not now".into(),
+        danger: false,
+        action: ModalAction::ExportSeries {
+            series_ids: chosen_with_downloads.clone(),
+        },
+    };
+    let single_export =
+        (chosen_with_downloads.len() == 1).then(|| chosen_with_downloads[0].clone());
     let delete_modal = Modal {
         title: format!(
             "Delete the downloads of {}?",
@@ -259,6 +286,21 @@ pub fn LibraryPage() -> Element {
                     Icon { name: "download", size: 16 } "Download…"
                 }
                 if !chosen_with_downloads.is_empty() {
+                    button { class: "btn", title: "Make reader files from the downloaded chapters",
+                        onclick: move |_| {
+                            if let Some(id) = single_export.clone() {
+                                picked.write().clear();
+                                open_series_from_library(state, &id);
+                                state.open_tab(SeriesTab::Export);
+                            } else {
+                                state.ask(export_modal.clone());
+                                picked.write().clear();
+                            }
+                        },
+                        Icon { name: "file-down", size: 15 } "Export…"
+                    }
+                }
+                if !chosen_with_downloads.is_empty() {
                     button { class: "btn danger", title: "Delete the downloaded chapters but keep the series",
                         onclick: move |_| { state.ask(delete_modal.clone()); picked.write().clear(); },
                         Icon { name: "trash", size: 15 } "Delete downloads"
@@ -267,9 +309,6 @@ pub fn LibraryPage() -> Element {
                 button { class: "btn danger", title: "Take the series out of your library",
                     onclick: move |_| { state.ask(remove_modal.clone()); picked.write().clear(); },
                     Icon { name: "x", size: 15 } "Remove"
-                }
-                button { class: "btn ghost", title: "Clear the selection", onclick: move |_| picked.write().clear(),
-                    Icon { name: "x", size: 15 }
                 }
             }
         }

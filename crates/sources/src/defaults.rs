@@ -28,6 +28,8 @@ pub struct DefaultSource {
     pub id: &'static str,
     pub name: &'static str,
     pub description: &'static str,
+    /// The website it reads from.
+    pub site: &'static str,
     pub requires: Requires,
     /// A title this source is known to carry, used by the test as an extra
     /// check that search returns sensible results.
@@ -48,6 +50,7 @@ const VERIFIED: &str = "2026-10-11";
 pub const DEFAULTS: &[DefaultSource] = &[
     DefaultSource {
         id: "all.mangadex",
+        site: "https://mangadex.org",
         name: "MangaDex",
         description: "Huge community catalog. Licensed series often have only a few chapters.",
         requires: Requires::Nothing,
@@ -56,6 +59,7 @@ pub const DEFAULTS: &[DefaultSource] = &[
     },
     DefaultSource {
         id: "all.mangafire",
+        site: "https://mangafire.to",
         name: "MangaFire",
         description: "Very large catalog with complete chapter lists for popular series.",
         requires: Requires::Nothing,
@@ -64,6 +68,7 @@ pub const DEFAULTS: &[DefaultSource] = &[
     },
     DefaultSource {
         id: "en.mangapill",
+        site: "https://mangapill.com",
         name: "MangaPill",
         description: "Large catalog, fast to search and download.",
         requires: Requires::Nothing,
@@ -72,6 +77,7 @@ pub const DEFAULTS: &[DefaultSource] = &[
     },
     DefaultSource {
         id: "en.mangabuddy",
+        site: "https://mangabuddy.com",
         name: "MangaK",
         description: "Large catalog (MangaBuddy). Fast.",
         requires: Requires::Nothing,
@@ -80,6 +86,7 @@ pub const DEFAULTS: &[DefaultSource] = &[
     },
     DefaultSource {
         id: "en.mangakatana",
+        site: "https://mangakatana.com",
         name: "MangaKatana",
         description: "Large catalog. Works, but downloads can be slow.",
         requires: Requires::Nothing,
@@ -88,6 +95,7 @@ pub const DEFAULTS: &[DefaultSource] = &[
     },
     DefaultSource {
         id: "en.asurascans",
+        site: "https://asuracomic.net",
         name: "Asura Scans",
         description: "Popular action and fantasy manhwa.",
         requires: Requires::Nothing,
@@ -96,6 +104,7 @@ pub const DEFAULTS: &[DefaultSource] = &[
     },
     DefaultSource {
         id: "en.flamecomics",
+        site: "https://flamecomics.xyz",
         name: "Flame Comics",
         description: "Manhwa and webcomics.",
         requires: Requires::Nothing,
@@ -104,6 +113,7 @@ pub const DEFAULTS: &[DefaultSource] = &[
     },
     DefaultSource {
         id: "all.mangaplus",
+        site: "https://mangaplus.shueisha.co.jp",
         name: "MANGA Plus by SHUEISHA",
         description: "Official Shueisha releases. Only the newest chapters of each series.",
         requires: Requires::Nothing,
@@ -112,6 +122,7 @@ pub const DEFAULTS: &[DefaultSource] = &[
     },
     DefaultSource {
         id: "all.webtoons",
+        site: "https://www.webtoons.com",
         name: "Webtoons.com",
         description: "Official webcomics.",
         requires: Requires::Nothing,
@@ -120,6 +131,7 @@ pub const DEFAULTS: &[DefaultSource] = &[
     },
     DefaultSource {
         id: "all.comikey",
+        site: "https://comikey.com",
         name: "Comikey",
         description:
             "Licensed series. Needs browser support (a one-time download of about 270 MB).",

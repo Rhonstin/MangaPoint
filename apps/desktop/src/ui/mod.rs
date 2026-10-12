@@ -112,12 +112,13 @@ fn Shell() -> Element {
                 cat::Cat {}
                 span { "MangaPoint" }
             }
-            NavItem { page: Page::Search, label: "Search", icon: "search" }
             NavItem { page: Page::Library, label: "Library", icon: "book-open" }
+            NavItem { page: Page::Search, label: "Search", icon: "search" }
             NavItem {
-                page: Page::Downloads, label: "Downloads & exports", icon: "download",
+                page: Page::Downloads, label: "Downloads", icon: "download",
                 badge: (in_queue > 0).then(|| in_queue.to_string()),
             }
+            div { class: "nav-spacer" }
             NavItem { page: Page::Sources, label: "Sources", icon: "layers" }
             NavItem { page: Page::Settings, label: "Settings", icon: "settings" }
         }
@@ -338,6 +339,7 @@ fn run_action(state: AppState, action: ModalAction) {
             ModalAction::DeleteChapters { series_id, keys } => {
                 work::delete_chapters(state, series_id, keys)
             }
+            ModalAction::ExportSeries { series_ids } => work::export_series_many(state, series_ids),
             ModalAction::DeleteDownloads { series_ids } => {
                 work::delete_downloads(state, series_ids)
             }

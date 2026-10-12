@@ -25,10 +25,12 @@ fn ring(out: &mut String, cx: f32, cy: f32, inner: f32, outer: f32, fill: &str) 
     }
 }
 
-/// The cat, blinking now and then: an open-eyed layer and a blinking one.
-fn blinking_cat(paw_top: usize) -> String {
+/// The cat, blinking now and then: an open-eyed layer and a blinking one,
+/// moved `dx` pixels to the left to make room.
+fn blinking_cat(paw_top: usize, dx: i32) -> String {
     format!(
-        "<g class=\"look-open\">{}</g><g class=\"look-blink\">{}</g>",
+        "<g transform=\"translate({},0)\"><g class=\"look-open\">{}</g><g class=\"look-blink\">{}</g></g>",
+        -dx,
         sitting_markup(false, Some(paw_top)),
         sitting_markup(true, Some(paw_top))
     )
@@ -37,19 +39,26 @@ fn blinking_cat(paw_top: usize) -> String {
 fn search_markup() -> &'static str {
     static MARKUP: OnceLock<String> = OnceLock::new();
     MARKUP.get_or_init(|| {
-        let mut s = blinking_cat(16);
-        s.push_str("<g class=\"glass\">");
-        // The glass: a pale lens, an amber rim, a handle down to the paw.
-        let mut lens = String::new();
-        ring(&mut lens, 25.0, 9.0, 0.0, 3.4, "#7f93b5");
-        s.push_str(&format!("<g opacity=\"0.4\">{lens}</g>"));
-        ring(&mut s, 25.0, 9.0, 3.4, 5.2, "#d4b26a");
-        for (x, y) in [(23, 7), (24, 6), (23, 8)] {
+        // The cat sits left of centre and holds the glass out to its right.
+        let mut s = blinking_cat(19, 4);
+        // The handle runs from the paw (about 17,20) up to the lens.
+        for x in 17..=27 {
+            let y = 20 - (x - 17) * 4 / 10;
+            rect(&mut s, x, y, 1, 2, "#a8826a");
+        }
+        // The lens: a pale glass inside an amber rim, with a glint.
+        let mut glass = String::new();
+        ring(&mut glass, 31.0, 12.0, 0.0, 3.8, "#cfdcf5");
+        s.push_str(&format!("<g opacity=\"0.45\">{glass}</g>"));
+        ring(&mut s, 31.0, 12.0, 3.8, 5.6, "#d4b26a");
+        for (x, y) in [(28, 9), (29, 8), (28, 10)] {
             rect(&mut s, x, y, 1, 1, "#e8e8e8");
         }
-        for (x, y) in [(22, 13), (21, 14), (20, 15), (21, 13), (20, 14)] {
-            rect(&mut s, x, y, 1, 1, "#a8826a");
-        }
+        // A sparkle that comes and goes on the glass.
+        s.push_str("<g class=\"sparkle\">");
+        rect(&mut s, 33, 9, 1, 1, "#ffffff");
+        rect(&mut s, 32, 10, 3, 1, "#ffffff");
+        rect(&mut s, 33, 11, 1, 1, "#ffffff");
         s.push_str("</g>");
         s
     })
@@ -58,22 +67,35 @@ fn search_markup() -> &'static str {
 fn waiting_markup() -> &'static str {
     static MARKUP: OnceLock<String> = OnceLock::new();
     MARKUP.get_or_init(|| {
-        let mut s = blinking_cat(17);
+        let mut s = blinking_cat(17, 0);
         // The rod: from the raised paw up and to the right.
-        for x in 21..=40 {
-            let y = 17 - (x - 21) * 14 / 19;
+        for x in 21..=36 {
+            let y = 17 - (x - 21) * 14 / 15;
             rect(&mut s, x, y, 1, 1, "#a8826a");
         }
-        // The line, the hook that bobs, and the empty bucket.
-        rect(&mut s, 40, 4, 1, 18, "#cfcfcf");
+        // The line, and a hook that bobs just above the bucket.
+        rect(&mut s, 36, 3, 1, 19, "#8a8a8a");
         s.push_str("<g class=\"bob\">");
-        rect(&mut s, 40, 22, 1, 2, "#cfcfcf");
-        rect(&mut s, 39, 23, 1, 1, "#cfcfcf");
-        rect(&mut s, 40, 24, 1, 1, "#f0a3b3");
+        rect(&mut s, 36, 22, 1, 2, "#8a8a8a");
+        rect(&mut s, 35, 24, 2, 1, "#cfcfcf");
         s.push_str("</g>");
-        rect(&mut s, 34, 26, 10, 1, "#8a8a8a");
-        rect(&mut s, 35, 27, 8, 4, "#2a2a2a");
-        rect(&mut s, 35, 30, 8, 1, "#4d4d4d");
+        // The empty bucket: a rim, a dark opening, a body that narrows with
+        // an amber band, and a handle on each side.
+        rect(&mut s, 31, 26, 11, 1, "#a8a8a8");
+        rect(&mut s, 32, 27, 9, 1, "#161616");
+        rect(&mut s, 32, 28, 9, 1, "#5a5a5a");
+        rect(&mut s, 32, 29, 9, 1, "#d4b26a");
+        rect(&mut s, 33, 30, 7, 1, "#4a4a4a");
+        rect(&mut s, 34, 31, 5, 1, "#3a3a3a");
+        for (x, y) in [(30, 27), (29, 28), (30, 29), (42, 27), (43, 28), (42, 29)] {
+            rect(&mut s, x, y, 1, 1, "#7a7a7a");
+        }
+        // Waiting: three dots that appear one after another.
+        for (i, x) in [24, 27, 30].into_iter().enumerate() {
+            s.push_str(&format!("<g class=\"dot d{i}\">"));
+            rect(&mut s, x, 4, 2, 2, "#8a8a8a");
+            s.push_str("</g>");
+        }
         s
     })
 }
@@ -83,7 +105,7 @@ fn waiting_markup() -> &'static str {
 pub fn SearchCat() -> Element {
     rsx! {
         svg {
-            class: "scene-cat", width: "160", height: "160", view_box: "0 0 32 32",
+            class: "scene-cat", width: "200", height: "160", view_box: "0 0 40 32",
             role: "img", "aria-label": "A cat searching with a magnifying glass",
             dangerous_inner_html: "{search_markup()}",
         }
@@ -120,14 +142,14 @@ mod tests {
     #[test]
     fn the_searching_cat_holds_a_moving_glass() {
         let m = search_markup();
-        assert!(m.contains("class=\"glass\"") && m.contains("look-blink"));
-        inside(m, 32);
+        assert!(m.contains("class=\"sparkle\"") && m.contains("look-blink"));
+        inside(m, 40);
     }
 
     #[test]
     fn the_waiting_cat_fishes_over_an_empty_bucket() {
         let m = waiting_markup();
-        assert!(m.contains("class=\"bob\""));
+        assert!(m.contains("class=\"bob\"") && m.contains("dot d2"));
         inside(m, 44);
     }
 }

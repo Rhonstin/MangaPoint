@@ -215,7 +215,25 @@ pub fn SettingsPage() -> Element {
                     },
                     SettingsSection::Files => rsx! {
         div { class: "card",
-            h2 { Icon { name: "folder-open", size: 17 } "Where files go" }
+            div { class: "row",
+                h2 { class: "grow", Icon { name: "folder-open", size: 17 } "Where files go" }
+                button { class: "btn small", title: "Open the folder exported files are saved to",
+                    onclick: move |_| {
+                        let dir = state.settings.read().export.output_dir.clone().unwrap_or_else(|| paths().default_export_dir());
+                        let _ = std::fs::create_dir_all(&dir);
+                        super::widgets::open_folder(&dir);
+                    },
+                    Icon { name: "folder-open", size: 14 } "Open folder"
+                }
+                button { class: "btn small", title: "Open the folder the downloaded chapters are kept in",
+                    onclick: move |_| {
+                        let dir = crate::state::library_files().root().to_path_buf();
+                        let _ = std::fs::create_dir_all(&dir);
+                        super::widgets::open_folder(&dir);
+                    },
+                    Icon { name: "book-open", size: 14 } "Downloads folder"
+                }
+            }
             div { class: "field",
                 label { "Save to folder" }
                 input {

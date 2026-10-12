@@ -155,3 +155,19 @@ pub fn open_folder(dir: &std::path::Path) {
         let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
     }
 }
+
+/// Open a web address in the default browser.
+pub fn open_link(url: &str) {
+    #[cfg(target_os = "windows")]
+    {
+        let _ = std::process::Command::new("explorer").arg(url).spawn();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("open").arg(url).spawn();
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+    }
+}

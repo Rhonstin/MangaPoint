@@ -52,14 +52,14 @@ pub fn DownloadsPage() -> Element {
     rsx! {
         div { class: "q-head",
             div { class: "grow",
-                h1 { "Downloads & exports" }
+                h1 { "Downloads" }
                 p { class: "muted",
                     if busy {
                         "{plural(chapters_left, \"chapter\")} to go"
                         if waiting_batches > 0 { " · {waiting_batches} more in line" }
                         if paused { " · paused" }
                     } else {
-                        "Downloads go on here one series after another. The files you export for your reader are listed below."
+                        "Downloads go on here one series after another, and the files you export are listed below."
                     }
                 }
             }

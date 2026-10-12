@@ -135,6 +135,10 @@ pub enum ModalAction {
         series_id: String,
         keys: Vec<String>,
     },
+    /// Export every downloaded chapter of these series, one file each.
+    ExportSeries {
+        series_ids: Vec<String>,
+    },
     /// Delete every downloaded chapter of these series; they stay in the library.
     DeleteDownloads {
         series_ids: Vec<String>,

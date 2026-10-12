@@ -1388,84 +1388,165 @@ pub fn start_export(state: AppState) {
         describe_target(&target)
     );
 
-    spawn_forever(async move {
-        let started = Instant::now();
-        let files = library_files();
-        let (tx, mut rx) = unbounded_channel();
-        let run = export_series(&files, &export, Some(tx), &cancel);
-        let watch = async {
-            let mut logged = HashMap::new();
-            while let Some(first) = rx.recv().await {
-                let mut batch = vec![first];
-                while let Ok(event) = rx.try_recv() {
-                    batch.push(event);
-                }
+    spawn_forever(run_export(state, series, export, target, cancel));
+}
+/// Run one export, keeping the job bar up to date, and record the result.
+async fn run_export(
+    state: AppState,
+    series: library::DownloadedSeries,
+    export: ExportJob,
+    target: ExportTarget,
+    cancel: CancelFlag,
+) {
+    let mut job = state.job;
+    let started = Instant::now();
+    let files = library_files();
+    let (tx, mut rx) = unbounded_channel();
+    let run = export_series(&files, &export, Some(tx), &cancel);
+    let watch = async {
+        let mut logged = HashMap::new();
+        while let Some(first) = rx.recv().await {
+            let mut batch = vec![first];
+            while let Ok(event) = rx.try_recv() {
+                batch.push(event);
+            }
+            for event in &batch {
+                log_event(event, &mut logged);
+            }
+            if let Some(view) = job.write().as_mut() {
                 for event in &batch {
-                    log_event(event, &mut logged);
+                    view.progress.apply(event);
                 }
-                if let Some(view) = job.write().as_mut() {
-                    for event in &batch {
-                        view.progress.apply(event);
-                    }
-                }
-                tokio::time::sleep(PROGRESS_REFRESH).await;
             }
-        };
-        let (result, ()) = join(run, watch).await;
+            tokio::time::sleep(PROGRESS_REFRESH).await;
+        }
+    };
+    let (result, ()) = join(run, watch).await;
 
-        match result {
-            Ok(outcome) => {
-                info!(
-                    "Export finished in {:.0}s: {} pages from {} chapter(s)",
-                    started.elapsed().as_secs_f32(),
-                    outcome.pages,
-                    outcome.chapters
-                );
-                for f in &outcome.files {
-                    info!("Wrote {} ({})", f.location, logic::human_bytes(f.bytes));
-                }
-                let record = ExportRecord {
-                    id: format!("{}-{}", series.id, now_secs()),
-                    series_id: series.id.clone(),
-                    title: series.title.clone(),
-                    chapters: outcome.chapters,
-                    pages: outcome.pages,
-                    format: series.settings.format.extension().to_string(),
-                    files: outcome
-                        .files
-                        .iter()
-                        .map(|f| ExportedFileRecord {
-                            path: f.location.clone(),
-                            bytes: f.bytes,
-                        })
-                        .collect(),
-                    target: describe_target(&target),
-                    at: now_secs(),
-                };
-                let mut exports = state.exports;
-                exports.write().add(record);
-                state.save_exports();
-                let summary = format!("Exported {} file(s)", outcome.files.len());
-                if let Some(view) = job.write().as_mut() {
-                    view.result = Some(Ok(summary));
-                }
+    match result {
+        Ok(outcome) => {
+            info!(
+                "Export finished in {:.0}s: {} pages from {} chapter(s)",
+                started.elapsed().as_secs_f32(),
+                outcome.pages,
+                outcome.chapters
+            );
+            for f in &outcome.files {
+                info!("Wrote {} ({})", f.location, logic::human_bytes(f.bytes));
             }
-            Err(e) => {
-                let cancelled = matches!(e, PipelineError::Cancelled);
-                let message = if cancelled {
-                    "Cancelled.".to_string()
-                } else {
-                    e.to_string()
-                };
-                if cancelled {
-                    info!("Export cancelled");
-                } else {
-                    warn!("Export failed: {message}");
-                }
-                if let Some(view) = job.write().as_mut() {
-                    view.result = Some(Err(message));
-                }
+            let record = ExportRecord {
+                id: format!("{}-{}", series.id, now_secs()),
+                series_id: series.id.clone(),
+                title: series.title.clone(),
+                chapters: outcome.chapters,
+                pages: outcome.pages,
+                format: series.settings.format.extension().to_string(),
+                files: outcome
+                    .files
+                    .iter()
+                    .map(|f| ExportedFileRecord {
+                        path: f.location.clone(),
+                        bytes: f.bytes,
+                    })
+                    .collect(),
+                target: describe_target(&target),
+                at: now_secs(),
+            };
+            let mut exports = state.exports;
+            exports.write().add(record);
+            state.save_exports();
+            let summary = format!("Exported {} file(s)", outcome.files.len());
+            if let Some(view) = job.write().as_mut() {
+                view.result = Some(Ok(summary));
             }
+        }
+        Err(e) => {
+            let cancelled = matches!(e, PipelineError::Cancelled);
+            let message = if cancelled {
+                "Cancelled.".to_string()
+            } else {
+                e.to_string()
+            };
+            if cancelled {
+                info!("Export cancelled");
+            } else {
+                warn!("Export failed: {message}");
+            }
+            if let Some(view) = job.write().as_mut() {
+                view.result = Some(Err(message));
+            }
+        }
+    }
+}
+
+/// Export every downloaded chapter of these series, one file each, to the
+/// export folder from Settings, one series after another.
+pub fn export_series_many(state: AppState, series_ids: Vec<String>) {
+    if job_running(state) {
+        state.error("Something is already running. Wait for it to finish, or cancel it.");
+        return;
+    }
+    let settings = state.settings.peek().clone();
+    let list: Vec<library::DownloadedSeries> = series_ids
+        .iter()
+        .filter_map(|id| state.library.peek().find(id).cloned())
+        .filter(|s| !s.chapters.is_empty())
+        .collect();
+    if list.is_empty() {
+        state.error("Nothing is downloaded for those series yet.");
+        return;
+    }
+    let target = match logic::export_target(
+        &crate::logic::TargetChoice::Folder,
+        &settings,
+        &paths().default_export_dir(),
+    ) {
+        Ok(t) => t,
+        Err(message) => {
+            state.error(message);
+            return;
+        }
+    };
+    spawn_forever(async move {
+        let total = list.len();
+        for (n, series) in list.into_iter().enumerate() {
+            let cancel = CancelFlag::new();
+            let keys: Vec<String> = series.chapters.iter().map(|c| c.key.clone()).collect();
+            let mut export = ExportJob::new(
+                series.clone(),
+                keys,
+                settings.device,
+                target.clone(),
+                paths().spool_dir(),
+            );
+            export.language = settings.language.clone();
+            export.grouping = Grouping::Single;
+            let mut job = state.job;
+            job.set(Some(JobView {
+                kind: JobKind::Export,
+                title: format!("{} ({} of {total})", series.title, n + 1),
+                progress: JobProgress::default(),
+                result: None,
+                cancel: cancel.clone(),
+            }));
+            info!(
+                "Export started: \"{}\" ({} of {total})",
+                series.title,
+                n + 1
+            );
+            run_export(state, series, export, target.clone(), cancel).await;
+            let failed = matches!(
+                job.peek().as_ref().and_then(|j| j.result.as_ref()),
+                Some(Err(_))
+            );
+            if failed {
+                return;
+            }
+        }
+        let mut job = state.job;
+        let mut guard = job.write();
+        if let Some(view) = guard.as_mut() {
+            view.result = Some(Ok(format!("Exported {total} series")));
         }
     });
 }
