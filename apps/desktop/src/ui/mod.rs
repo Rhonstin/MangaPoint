@@ -4,6 +4,7 @@ pub mod cat;
 mod chapter_table;
 mod conversion;
 mod downloads_page;
+mod hang;
 mod icons;
 mod library_page;
 mod ocean;

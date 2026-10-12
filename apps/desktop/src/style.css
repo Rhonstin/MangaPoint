@@ -590,7 +590,8 @@ table.chapters tbody tr.locked:hover { background: transparent; }
 .sx-note { color: var(--muted); font-size: 0.84rem; margin: 6px 0 0; }
 
 /* ---- the cat on the sea (empty Search page) ---- */
-.empty:has(.ocean) { padding-top: 10px; }
+/* The scene sits in the middle of the space under the search box. */
+.empty:has(.ocean) { min-height: calc(100vh - 250px); justify-content: center; padding: 0 16px 40px; }
 /* Each pixel is 5 screen pixels, like the other cats. */
 .ocean { width: 400px; max-width: 92%; height: auto; shape-rendering: crispEdges; image-rendering: pixelated; margin-bottom: 4px; display: block; }
 .ocean .floater { animation: ocean-bob 4.8s step-end infinite; }
@@ -625,3 +626,15 @@ table.chapters tbody tr.locked:hover { background: transparent; }
 .ocean .z1 { animation-delay: 2.1s; }
 @keyframes zz { 0% { opacity: 0; transform: translate(0, 1px); } 25%, 70% { opacity: 1; } 100% { opacity: 0; transform: translate(2px, -3px); } }
 @media (prefers-reduced-motion: reduce) { .ocean *, .ocean { animation: none !important; } .ocean .tail-b, .ocean .ripple, .ocean .zz { opacity: 0; } }
+
+/* ---- the cat hanging from a branch (empty Downloads page) ---- */
+.hang { width: 240px; max-width: 92%; height: auto; shape-rendering: crispEdges; image-rendering: pixelated; margin-bottom: 10px; display: block; }
+.hang .swing { animation: swing 6s step-end infinite; }
+@keyframes swing { 0% { transform: translateX(0); } 25% { transform: translateX(-1px); } 50% { transform: translateX(0); } 75% { transform: translateX(1px); } }
+.hang .tail-a { animation: tail-a 2.4s step-end infinite; }
+.hang .tail-b { animation: tail-b 2.4s step-end infinite; }
+.hang .leaves-a { animation: tail-a 3.6s step-end infinite; }
+.hang .leaves-b { animation: tail-b 3.6s step-end infinite; }
+.hang .zz { opacity: 0; animation: zz 4.2s steps(4) infinite; }
+.hang .z1 { animation-delay: 2.1s; }
+@media (prefers-reduced-motion: reduce) { .hang *, .hang { animation: none !important; } .hang .tail-b, .hang .leaves-b, .hang .zz { opacity: 0; } }

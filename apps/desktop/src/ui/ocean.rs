@@ -15,20 +15,20 @@ const H: i32 = 40;
 
 /// Pixels collected from drawing, to be written out once the edges are broken up.
 #[derive(Default)]
-struct Layer(Vec<(i32, i32, &'static str)>);
+pub(super) struct Layer(Vec<(i32, i32, &'static str)>);
 
 impl Layer {
-    fn px(&mut self, x: i32, y: i32, c: &'static str) {
+    pub(super) fn px(&mut self, x: i32, y: i32, c: &'static str) {
         self.0.push((x, y, c));
     }
 
-    fn pixels(&mut self, points: &[(i32, i32)], c: &'static str) {
+    pub(super) fn pixels(&mut self, points: &[(i32, i32)], c: &'static str) {
         for &(x, y) in points {
             self.px(x, y, c);
         }
     }
 
-    fn rect(&mut self, x: i32, y: i32, w: i32, h: i32, c: &'static str) {
+    pub(super) fn rect(&mut self, x: i32, y: i32, w: i32, h: i32, c: &'static str) {
         for yy in y..y + h {
             for xx in x..x + w {
                 self.px(xx, yy, c);
@@ -36,7 +36,7 @@ impl Layer {
         }
     }
 
-    fn ellipse(&mut self, cx: f32, cy: f32, rx: f32, ry: f32, c: &'static str) {
+    pub(super) fn ellipse(&mut self, cx: f32, cy: f32, rx: f32, ry: f32, c: &'static str) {
         for y in (cy - ry).floor() as i32..=(cy + ry).ceil() as i32 {
             for x in (cx - rx).floor() as i32..=(cx + rx).ceil() as i32 {
                 let dx = (x as f32 + 0.5 - cx) / rx;
@@ -88,10 +88,10 @@ fn survives(x: i32, y: i32) -> bool {
 
 /// Write a layer as SVG: one rectangle per run of equal color in a row.
 /// Later pixels cover earlier ones at the same place.
-fn emit(layer: &Layer) -> String {
+fn emit(layer: &Layer, dissolve: bool) -> String {
     let mut rows: BTreeMap<i32, BTreeMap<i32, &str>> = BTreeMap::new();
     for &(x, y, c) in &layer.0 {
-        if (-10..H + 10).contains(&y) && survives(x, y) {
+        if (-10..H + 10).contains(&y) && (!dissolve || survives(x, y)) {
             rows.entry(y).or_default().insert(x, c);
         }
     }
@@ -119,7 +119,16 @@ fn emit(layer: &Layer) -> String {
 
 /// A layer inside a group with a class (for the animation) and an opacity.
 fn group(class: &str, opacity: f32, layer: &Layer) -> String {
-    let body = emit(layer);
+    group_with(class, opacity, layer, true)
+}
+
+/// Like [`group`], but every pixel is kept (no broken-up edges).
+pub(super) fn group_plain(class: &str, opacity: f32, layer: &Layer) -> String {
+    group_with(class, opacity, layer, false)
+}
+
+fn group_with(class: &str, opacity: f32, layer: &Layer, dissolve: bool) -> String {
+    let body = emit(layer, dissolve);
     if body.is_empty() {
         return String::new();
     }

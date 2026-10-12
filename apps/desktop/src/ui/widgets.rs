@@ -52,7 +52,7 @@ pub fn EmptyState(
             } else if scene == Some("search") {
                 super::scenes::SearchCat {}
             } else if scene == Some("waiting") {
-                super::scenes::WaitingCat {}
+                super::hang::HangingCat {}
             } else if shelf.unwrap_or(false) {
                 super::shelf::ShelfCat {}
             } else {

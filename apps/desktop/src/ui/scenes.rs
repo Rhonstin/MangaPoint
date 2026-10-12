@@ -1,6 +1,5 @@
-//! Two small pixel-art scenes for empty screens, both starring the gray cat:
-//! one searching with a magnifying glass, one fishing in an empty bucket while
-//! it waits for downloads. Original art drawn in code as SVG rectangles; the
+//! A small pixel-art scene for an empty screen starring the gray cat: it
+//! searches with a magnifying glass. Original art drawn in code as SVG rectangles; the
 //! motion is CSS (see `style.css`).
 
 use super::cat::sitting_markup;
@@ -64,42 +63,6 @@ fn search_markup() -> &'static str {
     })
 }
 
-fn waiting_markup() -> &'static str {
-    static MARKUP: OnceLock<String> = OnceLock::new();
-    MARKUP.get_or_init(|| {
-        let mut s = blinking_cat(17, 0);
-        // The rod: from the raised paw up and to the right.
-        for x in 21..=36 {
-            let y = 17 - (x - 21) * 14 / 15;
-            rect(&mut s, x, y, 1, 1, "#a8826a");
-        }
-        // The line, and a hook that bobs just above the bucket.
-        rect(&mut s, 36, 3, 1, 19, "#8a8a8a");
-        s.push_str("<g class=\"bob\">");
-        rect(&mut s, 36, 22, 1, 2, "#8a8a8a");
-        rect(&mut s, 35, 24, 2, 1, "#cfcfcf");
-        s.push_str("</g>");
-        // The empty bucket: a rim, a dark opening, a body that narrows with
-        // an amber band, and a handle on each side.
-        rect(&mut s, 31, 26, 11, 1, "#a8a8a8");
-        rect(&mut s, 32, 27, 9, 1, "#161616");
-        rect(&mut s, 32, 28, 9, 1, "#5a5a5a");
-        rect(&mut s, 32, 29, 9, 1, "#d4b26a");
-        rect(&mut s, 33, 30, 7, 1, "#4a4a4a");
-        rect(&mut s, 34, 31, 5, 1, "#3a3a3a");
-        for (x, y) in [(30, 27), (29, 28), (30, 29), (42, 27), (43, 28), (42, 29)] {
-            rect(&mut s, x, y, 1, 1, "#7a7a7a");
-        }
-        // Waiting: three dots that appear one after another.
-        for (i, x) in [24, 27, 30].into_iter().enumerate() {
-            s.push_str(&format!("<g class=\"dot d{i}\">"));
-            rect(&mut s, x, 4, 2, 2, "#8a8a8a");
-            s.push_str("</g>");
-        }
-        s
-    })
-}
-
 /// The cat looking through a magnifying glass, for a search with nothing to show.
 #[component]
 pub fn SearchCat() -> Element {
@@ -108,18 +71,6 @@ pub fn SearchCat() -> Element {
             class: "scene-cat", width: "200", height: "160", view_box: "0 0 40 32",
             role: "img", "aria-label": "A cat searching with a magnifying glass",
             dangerous_inner_html: "{search_markup()}",
-        }
-    }
-}
-
-/// The cat fishing in an empty bucket, while nothing is downloading.
-#[component]
-pub fn WaitingCat() -> Element {
-    rsx! {
-        svg {
-            class: "scene-cat wide", width: "220", height: "160", view_box: "0 0 44 32",
-            role: "img", "aria-label": "A cat fishing in an empty bucket",
-            dangerous_inner_html: "{waiting_markup()}",
         }
     }
 }
@@ -144,12 +95,5 @@ mod tests {
         let m = search_markup();
         assert!(m.contains("class=\"sparkle\"") && m.contains("look-blink"));
         inside(m, 40);
-    }
-
-    #[test]
-    fn the_waiting_cat_fishes_over_an_empty_bucket() {
-        let m = waiting_markup();
-        assert!(m.contains("class=\"bob\"") && m.contains("dot d2"));
-        inside(m, 44);
     }
 }
