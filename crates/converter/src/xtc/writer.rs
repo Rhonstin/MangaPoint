@@ -81,6 +81,12 @@ impl XtcBuilder {
         self.pages.len()
     }
 
+    /// Add a chapter entry after the builder was created, for callers that
+    /// only learn where a chapter ends once its pages have been added.
+    pub fn push_chapter(&mut self, chapter: Chapter) {
+        self.chapters.push(chapter);
+    }
+
     /// Encode and append a page. Its depth must match the container format.
     pub fn add_page(&mut self, page: &LevelImage) -> Result<(), XtcError> {
         if page.depth != self.format.depth() {
