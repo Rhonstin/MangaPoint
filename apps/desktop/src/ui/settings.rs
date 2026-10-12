@@ -1,7 +1,7 @@
 //! Preferences.
 
 use super::ask_enable_browser;
-use super::conversion::ConversionControls;
+
 use super::presets_lab::PresetsLab;
 use super::widgets::Icon;
 use crate::logic::human_bytes;
@@ -12,13 +12,8 @@ use dioxus::prelude::*;
 use library::{DownloadLimits, DownloadSpeed};
 
 /// The sections, in the order the sidebar lists them.
-const SECTIONS: [(SettingsSection, &str, &str); 7] = [
+const SECTIONS: [(SettingsSection, &str, &str); 6] = [
     (SettingsSection::Reader, "hard-drive", "Your reader"),
-    (
-        SettingsSection::Pages,
-        "sliders-horizontal",
-        "How pages look",
-    ),
     (SettingsSection::Presets, "layers", "Presets"),
     (SettingsSection::Downloads, "download", "Downloads"),
     (SettingsSection::Files, "folder-open", "Files"),
@@ -100,30 +95,6 @@ pub fn SettingsPage() -> Element {
 
 
                     },
-                    SettingsSection::Pages => rsx! {
-        div { class: "card",
-            h2 { Icon { name: "sliders-horizontal", size: 17 } "How pages look" }
-            p { class: "muted small", "Your starting point for every new series. Each series can be fine-tuned while you preview it." }
-            ConversionControls {
-                value: s.conversion.clone(),
-                onchange: move |v| {
-                    let mut settings = state.settings;
-                    settings.write().conversion = v;
-                    state.save_settings();
-                },
-            }
-        }
-
-
-                        div { class: "banner small",
-                            Icon { name: "layers", size: 16 }
-                            div {
-                                "Presets (manga, manhwa, manhua and your own) are on their own page, where you can try them on a test page."
-                                " "
-                                button { class: "btn small", onclick: move |_| { let mut current = state.settings_section; current.set(SettingsSection::Presets); }, "Open presets" }
-                            }
-                        }
-                    },
                     SettingsSection::Presets => rsx! { PresetsLab {} },
                     SettingsSection::Downloads => rsx! {
         div { class: "card",
@@ -152,7 +123,7 @@ pub fn SettingsPage() -> Element {
                     DownloadSpeed::Gentle => "Slow and careful. Best for sources that block easily.",
                     DownloadSpeed::Normal => "A good balance of speed and care.",
                     DownloadSpeed::Fast => "Quick. Some sources may start refusing requests.",
-                    DownloadSpeed::Ultra => "The fastest: many chapters and pages at once. Every chapter comes from the same source, so the translation stays consistent. Recommended.",
+                    DownloadSpeed::Ultra => "The fastest: many chapters and pages at once. Every chapter comes from the same source (unless you turn on mixing below), so the translation stays consistent. Recommended.",
                     DownloadSpeed::Custom => "Choose the numbers yourself.",
                 }}
                 " Right now: {limits.chapters} chapter(s) at a time, {limits.pages} pages in flight."
@@ -181,30 +152,30 @@ pub fn SettingsPage() -> Element {
                     Icon { name: "triangle-alert", size: 16 }
                     "High numbers can get you blocked."
                 }
-                h3 { class: "group", style: "margin: 14px 0 4px; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted)", "Mixing sources" }
-                p { class: "muted small", style: "margin: 0 0 6px",
-                    "Both options below can put chapters of one series from different sources, and so from different translations. Leave them off if you want a consistent series."
+            }
+            h3 { class: "group", style: "margin: 18px 0 4px; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted)", "Mixing sources" }
+            p { class: "muted small", style: "margin: 0 0 6px",
+                "Both options below can put chapters of one series from different sources, and so from different translations. Leave them off if you want a consistent series."
+            }
+            label { class: "check-line",
+                input {
+                    r#type: "checkbox", checked: s.download.spread_sources,
+                    onchange: move |e| update(|s, v| s.download.spread_sources = v == "true", e.checked().to_string()),
                 }
-                label { class: "check-line",
-                    input {
-                        r#type: "checkbox", checked: s.download.spread_sources,
-                        onchange: move |e| update(|s, v| s.download.spread_sources = v == "true", e.checked().to_string()),
-                    }
-                    span { "Share chapters between sources" }
+                span { "Share chapters between sources" }
+            }
+            p { class: "muted small", style: "margin: 2px 0 8px",
+                "When several sources offer a chapter, different chapters download from different sources at once, which adds their speeds together."
+            }
+            label { class: "check-line",
+                input {
+                    r#type: "checkbox", checked: s.download.race_sources,
+                    onchange: move |e| update(|s, v| s.download.race_sources = v == "true", e.checked().to_string()),
                 }
-                p { class: "muted small", style: "margin: 2px 0 8px",
-                    "When several sources offer a chapter, different chapters download from different sources at once, which adds their speeds together."
-                }
-                label { class: "check-line",
-                    input {
-                        r#type: "checkbox", checked: s.download.race_sources,
-                        onchange: move |e| update(|s, v| s.download.race_sources = v == "true", e.checked().to_string()),
-                    }
-                    span { "Race every source" }
-                }
-                p { class: "muted small", style: "margin: 2px 0 0",
-                    "Asks every source that has a chapter at the same time and keeps whichever finishes first. Fastest per chapter, but wastes downloads and sends the most requests."
-                }
+                span { "Race every source" }
+            }
+            p { class: "muted small", style: "margin: 2px 0 0",
+                "Asks every source that has a chapter at the same time and keeps whichever finishes first. Fastest per chapter, but wastes downloads and sends the most requests."
             }
         }
 

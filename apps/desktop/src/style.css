@@ -385,3 +385,36 @@ td.status, th.status { width: 170px; }
 .lab-box .kept { position: absolute; border: 2px solid var(--accent); box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.62); pointer-events: none; }
 .popover input[type="search"] { width: 100%; }
 @media (max-width: 980px) { .settings { grid-template-columns: 1fr; } .settings-nav { position: static; flex-direction: row; flex-wrap: wrap; } .lab { grid-template-columns: 1fr; } }
+
+/* ---- search: filter button, sort pill and source pills ---- */
+.searchwrap { position: relative; }
+.searchwrap .popover { left: auto; right: 0; }
+.icon-btn {
+  position: relative; display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  min-width: 46px; padding: 0 12px; border: 1px solid var(--line-strong); border-radius: 10px;
+  background: var(--panel); color: var(--text); cursor: pointer; font: inherit;
+}
+.icon-btn:hover { border-color: var(--accent); }
+.icon-btn.on { border-color: var(--accent); background: var(--panel-3); }
+.icon-btn:disabled { opacity: 0.45; cursor: default; }
+.icon-btn .badge { font-size: 0.75rem; }
+.pill-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 12px 0 4px; }
+.sort-pill { position: relative; display: inline-flex; align-items: center; }
+.sort-pill select {
+  appearance: none; -webkit-appearance: none; padding: 5px 30px 5px 14px; border-radius: 999px;
+  border: 1px solid var(--accent); background: var(--panel-2); color: var(--text); font-size: 0.88rem; cursor: pointer;
+}
+.sort-pill .chev { position: absolute; right: 11px; pointer-events: none; color: var(--muted); display: inline-flex; }
+.src-pill {
+  position: relative; display: inline-flex; align-items: center; padding: 5px 28px 5px 14px; font-size: 0.88rem;
+  border: 1px solid var(--line-strong); border-radius: 999px; background: var(--panel-2); transition: border-color 0.15s;
+}
+.src-pill:hover { border-color: var(--accent); }
+/* The x always has its place, so showing it never changes the pill's width. */
+.src-pill .x {
+  position: absolute; right: 5px; top: 50%; transform: translateY(-50%); width: 19px; height: 19px; padding: 0;
+  display: flex; align-items: center; justify-content: center; border: 0; border-radius: 50%;
+  background: transparent; color: var(--muted); opacity: 0; cursor: pointer; transition: opacity 0.12s, background 0.12s;
+}
+.src-pill:hover .x, .src-pill .x:focus-visible { opacity: 1; }
+.src-pill .x:hover { background: var(--line-strong); color: var(--text); }

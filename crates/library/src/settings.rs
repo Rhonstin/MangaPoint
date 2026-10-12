@@ -100,13 +100,13 @@ pub struct DownloadSettings {
     /// Used when `speed` is Custom.
     pub custom_chapters: u8,
     pub custom_pages: u8,
-    /// Advanced only: download different chapters from different sources at
-    /// the same time. Adds the sources' speeds together, but chapters can then
-    /// come from different translations.
+    /// Download different chapters from different sources at the same time.
+    /// Adds the sources' speeds together, but chapters can then come from
+    /// different translations. Off unless the user turns it on, in any speed.
     pub spread_sources: bool,
-    /// Advanced only: ask every source that has a chapter at once and keep the
-    /// first to finish. Fastest per chapter, and chapters can then come from
-    /// different translations.
+    /// Ask every source that has a chapter at once and keep the first to
+    /// finish. Fastest per chapter, and chapters can then come from different
+    /// translations. Off unless the user turns it on, in any speed.
     pub race_sources: bool,
 }
 
@@ -127,10 +127,9 @@ impl DownloadSettings {
     /// level off at about 50 requests in flight, some sources gain nothing at
     /// all (they cap themselves), and none pushed back even at 200.
     ///
-    /// Mixing sources is only ever done in Advanced, because it can mix
-    /// translations within one series.
+    /// Mixing sources is only done when the user has switched it on, because it
+    /// can mix translations within one series; it works with any speed.
     pub fn limits(&self) -> DownloadLimits {
-        let custom = self.speed == DownloadSpeed::Custom;
         let (chapters, pages) = match self.speed {
             DownloadSpeed::Gentle => (1, 2),
             DownloadSpeed::Normal => (2, 6),
@@ -144,8 +143,8 @@ impl DownloadSettings {
         DownloadLimits {
             chapters,
             pages,
-            spread_sources: custom && self.spread_sources,
-            race_sources: custom && self.race_sources,
+            spread_sources: self.spread_sources,
+            race_sources: self.race_sources,
         }
     }
 }
@@ -268,29 +267,33 @@ mod tests {
     }
 
     #[test]
-    fn mixing_sources_only_ever_happens_in_advanced() {
-        let mut d = DownloadSettings {
-            spread_sources: true,
-            race_sources: true,
-            ..Default::default()
-        };
-        for speed in [
+    fn mixing_sources_follows_its_own_switches_in_every_speed() {
+        let speeds = [
             DownloadSpeed::Gentle,
             DownloadSpeed::Normal,
             DownloadSpeed::Fast,
             DownloadSpeed::Ultra,
-        ] {
+            DownloadSpeed::Custom,
+        ];
+        // Off by default, whatever the speed.
+        let mut d = DownloadSettings::default();
+        for speed in speeds {
             d.speed = speed;
             let l = d.limits();
             assert!(!l.spread_sources && !l.race_sources, "{speed:?}");
         }
-        d.speed = DownloadSpeed::Custom;
-        let l = d.limits();
-        assert!(l.spread_sources && l.race_sources);
-        d.spread_sources = false;
+        // Switched on, it applies to every speed, not just Advanced.
+        d.spread_sources = true;
+        d.race_sources = true;
+        for speed in speeds {
+            d.speed = speed;
+            let l = d.limits();
+            assert!(l.spread_sources && l.race_sources, "{speed:?}");
+        }
+        // And each switch is its own.
         d.race_sources = false;
         let l = d.limits();
-        assert!(!l.spread_sources && !l.race_sources);
+        assert!(l.spread_sources && !l.race_sources);
     }
 
     #[test]

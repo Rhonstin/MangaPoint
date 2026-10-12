@@ -15,44 +15,166 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use tracing::{info, warn};
 
+/// A source as the search page shows it.
+#[derive(Clone, PartialEq)]
+struct SourceInfo {
+    id: String,
+    name: String,
+    lang: String,
+    adult: bool,
+}
+
 #[component]
 pub fn SearchPage() -> Element {
     let state = use_context::<AppState>();
     let mut text = use_signal(|| state.search.peek().query.clone());
+    let mut open = use_signal(|| false);
+    let changed = use_signal(|| false);
     let view = state.search.read().clone();
     let failed_text = view.failed.join(", ");
-    let order = logic::sorted_order(&view.ranked, *state.search_sort.read());
+    let sort = *state.search_sort.read();
+    let order = logic::sorted_order(&view.ranked, sort);
+
+    let installed = use_resource(move || async move {
+        let _ = state.sources_version.read();
+        let lang = state.settings.read().language.clone();
+        let client = state.client()?;
+        SourceManager::new(&*client).installed(&lang).await.ok()
+    });
+    let excluded = state.settings.read().search_excluded_sources.clone();
+    let mut sources: Vec<SourceInfo> = match &*installed.read() {
+        Some(Some(items)) => items
+            .iter()
+            .map(|i| SourceInfo {
+                id: i.source.id.clone(),
+                name: i.source.name.clone(),
+                lang: i.source.lang.clone(),
+                adult: i.source.is_nsfw,
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+    sources.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    let total = sources.len();
+    let included: Vec<SourceInfo> = sources
+        .iter()
+        .filter(|s| !excluded.contains(&s.id))
+        .cloned()
+        .collect();
+    let filtered = included.len() != total;
+
+    // Searching again with the sources as they are now, if there is a search.
+    let search_again = move || {
+        let query = state.search.peek().query.clone();
+        if !query.trim().is_empty() {
+            run_search(state, query.trim().to_string());
+        }
+    };
+    // Change which sources are searched.
+    let set_excluded = move |list: Vec<String>| {
+        let mut settings = state.settings;
+        settings.write().search_excluded_sources = list;
+        state.save_settings();
+    };
+    // Closing the panel searches again if the choice changed.
+    let close_panel = move || {
+        let mut open = open;
+        let mut changed = changed;
+        open.set(false);
+        if changed() {
+            search_again();
+        }
+        changed.set(false);
+    };
 
     rsx! {
         h1 { "Find a series" }
-        p { class: "muted", "Searches all your sources at once and shows each series once, with the best source chosen for you." }
-        form {
-            class: "searchbar",
-            onsubmit: move |e| {
-                e.prevent_default();
-                let q = text.read().trim().to_string();
-                if !q.is_empty() {
-                    run_search(state, q);
+        p { class: "muted", "Searches the sources you choose at once and shows each series once, with the best source chosen for you." }
+        div { class: "searchwrap",
+            form {
+                class: "searchbar",
+                onsubmit: move |e| {
+                    e.prevent_default();
+                    let q = text.read().trim().to_string();
+                    if !q.is_empty() {
+                        run_search(state, q);
+                    }
+                },
+                div { class: "input-icon",
+                    Icon { name: "search", size: 18 }
+                    input {
+                        r#type: "search",
+                        placeholder: "Title, for example Berserk",
+                        value: "{text}",
+                        autofocus: true,
+                        oninput: move |e| text.set(e.value()),
+                    }
                 }
-            },
-            div { class: "input-icon",
-                Icon { name: "search", size: 18 }
-                input {
-                    r#type: "search",
-                    placeholder: "Title, for example Berserk",
-                    value: "{text}",
-                    autofocus: true,
-                    oninput: move |e| text.set(e.value()),
+                button {
+                    class: if open() || filtered { "icon-btn on" } else { "icon-btn" },
+                    r#type: "button",
+                    title: "Choose which sources to search",
+                    disabled: total == 0,
+                    onclick: move |_| { if open() { close_panel() } else { open.set(true) } },
+                    Icon { name: "funnel", size: 18 }
+                    if filtered { span { class: "badge", "{included.len()}/{total}" } }
+                }
+                // Submitting the form (this button or Enter) starts the search; no separate click handler.
+                button { class: "btn primary", r#type: "submit", disabled: view.searching,
+                    if view.searching { Icon { name: "loader-circle", size: 17 } } else { Icon { name: "search", size: 17 } }
+                    "Search"
                 }
             }
-            // Submitting the form (this button or Enter) starts the search; no separate click handler.
-            button { class: "btn primary", r#type: "submit", disabled: view.searching,
-                if view.searching { Icon { name: "loader-circle", size: 17 } } else { Icon { name: "search", size: 17 } }
-                "Search"
+            if open() {
+                div { class: "backdrop", onclick: move |_| close_panel() }
+                SourcePanel {
+                    sources: sources.clone(),
+                    excluded: excluded.clone(),
+                    on_change: move |list: Vec<String>| { set_excluded(list); let mut changed = changed; changed.set(true); },
+                    on_close: move |()| close_panel(),
+                }
             }
         }
 
-        SourceFilters { query: view.query.clone() }
+        // The sort, and one pill for each source being searched. Hover a source
+        // to remove it; the sort is always there.
+        div { class: "pill-row",
+            div { class: "sort-pill",
+                select {
+                    value: "{sort.key()}",
+                    title: "How the results are ordered",
+                    onchange: move |e| { let mut s = state.search_sort; s.set(SearchSort::from_key(&e.value())); },
+                    for option_sort in SearchSort::ALL {
+                        option { key: "{option_sort.key()}", value: "{option_sort.key()}", selected: option_sort == sort, "Sort: {option_sort.label()}" }
+                    }
+                }
+                span { class: "chev", Icon { name: "chevron-down", size: 14 } }
+            }
+            for source in included.iter() {
+                {
+                    let id = source.id.clone();
+                    let current = excluded.clone();
+                    rsx! {
+                        span { class: "src-pill", key: "{source.id}",
+                            "{source.name}"
+                            button {
+                                class: "x", r#type: "button", title: "Do not search {source.name}",
+                                onclick: move |_| {
+                                    let mut next = current.clone();
+                                    if !next.contains(&id) { next.push(id.clone()); }
+                                    set_excluded(next);
+                                    search_again();
+                                },
+                                Icon { name: "x", size: 12 }
+                            }
+                        }
+                    }
+                }
+            }
+            if total > 0 && included.is_empty() {
+                span { class: "muted small", "No source is chosen. Use the filter button to pick some." }
+            }
+        }
 
         if view.no_sources {
             div { class: "banner warn",
@@ -62,7 +184,7 @@ pub fn SearchPage() -> Element {
         }
         if view.none_selected {
             div { class: "banner warn",
-                "Every source is turned off for searching. Open the Sources list above and tick the ones you want."
+                "Every source is turned off for searching. Use the filter button and tick the ones you want."
             }
         }
         if view.searching {
@@ -94,168 +216,89 @@ pub fn SearchPage() -> Element {
     }
 }
 
-/// Which sources a search covers, and how the results are ordered.
+/// The panel for choosing the sources to search, opened by the filter button.
 #[component]
-fn SourceFilters(query: String) -> Element {
+fn SourcePanel(
+    sources: Vec<SourceInfo>,
+    excluded: Vec<String>,
+    on_change: EventHandler<Vec<String>>,
+    on_close: EventHandler<()>,
+) -> Element {
     let state = use_context::<AppState>();
-    let mut open = use_signal(|| false);
-    let mut changed = use_signal(|| false);
     let mut find = use_signal(String::new);
-    let installed = use_resource(move || async move {
-        let _ = state.sources_version.read();
-        let lang = state.settings.read().language.clone();
-        let client = state.client()?;
-        SourceManager::new(&*client).installed(&lang).await.ok()
-    });
-    let excluded = state.settings.read().search_excluded_sources.clone();
-    let sort = *state.search_sort.read();
     let health = state.health.read().clone();
-
-    // (id, name, language, adult-only), by name.
-    let mut list: Vec<(String, String, String, bool)> = match &*installed.read() {
-        Some(Some(items)) => items
-            .iter()
-            .map(|i| {
-                (
-                    i.source.id.clone(),
-                    i.source.name.clone(),
-                    i.source.lang.clone(),
-                    i.source.is_nsfw,
-                )
-            })
-            .collect(),
-        _ => Vec::new(),
-    };
-    list.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
-    let total = list.len();
-    let on = list
-        .iter()
-        .filter(|(id, ..)| !excluded.contains(id))
-        .count();
-    let label = if total == 0 {
-        "Sources".to_string()
-    } else if on == total {
-        format!("All sources ({total})")
-    } else {
-        format!("{on} of {total} sources")
-    };
+    let total = sources.len();
+    let on = sources.iter().filter(|s| !excluded.contains(&s.id)).count();
     let needle = find.read().trim().to_lowercase();
-    let shown: Vec<&(String, String, String, bool)> = list
+    let shown: Vec<&SourceInfo> = sources
         .iter()
-        .filter(|(_, name, lang, _)| {
+        .filter(|s| {
             needle.is_empty()
-                || name.to_lowercase().contains(&needle)
-                || lang.to_lowercase().contains(&needle)
+                || s.name.to_lowercase().contains(&needle)
+                || s.lang.to_lowercase().contains(&needle)
         })
         .collect();
-    let all_ids: Vec<String> = list.iter().map(|(id, ..)| id.clone()).collect();
-    let passing: Vec<String> = list
+    let all_ids: Vec<String> = sources.iter().map(|s| s.id.clone()).collect();
+    let failing: Vec<String> = sources
         .iter()
-        .filter(|(id, ..)| {
-            health
-                .latest(id)
+        .filter(|s| {
+            !health
+                .latest(&s.id)
                 .is_some_and(|r| r.verdict == Verdict::Pass)
         })
-        .map(|(id, ..)| id.clone())
+        .map(|s| s.id.clone())
         .collect();
-    let (ids_none, ids_ok) = (all_ids.clone(), all_ids.clone());
-
-    let mut set_excluded = move |excluded: Vec<String>| {
-        let mut settings = state.settings;
-        settings.write().search_excluded_sources = excluded;
-        state.save_settings();
-        changed.set(true);
-    };
-    let close = {
-        let query = query.clone();
-        move || {
-            open.set(false);
-            // Search again with the new choice, if there is something to search for.
-            if changed() && !query.trim().is_empty() {
-                run_search(state, query.trim().to_string());
-            }
-            changed.set(false);
-        }
-    };
-    let mut close_toggle = close.clone();
-    let mut close_done = close.clone();
-    let mut close_backdrop = close;
 
     rsx! {
-        div { class: "filters",
-            button {
-                class: if open() { "btn small on" } else { "btn small" },
-                disabled: total == 0,
-                onclick: move |_| { if open() { close_toggle() } else { open.set(true) } },
-                Icon { name: "layers", size: 15 }
-                "{label}"
-                Icon { name: "chevron-down", size: 14 }
-            }
-            div { class: "sort",
-                span { class: "muted small", "Sort by" }
-                select {
-                    value: "{sort.key()}",
-                    onchange: move |e| { let mut s = state.search_sort; s.set(SearchSort::from_key(&e.value())); },
-                    for s in SearchSort::ALL {
-                        option { key: "{s.key()}", value: "{s.key()}", selected: s == sort, "{s.label()}" }
-                    }
+        div { class: "popover",
+            div { class: "row", style: "margin-bottom: 8px",
+                strong { class: "grow", "Search these sources" }
+                button { class: "btn ghost small", r#type: "button", onclick: move |_| on_change.call(Vec::new()), "All" }
+                button { class: "btn ghost small", r#type: "button", onclick: move |_| on_change.call(all_ids.clone()), "None" }
+                button { class: "btn ghost small", r#type: "button", title: "Only the sources whose last test passed",
+                    onclick: move |_| on_change.call(failing.clone()),
+                    "Tested OK"
                 }
             }
-            if open() {
-                div { class: "backdrop", onclick: move |_| close_backdrop() }
-                div { class: "popover",
-                    div { class: "row", style: "margin-bottom: 8px",
-                        strong { class: "grow", "Search these sources" }
-                        button { class: "btn ghost small", onclick: move |_| set_excluded(Vec::new()), "All" }
-                        button { class: "btn ghost small", onclick: move |_| set_excluded(ids_none.clone()), "None" }
-                        button { class: "btn ghost small", title: "Only the sources whose last test passed",
-                            onclick: move |_| {
-                                set_excluded(ids_ok.iter().filter(|id| !passing.contains(id)).cloned().collect())
-                            },
-                            "Tested OK"
-                        }
-                    }
-                    input {
-                        r#type: "search", placeholder: "Find a source or a language",
-                        value: "{find}", oninput: move |e| find.set(e.value()),
-                    }
-                    div { class: "source-list",
-                        for (id, name, lang, adult) in shown.iter().map(|t| (t.0.clone(), t.1.clone(), t.2.clone(), t.3)) {
-                            {
-                                let included = !excluded.contains(&id);
-                                let verdict = health.latest(&id).map(|r| r.verdict);
-                                let toggle_id = id.clone();
-                                let current = excluded.clone();
-                                rsx! {
-                                    label { class: "source-row", key: "{id}",
-                                        input {
-                                            r#type: "checkbox", checked: included,
-                                            onchange: move |_| {
-                                                let mut next = current.clone();
-                                                if let Some(at) = next.iter().position(|x| *x == toggle_id) { next.remove(at); } else { next.push(toggle_id.clone()); }
-                                                set_excluded(next);
-                                            },
-                                        }
-                                        span { class: "grow", "{name}" }
-                                        span { class: "muted small", "{lang}" }
-                                        if adult { Chip { text: "18+", kind: Some("warn".to_string()) } }
-                                        {match verdict {
-                                            Some(Verdict::Pass) => rsx! { Chip { text: "works", kind: Some("ok".to_string()) } },
-                                            Some(Verdict::NeedsBrowser) | Some(Verdict::NeedsFlareSolverr) => rsx! { Chip { text: "needs help", kind: Some("warn".to_string()) } },
-                                            Some(Verdict::Failed) => rsx! { Chip { text: "not working", kind: Some("bad".to_string()) } },
-                                            None => rsx! {},
-                                        }}
-                                    }
+            input {
+                r#type: "search", placeholder: "Find a source or a language",
+                value: "{find}", oninput: move |e| find.set(e.value()),
+            }
+            div { class: "source-list",
+                for source in shown.iter() {
+                    {
+                        let included = !excluded.contains(&source.id);
+                        let verdict = health.latest(&source.id).map(|r| r.verdict);
+                        let toggle_id = source.id.clone();
+                        let current = excluded.clone();
+                        rsx! {
+                            label { class: "source-row", key: "{source.id}",
+                                input {
+                                    r#type: "checkbox", checked: included,
+                                    onchange: move |_| {
+                                        let mut next = current.clone();
+                                        if let Some(at) = next.iter().position(|x| *x == toggle_id) { next.remove(at); } else { next.push(toggle_id.clone()); }
+                                        on_change.call(next);
+                                    },
                                 }
+                                span { class: "grow", "{source.name}" }
+                                span { class: "muted small", "{source.lang}" }
+                                if source.adult { Chip { text: "18+", kind: Some("warn".to_string()) } }
+                                {match verdict {
+                                    Some(Verdict::Pass) => rsx! { Chip { text: "works", kind: Some("ok".to_string()) } },
+                                    Some(Verdict::NeedsBrowser) | Some(Verdict::NeedsFlareSolverr) => rsx! { Chip { text: "needs help", kind: Some("warn".to_string()) } },
+                                    Some(Verdict::Failed) => rsx! { Chip { text: "not working", kind: Some("bad".to_string()) } },
+                                    None => rsx! {},
+                                }}
                             }
                         }
-                        if shown.is_empty() { p { class: "muted small", style: "padding: 8px", "No source matches that." } }
-                    }
-                    div { class: "row", style: "margin-top: 10px",
-                        span { class: "muted small grow", "{on} of {total} selected" }
-                        button { class: "btn primary small", onclick: move |_| close_done(), "Done" }
                     }
                 }
+                if shown.is_empty() { p { class: "muted small", style: "padding: 8px", "No source matches that." } }
+            }
+            div { class: "row", style: "margin-top: 10px",
+                span { class: "muted small grow", "{on} of {total} selected" }
+                button { class: "btn primary small", r#type: "button", onclick: move |_| on_close.call(()), "Done" }
             }
         }
     }

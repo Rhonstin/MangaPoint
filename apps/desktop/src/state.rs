@@ -48,7 +48,6 @@ pub enum Page {
 pub enum SettingsSection {
     #[default]
     Reader,
-    Pages,
     Presets,
     Downloads,
     Files,
