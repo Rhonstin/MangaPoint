@@ -639,13 +639,30 @@ table.chapters tbody tr.locked:hover { background: transparent; }
 .hang .z1 { animation-delay: 2.1s; }
 @media (prefers-reduced-motion: reduce) { .hang *, .hang { animation: none !important; } .hang .tail-b, .hang .leaves-b, .hang .zz { opacity: 0; } }
 
-/* ---- pages: the cards of the chapter's plan ---- */
-.pages-grid { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start; transition: opacity 0.12s; }
-.pages-grid.busy { opacity: 0.92; }
-.page-card { display: flex; flex-direction: column; gap: 8px; max-width: 100%; }
-.page-card-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 0.9rem; }
-.page-card .page-shot { display: block; border: 1px solid var(--line-strong); border-radius: 6px; background: #fff; image-rendering: auto; }
-.page-card.skipped .page-shot { opacity: 0.35; filter: grayscale(1); }
-.page-card-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
-.page-card-actions .btn.small { padding: 6px 10px; min-height: 34px; font-size: 0.85rem; }
-.page-card-actions .seg button { padding: 6px 10px; font-size: 0.85rem; }
+/* ---- the settings panel beside the pages ---- */
+.preview-layout { position: relative; }
+.settings-panel {
+  position: sticky; top: 64px; max-height: calc(100vh - 90px); overflow-y: auto;
+  display: flex; flex-direction: column; gap: 18px; padding: 4px 4px 4px 0;
+}
+.panel-section { display: flex; flex-direction: column; gap: 8px; }
+.panel-section select { width: 100%; }
+.panel-label { font-size: 0.78rem; font-weight: 650; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+.panel-note { margin: 0; line-height: 1.45; }
+.panel-details summary { cursor: pointer; color: var(--muted); font-size: 0.85rem; padding: 2px 0; }
+.panel-details summary:hover { color: var(--text); }
+.panel-details[open] summary { margin-bottom: 6px; }
+.settings-panel .controls .field { padding: 6px 0; }
+.settings-panel .controls h3.group { margin: 18px 0 4px; }
+.advanced-toggle { margin-top: 12px; }
+/* The arrow on the edge of the panel: points toward where the panel goes. */
+.panel-toggle {
+  position: absolute; top: 14px; right: 340px; z-index: 7; width: 26px; height: 44px;
+  display: flex; align-items: center; justify-content: center; padding: 0;
+  background: var(--panel-2); color: var(--muted); border: 1px solid var(--line-strong); border-radius: 8px 0 0 8px;
+  cursor: pointer;
+}
+.panel-toggle:hover { color: var(--text); border-color: var(--accent); background: var(--panel-3); }
+.panel-toggle-arrow { display: inline-flex; transform: rotate(180deg); transition: transform 0.15s; }
+.panel-toggle.collapsed { right: 0; }
+.panel-toggle.collapsed .panel-toggle-arrow { transform: rotate(0deg); }

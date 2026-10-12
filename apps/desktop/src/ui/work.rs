@@ -1129,11 +1129,11 @@ pub fn schedule_lab(state: AppState, delay_ms: u64) {
                     })
                     .collect::<Result<Vec<_>, _>>()?
             };
-            let chapter =
-                pipeline::prepare_chapter(&grays, &opts, &converter::PageEdits::default());
+            let chapter = pipeline::prepare_chapter(&grays, &opts);
             let converted: Vec<PreviewImage> = chapter
                 .plan
-                .kept()
+                .pages
+                .iter()
                 .take(3)
                 .map(|page| pipeline::render_planned(&chapter.prepared, page, &opts))
                 .collect();
@@ -1258,28 +1258,6 @@ async fn decode_chapter(
     Ok(grays)
 }
 
-/// Change the page corrections of the chapter being previewed, save them, and
-/// draw the chapter again.
-pub fn edit_pages(state: AppState, change: impl FnOnce(&mut converter::PageEdits)) {
-    let Some(ws) = state.workspace.peek().clone() else {
-        return;
-    };
-    let Some(key) = state.preview.peek().chapter_key.clone() else {
-        return;
-    };
-    let mut edits = state
-        .library
-        .peek()
-        .find(&ws.series_id)
-        .and_then(|s| s.page_edits.get(&key).cloned())
-        .unwrap_or_default();
-    change(&mut edits);
-    let mut library = state.library;
-    library.write().set_page_edits(&ws.series_id, &key, edits);
-    state.save_library();
-    schedule_preview(state, 0);
-}
-
 /// Plan the chapter with the series' settings, then draw each page a few at a
 /// time in the background. The plan appears first, so the screen takes its
 /// shape at once. Settings changes call this with a short delay, so dragging a
@@ -1342,13 +1320,10 @@ pub fn schedule_preview(state: AppState, delay_ms: u64) {
 
         // The same planning and conversion the export runs.
         let opts = pipeline::process_options_for(&device, &series.settings);
-        let edits = series.page_edits.get(&key).cloned().unwrap_or_default();
         let chapter = {
-            let (opts, edits, grays) = (opts.clone(), edits, grays.clone());
-            match tokio::task::spawn_blocking(move || {
-                pipeline::prepare_chapter(&grays, &opts, &edits)
-            })
-            .await
+            let (opts, grays) = (opts.clone(), grays.clone());
+            match tokio::task::spawn_blocking(move || pipeline::prepare_chapter(&grays, &opts))
+                .await
             {
                 Ok(c) => c,
                 Err(e) => return fail(e.to_string()),
@@ -1373,28 +1348,18 @@ pub fn schedule_preview(state: AppState, delay_ms: u64) {
                 .enumerate()
                 .map(|(i, page)| {
                     // Keep the previous drawing of this page until it is redrawn.
-                    let shot = old.get(i).and_then(|o| o.shot.clone());
-                    let (image, half, rotated) = match page.source {
-                        converter::Source::Image { index, part } => (
-                            Some(index),
-                            match part {
-                                converter::plan::Part::Half(n) => Some(n),
-                                _ => None,
-                            },
-                            part == converter::plan::Part::Rotated,
-                        ),
-                        converter::Source::Strip { .. } => (None, None, false),
+                    let (shot, original, kept) = old.get(i).map_or((None, None, None), |o| {
+                        (o.shot.clone(), o.original.clone(), o.kept)
+                    });
+                    let image = match page.source {
+                        converter::Source::Image { index, .. } => Some(index),
+                        converter::Source::Strip { .. } => None,
                     };
                     Rc::new(PreviewPage {
                         shot,
-                        skipped: page.skipped,
-                        manual: page.manual,
-                        unit_top: page.unit_top,
-                        unit_height: page.unit_height,
+                        original,
+                        kept,
                         image,
-                        landscape: page.landscape,
-                        half,
-                        rotated,
                     })
                 })
                 .collect();
@@ -1405,10 +1370,25 @@ pub fn schedule_preview(state: AppState, delay_ms: u64) {
             chapter.plan.pages.iter().cloned().enumerate().collect();
         let mut drawn = stream::iter(jobs)
             .map(|(index, page)| {
-                let (opts, prepared) = (opts.clone(), prepared.clone());
+                let (opts, prepared, grays) = (opts.clone(), prepared.clone(), grays.clone());
                 async move {
                     let result = tokio::task::spawn_blocking(move || {
-                        pipeline::render_planned(&prepared, &page, &opts)
+                        let converted = pipeline::render_planned(&prepared, &page, &opts);
+                        // The downloaded picture beside it: shown once per image.
+                        let original = match page.source {
+                            converter::Source::Image { index, part } => (part
+                                != converter::plan::Part::Half(1))
+                            .then(|| pipeline::render_original(&grays[index], &opts)),
+                            converter::Source::Strip { .. } => {
+                                pipeline::render_strip_original(&prepared, &page).map(|image| {
+                                    pipeline::OriginalPreview {
+                                        image,
+                                        kept: [0.0, 0.0, 1.0, 1.0],
+                                    }
+                                })
+                            }
+                        };
+                        (converted, original)
                     })
                     .await;
                     (index, result)
@@ -1421,12 +1401,16 @@ pub fn schedule_preview(state: AppState, delay_ms: u64) {
                 return;
             }
             match result {
-                Ok(image) => {
+                Ok((converted, original)) => {
                     let mut p = state.preview;
                     let mut w = p.write();
                     if let Some(slot) = w.pages.get_mut(index) {
                         let mut next = (**slot).clone();
-                        next.shot = Some(shot(&image));
+                        next.shot = Some(shot(&converted));
+                        if let Some(o) = original {
+                            next.original = Some(shot(&o.image));
+                            next.kept = (next.image.is_some()).then_some(o.kept);
+                        }
                         *slot = Rc::new(next);
                     }
                     w.fresh += 1;

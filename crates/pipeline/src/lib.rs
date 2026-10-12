@@ -32,8 +32,8 @@ pub use plan::{
 };
 pub use preview::{
     decode_page, levels_to_previews, prepare_chapter, render_gray, render_levels, render_original,
-    render_page, render_planned, sample_page, ChapterPreview, OriginalPreview, PreviewImage,
-    RenderedPage,
+    render_page, render_planned, render_strip_original, sample_page, ChapterPreview,
+    OriginalPreview, PreviewImage, RenderedPage,
 };
 pub use probe::{probe_source, probe_sources, PROBE_PAGES};
 pub use types::{

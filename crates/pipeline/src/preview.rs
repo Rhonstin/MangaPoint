@@ -9,8 +9,8 @@ use crate::error::{PipelineError, Result};
 use converter::decode::decode_to_gray;
 use converter::process::resize;
 use converter::{
-    crop_bounds, process_page, ChapterPlan, GrayImage, LevelImage, PageEdits, PlannedPage,
-    Prepared, ProcessOptions,
+    crop_bounds, process_page, ChapterPlan, GrayImage, LevelImage, PlannedPage, Prepared,
+    ProcessOptions,
 };
 use image::{
     codecs::{jpeg::JpegEncoder, png::PngEncoder},
@@ -150,13 +150,9 @@ pub struct ChapterPreview {
 }
 
 /// Prepare and plan a whole decoded chapter, the way the export does.
-pub fn prepare_chapter(
-    grays: &[GrayImage],
-    opts: &ProcessOptions,
-    edits: &PageEdits,
-) -> ChapterPreview {
+pub fn prepare_chapter(grays: &[GrayImage], opts: &ProcessOptions) -> ChapterPreview {
     let prepared = Arc::new(converter::plan::prepare(grays, opts));
-    let plan = converter::plan::plan(&prepared, opts, edits);
+    let plan = converter::plan::plan(&prepared, opts);
     ChapterPreview { prepared, plan }
 }
 
@@ -167,6 +163,19 @@ pub fn render_planned(
     opts: &ProcessOptions,
 ) -> PreviewImage {
     level_png(&converter::plan::render_page(prepared, page, opts))
+}
+
+/// The downloaded rows a strip page is made from, as a picture to show beside
+/// the converted page. `None` for a paged chapter, whose original is the
+/// downloaded image itself ([`render_original`]).
+pub fn render_strip_original(prepared: &Prepared, page: &PlannedPage) -> Option<PreviewImage> {
+    let rows = converter::plan::original_rows(prepared, page)?;
+    Some(PreviewImage {
+        bytes: encode_jpeg(&rows.pixels, rows.width, rows.height),
+        mime: "image/jpeg",
+        width: rows.width,
+        height: rows.height,
+    })
 }
 
 /// A page drawn from scratch to try settings on when there is nothing
@@ -281,15 +290,15 @@ mod tests {
         let mut o = opts(Depth::Two);
         o.layout = converter::Layout::Webtoon;
         o.crop = converter::CropMode::Full;
-        let edits = PageEdits::default();
-        let chapter = prepare_chapter(&images, &o, &edits);
+        let chapter = prepare_chapter(&images, &o);
         assert!(chapter.plan.strip);
         let drawn: Vec<PreviewImage> = chapter
             .plan
-            .kept()
+            .pages
+            .iter()
             .map(|p| render_planned(&chapter.prepared, p, &o))
             .collect();
-        let exported = converter::plan::convert_chapter(&images, &o, &edits);
+        let exported = converter::plan::convert_chapter(&images, &o);
         assert_eq!(drawn.len(), exported.len());
         assert_eq!(
             drawn,

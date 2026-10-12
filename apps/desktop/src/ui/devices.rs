@@ -211,3 +211,28 @@ pub fn DevicesEditor() -> Element {
         }
     }
 }
+
+/// A dropdown to choose the reader pages are made for, with its page size.
+#[component]
+pub fn DeviceSelect() -> Element {
+    let state = use_context::<AppState>();
+    let s = state.settings.read().clone();
+    let current = s.device_profile();
+    rsx! {
+        div { class: "panel-section",
+            label { class: "panel-label", "Reader" }
+            select {
+                onchange: move |e| {
+                    let mut settings = state.settings;
+                    settings.write().device = e.value();
+                    state.save_settings();
+                    crate::ui::work::schedule_preview(state, 0);
+                },
+                for d in s.devices() {
+                    option { key: "{d.id}", value: "{d.id}", selected: d.id == current.id, "{d.name}" }
+                }
+            }
+            p { class: "muted small panel-note", "Pages are made {current.size_label()} pixels, the full screen." }
+        }
+    }
+}

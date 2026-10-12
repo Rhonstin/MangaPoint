@@ -53,7 +53,7 @@ pub fn builtin_presets() -> Vec<ConversionPreset> {
         ConversionPreset {
             id: "manga".into(),
             name: "Manga".into(),
-            description: "Japanese manga: right to left, blank margins trimmed, double pages split."
+            description: "Japanese manga. Read right to left, one page per image, blank margins trimmed, and double-page spreads split into two pages."
                 .into(),
             settings: manga.clone(),
         },
@@ -61,7 +61,7 @@ pub fn builtin_presets() -> Vec<ConversionPreset> {
             id: "manhwa".into(),
             name: "Manhwa".into(),
             description:
-                "Korean webtoons: long vertical strips cut into screen-sized slices, left to right."
+                "Korean webtoons. Read left to right. The long vertical strips are joined and cut into screen-sized pages at the gaps between scenes."
                     .into(),
             settings: ConversionSettings {
                 format: Format::Xtch,
@@ -78,7 +78,7 @@ pub fn builtin_presets() -> Vec<ConversionPreset> {
             id: "manhua".into(),
             name: "Manhua".into(),
             description:
-                "Chinese comics, often in color: left to right, strips or pages, a little more contrast."
+                "Chinese comics, often in color. Read left to right. Strips and pages are told apart automatically, with a little more contrast so color art stays readable in gray."
                     .into(),
             settings: ConversionSettings {
                 direction: ReadDirection::LeftToRight,

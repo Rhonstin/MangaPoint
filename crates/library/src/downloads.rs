@@ -15,9 +15,7 @@
 
 use crate::presets::PresetsDb;
 use crate::settings::{ConversionField, ConversionSettings};
-use converter::PageEdits;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -153,9 +151,6 @@ pub struct DownloadedSeries {
     /// own value; everything else follows the preset, so editing a preset
     /// updates every series that uses it.
     pub overridden: Vec<ConversionField>,
-    /// The user's corrections to how each chapter is cut into pages, by
-    /// chapter key.
-    pub page_edits: BTreeMap<String, PageEdits>,
     /// Description, author, genres and so on, once they have been fetched.
     pub info: Option<SeriesInfo>,
     /// Where to find the series again: the sources that carry it. A series can
@@ -212,7 +207,6 @@ impl LibraryDb {
                     settings: defaults.clone(),
                     preset_id: None,
                     overridden: Vec::new(),
-                    page_edits: BTreeMap::new(),
                     info: None,
                     sources: Vec::new(),
                     added_at: now,
@@ -265,7 +259,6 @@ impl LibraryDb {
                 settings: defaults.clone(),
                 preset_id: None,
                 overridden: Vec::new(),
-                page_edits: BTreeMap::new(),
                 info: None,
                 sources,
                 added_at: now,
@@ -328,18 +321,6 @@ impl LibraryDb {
             }
         }
         changed
-    }
-
-    /// Replace the page corrections of one chapter. Empty corrections are
-    /// forgotten rather than stored.
-    pub fn set_page_edits(&mut self, series_id: &str, chapter_key: &str, edits: PageEdits) {
-        if let Some(s) = self.series.iter_mut().find(|s| s.id == series_id) {
-            if edits.is_empty() {
-                s.page_edits.remove(chapter_key);
-            } else {
-                s.page_edits.insert(chapter_key.to_string(), edits);
-            }
-        }
     }
 
     /// A series still on the default settings, with no preset of its own yet,
@@ -687,23 +668,6 @@ mod tests {
         db.series[0].preset_id = Some("gone".into());
         assert!(db.follow_presets(&presets));
         assert_eq!(db.series[0].preset_id, None);
-    }
-
-    #[test]
-    fn page_edits_are_stored_per_chapter_and_empty_ones_are_dropped() {
-        let mut db = LibraryDb::default();
-        let d = ConversionSettings::default();
-        let id = db.record_chapter("X", &d, chapter(Some(1.0), 1, "a"), 1);
-        let edits = PageEdits {
-            cuts: vec![1200],
-            ..Default::default()
-        };
-        db.set_page_edits(&id, "c1", edits.clone());
-        assert_eq!(db.find(&id).unwrap().page_edits.get("c1"), Some(&edits));
-        let json = serde_json::to_string(&db).unwrap();
-        assert_eq!(serde_json::from_str::<LibraryDb>(&json).unwrap(), db);
-        db.set_page_edits(&id, "c1", PageEdits::default());
-        assert!(db.find(&id).unwrap().page_edits.is_empty());
     }
 
     #[test]

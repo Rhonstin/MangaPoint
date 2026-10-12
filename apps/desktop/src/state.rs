@@ -280,8 +280,10 @@ pub struct PreviewView {
     pub zoom: Zoom,
     /// Hide the settings panel to give the pages the whole width.
     pub focus: bool,
-    /// Show pages the user left out of the file (dimmed, with a way back).
-    pub show_skipped: bool,
+    /// Show the downloaded page beside the converted one.
+    pub show_original: bool,
+    /// Draw the cropped-away area on the original.
+    pub show_crop: bool,
 }
 
 impl Default for PreviewView {
@@ -289,31 +291,27 @@ impl Default for PreviewView {
         Self {
             zoom: Zoom::Fit,
             focus: false,
-            show_skipped: true,
+            show_original: true,
+            show_crop: true,
         }
     }
 }
 
-/// One page of the chapter's plan, as the Pages tab shows it.
+/// One page of the chapter's plan, as the Preview tab shows it.
 #[derive(Clone, PartialEq)]
 pub struct PreviewPage {
     /// The page as it will appear on the reader; `None` until it is drawn.
     pub shot: Option<Shot>,
-    /// Left out of the file.
-    pub skipped: bool,
-    /// Starts at a cut the user placed, or has a spread handling they chose.
-    pub manual: bool,
-    /// Where the page starts in the stitched strip and how tall it is, in
-    /// units (a strip 1000 wide). Both 0 for a paged chapter.
-    pub unit_top: u32,
-    pub unit_height: u32,
-    /// The page's image, for a paged chapter.
+    /// The downloaded picture this page comes from: the whole image for a
+    /// paged chapter, the rows of the joined strip for a webtoon. Only the
+    /// first page of a split double page carries it.
+    pub original: Option<Shot>,
+    /// The part of the original the conversion keeps (left, top, width,
+    /// height as fractions); paged chapters only.
+    pub kept: Option<[f32; 4]>,
+    /// The page's image, for a paged chapter. A split double page is two pages
+    /// from one image.
     pub image: Option<usize>,
-    /// The image is a landscape double page.
-    pub landscape: bool,
-    /// 0 or 1 when the page is half of a split spread; `None` otherwise.
-    pub half: Option<u8>,
-    pub rotated: bool,
 }
 
 /// What the Preview tab is showing: every page of one chapter.

@@ -1,6 +1,7 @@
 //! The controls for how pages are converted, shared by Settings (your
 //! starting defaults) and the Preview tab (this one series).
 
+use crate::state::AppState;
 use converter::process::{CropMode, Layout, Margins, SpreadMode};
 use converter::xtc::{Format, ReadDirection};
 use converter::Dither;
@@ -29,6 +30,8 @@ pub fn ConversionControls(
     compact: Option<bool>,
 ) -> Element {
     let compact = compact.unwrap_or(false);
+    let state = use_context::<AppState>();
+    let advanced = state.settings.read().advanced_conversion;
     let c = value.clone();
     // Apply one edit to a copy of the settings and report the result.
     let change = Rc::new(move |edit: Edit, raw: String| {
@@ -147,7 +150,7 @@ pub fn ConversionControls(
                     option { value: "fit", selected: c.spread == SpreadMode::Fit, "Shrink to fit" }
                 }
             }
-            if strips {
+            if advanced && strips {
                 div { class: "field",
                     label { "Strip overlap ({c.overlap_percent}%)" }
                     input { r#type: "range", min: "0", max: "30", value: "{c.overlap_percent}", oninput: on_overlap }
@@ -163,7 +166,7 @@ pub fn ConversionControls(
                     span { class: "muted", if trimming { "Automatically" } else { "Off, keep the whole image" } }
                 }
             }
-            if trimming {
+            if advanced && trimming {
                 div { class: "field",
                     label { "Sensitivity ({c.trim_sensitivity})" }
                     input { r#type: "range", min: "0", max: "100", value: "{c.trim_sensitivity}", oninput: on_sensitivity }
@@ -175,6 +178,7 @@ pub fn ConversionControls(
                     span { class: "hint muted small", "Space left around the art after trimming." }
                 }
             }
+            if advanced {
             div { class: "field",
                 label { "Cut from the edges (%)" }
                 div { class: "margins",
@@ -192,6 +196,8 @@ pub fn ConversionControls(
                 }
             }
 
+            }
+
             h3 { class: "group", "Look" }
             div { class: "field",
                 label { "Quality" }
@@ -205,6 +211,7 @@ pub fn ConversionControls(
                 input { r#type: "range", min: "0", max: "100", value: "{c.contrast}", oninput: on_contrast }
                 span { class: "hint muted small", "50 leaves the page as it is. A little higher (55) usually looks better on e-paper." }
             }
+            if advanced {
             div { class: "field",
                 label { "Shading style" }
                 select { onchange: on_dither,
@@ -220,6 +227,17 @@ pub fn ConversionControls(
                     input { r#type: "checkbox", checked: c.auto_levels, onchange: on_levels }
                     span { class: "muted", "Make paper white and ink black" }
                 }
+            }
+            }
+
+            button { class: "btn ghost small advanced-toggle",
+                onclick: move |_| {
+                    let mut settings = state.settings;
+                    let on = !settings.peek().advanced_conversion;
+                    settings.write().advanced_conversion = on;
+                    state.save_settings();
+                },
+                if advanced { "Hide advanced settings" } else { "Show advanced settings" }
             }
         }
     }

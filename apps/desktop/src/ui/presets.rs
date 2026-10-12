@@ -58,9 +58,9 @@ pub fn delete_preset(state: AppState, id: String) {
     }
 }
 
-/// Choose a preset for some settings, update it, or save the settings as a
-/// new one. Used on the Preview tab (for one series) and in Settings (for the
-/// starting point of new series).
+/// Choose a preset for some settings. Advanced mode also lets you update the
+/// preset, save the settings as a new one, or go and manage them. Used on the
+/// Preview tab, for one series.
 #[component]
 pub fn PresetPicker(
     value: ConversionSettings,
@@ -74,6 +74,7 @@ pub fn PresetPicker(
     let mut naming = use_signal(|| false);
     let mut name = use_signal(String::new);
     let mut error = use_signal(|| None::<String>);
+    let advanced = state.settings.read().advanced_conversion;
 
     let entries = state.presets.read().all();
     let current = preset_id
@@ -130,8 +131,8 @@ pub fn PresetPicker(
     };
 
     rsx! {
-        div { class: "card",
-            h2 { Icon { name: "layers", size: 17 } "Preset" }
+        div { class: "panel-section",
+            label { class: "panel-label", "Preset" }
             select { value: "{selected}", onchange: on_select,
                 option { value: "", selected: current.is_none(), disabled: true, "Custom settings" }
                 for e in entries.iter() {
@@ -145,48 +146,63 @@ pub fn PresetPicker(
                 }
             }
             if let Some(entry) = &current {
-                p { class: "muted small", style: "margin: 8px 0 0",
-                    if changed { "Changed from “{entry.preset.name}”. " }
+                p { class: "muted small panel-note",
                     if !entry.preset.description.is_empty() { "{entry.preset.description}" }
                 }
-            } else {
-                p { class: "muted small", style: "margin: 8px 0 0", "Pick one to start from, or save your own below." }
-            }
-            if changed {
-                div { class: "row wrap", style: "margin-top: 8px",
-                    button { class: "btn small", onclick: update_preset,
-                        Icon { name: "check", size: 14 }
-                        "Save changes to the preset"
+                if changed {
+                    p { class: "small panel-note", style: "color: var(--warn)",
+                        "You changed some settings from {entry.preset.name}."
                     }
-                    if let Some(undo) = undo {
-                        button { class: "btn ghost small", onclick: undo,
-                            Icon { name: "rotate-ccw", size: 14 }
-                            "Undo changes"
+                }
+            } else {
+                p { class: "muted small panel-note", "Pick Manga, Manhwa or Manhua to start from, or keep your own settings." }
+            }
+            details { class: "panel-details",
+                summary { "How do the presets differ?" }
+                for e in entries.iter().filter(|e| e.builtin) {
+                    p { class: "small panel-note", key: "{e.preset.id}",
+                        strong { "{e.preset.name}. " }
+                        "{e.preset.description}"
+                    }
+                }
+            }
+            if advanced {
+                if changed {
+                    div { class: "row wrap", style: "margin-top: 8px",
+                        button { class: "btn small", onclick: update_preset,
+                            Icon { name: "check", size: 14 }
+                            "Save changes to the preset"
+                        }
+                        if let Some(undo) = undo {
+                            button { class: "btn ghost small", onclick: undo,
+                                Icon { name: "rotate-ccw", size: 14 }
+                                "Undo changes"
+                            }
                         }
                     }
                 }
-            }
-            if naming() {
-                div { class: "row", style: "margin-top: 8px",
-                    input {
-                        r#type: "text", class: "grow", placeholder: "Name your preset",
-                        maxlength: "40", autofocus: true, value: "{name}",
-                        oninput: move |e| name.set(e.value()),
+                if naming() {
+                    div { class: "row", style: "margin-top: 8px",
+                        input {
+                            r#type: "text", class: "grow", placeholder: "Name your preset",
+                            maxlength: "40", autofocus: true, value: "{name}",
+                            oninput: move |e| name.set(e.value()),
+                        }
+                        button { class: "btn primary small", onclick: save_new, "Save" }
+                        button { class: "btn ghost small", onclick: move |_| { naming.set(false); error.set(None); }, "Cancel" }
                     }
-                    button { class: "btn primary small", onclick: save_new, "Save" }
-                    button { class: "btn ghost small", onclick: move |_| { naming.set(false); error.set(None); }, "Cancel" }
-                }
-                if let Some(message) = error() {
-                    p { class: "small", style: "color: var(--bad); margin: 6px 0 0", "{message}" }
-                }
-            } else {
-                div { class: "row wrap", style: "margin-top: 8px",
-                    button { class: "btn ghost small", onclick: move |_| naming.set(true),
-                        Icon { name: "plus", size: 14 }
-                        "Save as a new preset"
+                    if let Some(message) = error() {
+                        p { class: "small", style: "color: var(--bad); margin: 6px 0 0", "{message}" }
                     }
-                    button { class: "btn ghost small", onclick: move |_| state.go(Page::Settings),
-                        "Manage presets"
+                } else {
+                    div { class: "row wrap", style: "margin-top: 8px",
+                        button { class: "btn ghost small", onclick: move |_| naming.set(true),
+                            Icon { name: "plus", size: 14 }
+                            "Save as a new preset"
+                        }
+                        button { class: "btn ghost small", onclick: move |_| state.go(Page::Settings),
+                            "Manage presets"
+                        }
                     }
                 }
             }

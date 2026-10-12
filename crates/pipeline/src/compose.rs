@@ -11,7 +11,7 @@ use crate::options::process_options_for;
 use crate::preview::decode_page;
 use crate::types::{CancelFlag, JobEvent};
 use converter::xtc::{Chapter as XtcChapter, Metadata, WriteError, XtcBuilder};
-use converter::{GrayImage, LevelImage, PageEdits, ProcessOptions};
+use converter::{GrayImage, LevelImage, ProcessOptions};
 use device_profiles::DeviceProfile;
 use futures_util::stream::{self, StreamExt};
 use library::{DownloadedChapter, DownloadedSeries, LibraryFiles};
@@ -171,23 +171,8 @@ pub async fn export_series(
                 total,
                 name: chapter.name.clone(),
             });
-            let edits = job
-                .series
-                .page_edits
-                .get(&chapter.key)
-                .cloned()
-                .unwrap_or_default();
-            let images = convert_chapter(
-                files,
-                &job.series.id,
-                chapter,
-                &opts,
-                &edits,
-                ci,
-                &events,
-                cancel,
-            )
-            .await?;
+            let images =
+                convert_chapter(files, &job.series.id, chapter, &opts, ci, &events, cancel).await?;
             emit(JobEvent::ChapterDone { index: ci });
 
             // Start a new file if this chapter would not fit in the open one.
@@ -330,7 +315,6 @@ async fn convert_chapter(
     series_id: &str,
     chapter: &DownloadedChapter,
     opts: &ProcessOptions,
-    edits: &PageEdits,
     chapter_index: usize,
     events: &Option<UnboundedSender<JobEvent>>,
     cancel: &CancelFlag,
@@ -382,8 +366,8 @@ async fn convert_chapter(
     if cancel.is_cancelled() {
         return Err(PipelineError::Cancelled);
     }
-    let (opts, edits) = (opts.clone(), edits.clone());
-    tokio::task::spawn_blocking(move || converter::plan::convert_chapter(&grays, &opts, &edits))
+    let opts = opts.clone();
+    tokio::task::spawn_blocking(move || converter::plan::convert_chapter(&grays, &opts))
         .await
         .map_err(|e| PipelineError::Decode(e.to_string()))
 }

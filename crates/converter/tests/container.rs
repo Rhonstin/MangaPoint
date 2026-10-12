@@ -204,7 +204,7 @@ fn a_full_size_book_builds_and_reads_back() {
 #[test]
 fn planned_chapters_round_trip_for_every_device_size() {
     use converter::plan::convert_chapter;
-    use converter::{Layout, PageEdits, ProcessOptions};
+    use converter::{Layout, ProcessOptions};
 
     let images: Vec<GrayImage> = (0..4)
         .map(|i| {
@@ -215,7 +215,7 @@ fn planned_chapters_round_trip_for_every_device_size() {
         for format in [Format::Xtc, Format::Xtch] {
             let mut opts = ProcessOptions::manga_default(w, h, format.depth());
             opts.layout = Layout::Webtoon;
-            let pages = convert_chapter(&images, &opts, &PageEdits::default());
+            let pages = convert_chapter(&images, &opts);
             assert!(pages.len() >= 2, "{w}x{h}");
             let mut b = XtcBuilder::new(format);
             for page in &pages {

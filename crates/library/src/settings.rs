@@ -251,6 +251,8 @@ pub struct Settings {
     /// The preset a device starts from, by device id.
     pub device_presets: BTreeMap<String, String>,
     pub firmware: Firmware,
+    /// Show every conversion setting, not just the few that matter most.
+    pub advanced_conversion: bool,
     pub conversion: ConversionSettings,
     pub export: ExportSettings,
     /// Allow Suwayomi's embedded Chromium (needed by a few sources).
@@ -278,6 +280,7 @@ impl Default for Settings {
             custom_devices: Vec::new(),
             device_presets: BTreeMap::new(),
             firmware: Firmware::CrossPoint,
+            advanced_conversion: false,
             conversion: ConversionSettings::default(),
             export: ExportSettings::default(),
             browser_support: false,
