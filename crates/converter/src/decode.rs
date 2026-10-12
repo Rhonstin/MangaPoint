@@ -56,10 +56,18 @@ pub fn image_dimensions(bytes: &[u8]) -> Result<(u32, u32), DecodeError> {
 /// reader's 800-pixel screen height, so nothing visible is lost.
 pub const STORAGE_MAX_HEIGHT: u32 = 1600;
 
+/// Narrowest a page is ever made when saving space: twice the reader's
+/// 480-pixel width. Without this floor a very tall webtoon strip, shrunk to
+/// the height limit, ends up only a hundred pixels wide and is stretched back
+/// up (blurry) when it is shown.
+pub const STORAGE_MIN_WIDTH: u32 = 960;
+
 /// Re-encode a page smaller for storage, or `None` if it is already small
 /// enough (so the original bytes should be kept untouched).
 ///
-/// Portrait pages are limited to `max_height` tall. Landscape double-page
+/// Portrait pages are limited to `max_height` tall, but never made narrower
+/// than [`STORAGE_MIN_WIDTH`], so a long strip is kept at a width the screen
+/// can use (and left alone if it is already narrower). Landscape double-page
 /// spreads are limited to twice that wide, so each half still has the full
 /// height it will be split into. The result is a grayscale JPEG, which is
 /// all the reader can show.
@@ -73,7 +81,9 @@ pub fn shrink_for_storage(
     let scale = if landscape {
         (2.0 * max_height as f64) / w as f64
     } else {
-        max_height as f64 / h as f64
+        let by_height = max_height as f64 / h as f64;
+        let by_width = STORAGE_MIN_WIDTH as f64 / w as f64;
+        by_height.max(by_width)
     };
     if scale >= 1.0 {
         return Ok(None);
@@ -150,19 +160,40 @@ mod tests {
     }
 
     #[test]
-    fn tall_pages_shrink_to_the_height_limit_as_gray_jpeg() {
+    fn tall_pages_shrink_as_far_as_the_width_floor_allows_as_gray_jpeg() {
         let out = shrink_for_storage(&plain_png(1200, 3200), 1600, 85)
             .unwrap()
             .expect("taller than the limit, so it must shrink");
         assert_eq!(&out[..3], &[0xFF, 0xD8, 0xFF], "JPEG");
+        // Shrunk until the width reaches its floor (960), not down to 1600 tall.
         assert_eq!(
             image_dimensions(&out).unwrap(),
-            (600, 1600),
+            (960, 2560),
             "aspect ratio kept"
         );
         let back = decode_to_gray(&out).unwrap();
         // Flat mid-gray stays mid-gray.
         assert!(back.pixels.iter().all(|&p| (115..=125).contains(&p)));
+    }
+
+    #[test]
+    fn a_long_strip_is_never_made_narrower_than_the_screen_needs() {
+        // 800 wide is already narrower than the floor: keep the original.
+        assert_eq!(
+            shrink_for_storage(&plain_png(800, 6000), 1600, 85).unwrap(),
+            None
+        );
+        // Wider strips shrink only as far as the width floor, not to 1600 tall.
+        let out = shrink_for_storage(&plain_png(1200, 12000), 1600, 85)
+            .unwrap()
+            .unwrap();
+        assert_eq!(image_dimensions(&out).unwrap(), (STORAGE_MIN_WIDTH, 9600));
+        // The case that went wrong: about 1000 wide and 9000 tall.
+        let out = shrink_for_storage(&plain_png(1000, 9000), 1600, 85)
+            .unwrap()
+            .unwrap();
+        let (w, _) = image_dimensions(&out).unwrap();
+        assert!(w >= STORAGE_MIN_WIDTH, "only {w} wide");
     }
 
     #[test]
