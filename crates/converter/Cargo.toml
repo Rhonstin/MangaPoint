@@ -6,3 +6,11 @@ edition.workspace = true
 [dependencies]
 thiserror.workspace = true
 device-profiles = { path = "../device-profiles" }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif"], optional = true }
+
+[features]
+# Image decoding (JPEG/PNG/WebP/GIF). Off for the WASM build, which decodes in the browser.
+decode = ["dep:image"]
+
+[dev-dependencies]
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
