@@ -269,6 +269,16 @@ pub(super) fn sitting_markup(eyes_closed: bool, paw_top: Option<usize>) -> Strin
     )
 }
 
+/// The sitting cat (the logo) without its tail, eyes open or shut, as
+/// rectangles in its own 32x32 space.
+pub(super) fn body_markup(eyes_closed: bool) -> String {
+    rects(&frame(Pose {
+        eyes_closed,
+        paw_top: None,
+        tongue: 0,
+    }))
+}
+
 /// The cat asleep, for screens with nothing on them yet.
 #[component]
 pub fn RestingCat() -> Element {

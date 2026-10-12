@@ -1,20 +1,18 @@
-//! The cat asleep upside down, hanging by its hind paws from a tree branch,
-//! for the empty Downloads page. Drawn in code on a 48x40 grid, big pixels
-//! like the other cats; the motion is CSS (see `style.css`).
+//! The logo cat asleep upside down, hanging by its paws from a tree branch,
+//! for the empty Downloads page. It is the same sprite as the logo (see
+//! `cat.rs`), turned over, on a 48x38 grid with the same big pixels as the
+//! other cats; the motion is CSS (see `style.css`).
 
+use super::cat::body_markup;
 use super::ocean::{group_plain, Layer};
 use dioxus::prelude::*;
 use std::sync::OnceLock;
 
 pub const W: i32 = 48;
-pub const H: i32 = 40;
+pub const H: i32 = 38;
 
-const BODY: &str = "#a9a9a9";
 const SHADE: &str = "#7d7d7d";
 const LIGHT: &str = "#e8e8e8";
-const BELLY: &str = "#f1ece2";
-const PINK: &str = "#f0a3b3";
-const DARK: &str = "#0a0a0a";
 const BARK: &str = "#6b4f3a";
 const BARK_LIGHT: &str = "#86644a";
 const BARK_DARK: &str = "#47321f";
@@ -36,7 +34,10 @@ fn tree() -> String {
     t.pixels(&[(12, 4), (13, 4), (12, 5)], BARK_DARK);
     t.pixels(&[(36, 2), (37, 1), (38, 1)], BARK);
     t.pixels(&[(40, 7), (41, 8)], BARK_DARK);
-    out.push_str(&group_plain("", 1.0, &t));
+    out.push_str(&format!(
+        "<g transform=\"translate(0,1)\">{}</g>",
+        group_plain("", 1.0, &t)
+    ));
 
     // Leaves that stir in two poses.
     for (class, dy) in [("leaves leaves-a", 0), ("leaves leaves-b", 1)] {
@@ -53,7 +54,10 @@ fn tree() -> String {
             l.px(x, y + dy, LEAF);
         }
         l.px(7, 8 + dy, LEAF_DARK);
-        out.push_str(&group_plain(class, 1.0, &l));
+        out.push_str(&format!(
+            "<g transform=\"translate(0,1)\">{}</g>",
+            group_plain(class, 1.0, &l)
+        ));
     }
     out
 }
@@ -65,58 +69,32 @@ fn cat() -> String {
     for (class, dx) in [("tail-a", 0), ("tail-b", 1)] {
         let mut tail = Layer::default();
         for (x, y) in [
-            (29, 12),
-            (30, 13),
-            (30, 14),
-            (31, 15),
-            (31, 16),
-            (31, 17),
-            (31, 18),
+            (31, 11),
+            (32, 12),
+            (32, 13),
+            (33, 14),
+            (33, 15),
+            (33, 16),
+            (33, 17),
         ] {
             tail.px(x + dx, y, SHADE);
         }
-        tail.rect(31 + dx, 19, 1, 2, "#4a4a4a");
+        tail.rect(33 + dx, 18, 1, 3, "#4a4a4a");
         out.push_str(&group_plain(class, 1.0, &tail));
     }
 
-    let mut s = Layer::default();
-    // Hind legs, from the branch down to the body.
-    s.rect(22, 7, 2, 4, BODY);
-    s.rect(26, 7, 2, 4, BODY);
-    // Body, with its cream belly toward us.
-    s.ellipse(24.5, 17.0, 5.2, 7.2, BODY);
-    s.ellipse(24.5, 17.5, 3.4, 5.2, BELLY);
-    s.pixels(&[(23, 15), (26, 19), (24, 21)], "#d9d2c5");
-    // Front paws folded on the belly.
-    s.rect(22, 18, 2, 2, LIGHT);
-    s.rect(26, 18, 2, 2, LIGHT);
-    // The head hangs below, upside down: nose above the closed eyes.
-    s.ellipse(24.5, 28.5, 5.2, 4.4, BODY);
-    s.ellipse(24.5, 26.6, 2.6, 1.6, LIGHT);
-    s.rect(24, 25, 2, 1, PINK);
-    s.pixels(&[(21, 29), (22, 30), (27, 30), (28, 29)], DARK);
-    s.pixels(&[(24, 32), (25, 32)], SHADE);
-    // Ears point down.
-    for (y, x0, x1) in [(32, 19, 22), (33, 19, 21), (34, 19, 20), (35, 19, 19)] {
-        s.rect(x0, y, x1 - x0 + 1, 1, BODY);
-        s.rect(49 - x1, y, x1 - x0 + 1, 1, BODY);
-    }
-    s.pixels(&[(20, 33), (29, 33)], PINK);
-    out.push_str(&group_plain("", 1.0, &s));
-
-    // The hind paws hooked over the branch, in front of it.
-    let mut paws = Layer::default();
-    paws.rect(21, 4, 4, 3, LIGHT);
-    paws.rect(25, 4, 4, 3, LIGHT);
-    paws.pixels(&[(23, 5), (27, 5)], BODY);
-    paws.pixels(&[(22, 6), (26, 6)], PINK);
-    out.push_str(&group_plain("", 1.0, &paws));
+    // The logo cat, turned upside down: its paws are at the top, over the
+    // branch, and its head hangs at the bottom with its eyes shut.
+    out.push_str(&format!(
+        "<g transform=\"translate(8,36) scale(1,-1)\">{}</g>",
+        body_markup(true)
+    ));
     out
 }
 
 fn zzz() -> String {
     let mut out = String::new();
-    for (i, (x, y, big)) in [(33, 27, false), (37, 21, true)].into_iter().enumerate() {
+    for (i, (x, y, big)) in [(35, 24, false), (38, 18, true)].into_iter().enumerate() {
         let rows: &[&str] = if big {
             &["###", "..#", ".#.", "###"]
         } else {
@@ -176,6 +154,9 @@ mod tests {
         for class in ["swing", "tail-a", "tail-b", "leaves-a", "leaves-b", "zz z1"] {
             assert!(m.contains(class), "{class}");
         }
-        assert!(m.contains(BELLY) && m.contains(DARK) && m.contains(BARK));
+        assert!(
+            m.contains(BARK) && m.contains("scale(1,-1)"),
+            "the logo cat, upside down"
+        );
     }
 }
