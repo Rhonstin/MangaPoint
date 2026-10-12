@@ -7,9 +7,9 @@ mod overview;
 mod preview;
 
 use super::widgets::{cover_key, Chip, Cover, EmptyState, Icon};
-use super::work::{load_saved_cover, saved_cover_key};
+use super::work::{add_open_series_to_library, load_saved_cover, saved_cover_key};
 use crate::logic::{tab_blocked, Needs};
-use crate::state::{AppState, JobKind, Page, SeriesTab};
+use crate::state::{AppState, Modal, ModalAction, Page, SeriesTab};
 use dioxus::prelude::*;
 
 #[component]
@@ -35,11 +35,31 @@ pub fn WorkspacePage() -> Element {
         .map(|s| (s.chapters.len(), s.bytes()))
         .unwrap_or((0, 0));
     let selected = state.selected.read().len();
-    let downloading = state
-        .job
-        .read()
-        .as_ref()
-        .is_some_and(|j| j.kind == JobKind::Download && j.result.is_none());
+    let downloading = state.queue.read().series_has_work(&ws.series_id);
+    let in_library = state.library.read().find(&ws.series_id).is_some();
+    let remove_body = if downloaded > 0 {
+        format!(
+            "{} and its {} downloaded chapters ({}) will be deleted from this computer. Files you already exported are kept.",
+            ws.title,
+            downloaded,
+            crate::logic::human_bytes(library_bytes)
+        )
+    } else {
+        format!(
+            "{} will be taken off your list. Nothing is stored on this computer for it.",
+            ws.title
+        )
+    };
+    let remove_modal = Modal {
+        title: format!("Remove {} from your library?", ws.title),
+        body: remove_body,
+        confirm: "Remove".into(),
+        cancel: "Keep".into(),
+        danger: true,
+        action: ModalAction::DeleteDownloadedSeries {
+            series_id: ws.series_id.clone(),
+        },
+    };
 
     let back_label = if ws.origin == Page::Library {
         "Library"
@@ -100,11 +120,22 @@ pub fn WorkspacePage() -> Element {
                     }
                 }
             }
+            if in_library {
+                button { class: "btn small", title: "Remove it from your library",
+                    onclick: move |_| state.ask(remove_modal.clone()),
+                    Icon { name: "bookmark-check", size: 15 } "In your library"
+                }
+            } else {
+                button { class: "btn primary small", title: "Keep it in your library without downloading anything",
+                    onclick: move |_| add_open_series_to_library(state),
+                    Icon { name: "bookmark-plus", size: 15 } "Add to library"
+                }
+            }
         }
 
         div { class: "tabs",
             Tab { tab: SeriesTab::Overview, icon: "info", label: "Overview", active: ws.tab == SeriesTab::Overview,
-                blocked: tab_blocked(Needs::Downloads, selected, downloaded, downloading), badge: None }
+                blocked: if in_library { None } else { Some("Add this series to your library first") }, badge: None }
             Tab { tab: SeriesTab::Chapters, icon: "list-checks", label: "Chapters", active: ws.tab == SeriesTab::Chapters,
                 blocked: tab_blocked(Needs::Nothing, selected, downloaded, downloading),
                 badge: (selected > 0).then(|| selected.to_string()) }

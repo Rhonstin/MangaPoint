@@ -3,6 +3,7 @@
 //! screen that started it does not stop it.
 
 use crate::logic::{self, JobProgress};
+use crate::queue::{Batch, BatchStatus};
 use crate::state::{
     library_files, now_secs, paths, spawn_forever, AppState, ChaptersState, ExportOpts,
     GroupingChoice, JobKind, JobView, LoadedChapters, Page, PreviewPage, PreviewState, SeriesTab,
@@ -85,11 +86,11 @@ pub fn open_series_from_search(state: AppState, ranked: RankedSeries) {
 
 /// Open a downloaded series from the Library, ready to preview.
 pub fn open_series_from_library(state: AppState, series_id: &str) {
-    let Some(title) = state
+    let Some((title, sources)) = state
         .library
         .peek()
         .find(series_id)
-        .map(|s| s.title.clone())
+        .map(|s| (s.title.clone(), s.sources.clone()))
     else {
         return;
     };
@@ -103,8 +104,123 @@ pub fn open_series_from_library(state: AppState, series_id: &str) {
         origin: Page::Library,
     }));
     let mut chapters = state.chapters;
-    chapters.set(ChaptersState::Idle);
     state.go(Page::Series);
+    if sources.is_empty() {
+        chapters.set(ChaptersState::Idle);
+        return;
+    }
+    // It knows where to find the series, so list its chapters.
+    chapters.set(ChaptersState::Loading);
+    let id = series_id.to_string();
+    let members = members_from_saved(&sources, &ws_title(state, &id));
+    spawn_forever(async move {
+        let result = load_chapters(state, members).await;
+        let still_here = state
+            .workspace
+            .peek()
+            .as_ref()
+            .is_some_and(|w| w.series_id == id);
+        if still_here {
+            let mut chapters = state.chapters;
+            chapters.set(match result {
+                Some(loaded) => ChaptersState::Ready(Rc::new(loaded)),
+                None => ChaptersState::Failed("The catalog engine is not running.".into()),
+            });
+        }
+    });
+}
+
+fn ws_title(state: AppState, series_id: &str) -> String {
+    state
+        .library
+        .peek()
+        .find(series_id)
+        .map(|s| s.title.clone())
+        .unwrap_or_default()
+}
+
+/// A library series' saved sources, as search results again.
+fn members_from_saved(sources: &[library::SavedSource], title: &str) -> Vec<ScoredMember> {
+    sources
+        .iter()
+        .map(|s| ScoredMember {
+            candidate: search::Candidate::new(
+                &catalog::Source {
+                    id: s.source_id.clone(),
+                    name: s.source_name.clone(),
+                    lang: s.lang.clone(),
+                    is_nsfw: false,
+                },
+                &catalog::MangaSummary {
+                    id: s.manga_id,
+                    title: title.to_string(),
+                    thumbnail_url: s.thumbnail.clone(),
+                },
+            ),
+            score: 0.5,
+            enrichment: None,
+        })
+        .collect()
+}
+
+/// What the library keeps of a series' sources: the best entry from each.
+pub fn saved_sources_of(members: &[ScoredMember]) -> Vec<library::SavedSource> {
+    logic::one_per_source(members, 8)
+        .iter()
+        .map(|m| library::SavedSource {
+            source_id: m.candidate.source_id.clone(),
+            source_name: m.candidate.source_name.clone(),
+            lang: m.candidate.lang.clone(),
+            manga_id: m.candidate.manga_id,
+            thumbnail: m.candidate.thumbnail.clone(),
+        })
+        .collect()
+}
+
+/// Put a series in the library without downloading anything.
+pub fn add_to_library(state: AppState, title: &str, sources: Vec<library::SavedSource>) {
+    let defaults = state.settings.peek().conversion.clone();
+    let preset = state.settings.peek().default_preset_id.clone();
+    let already = state
+        .library
+        .peek()
+        .find(&library::series_id(title))
+        .is_some();
+    let id = {
+        let mut library = state.library;
+        let mut db = library.write();
+        let id = db.add_saved(title, sources, &defaults, now_secs());
+        db.adopt_default_preset(&id, &defaults, &preset);
+        id
+    };
+    state.save_library();
+    ensure_series_info(state, &id);
+    if already {
+        state.notify(format!("{title} is already in your library."));
+    } else {
+        state.notify(format!("Added {title} to your library."));
+    }
+}
+
+/// Add a search result to the library.
+pub fn add_ranked_to_library(state: AppState, ranked: &RankedSeries) {
+    add_to_library(state, &ranked.title, saved_sources_of(&ranked.members));
+}
+
+/// Add the open series to the library.
+pub fn add_open_series_to_library(state: AppState) {
+    let Some(ws) = state.workspace.peek().clone() else {
+        return;
+    };
+    let sources = match &*state.chapters.peek() {
+        ChaptersState::Ready(loaded) => loaded.saved.clone(),
+        _ => ws
+            .ranked
+            .as_ref()
+            .map(|r| saved_sources_of(&r.members))
+            .unwrap_or_default(),
+    };
+    add_to_library(state, &ws.title, sources);
 }
 
 /// The key a series' saved cover is kept under in `state.covers`.
@@ -162,6 +278,15 @@ pub fn ensure_series_info(state: AppState, series_id: &str) {
                 break;
             }
         }
+        // A series saved without downloading anything is looked up by where it was found.
+        if details.is_none() {
+            for source in series.sources.iter().take(4) {
+                if let Ok(found) = client.manga_details(source.manga_id).await {
+                    details = Some(found);
+                    break;
+                }
+            }
+        }
         if let Some(details) = details {
             let names: HashMap<String, String> = client
                 .list_sources()
@@ -170,7 +295,11 @@ pub fn ensure_series_info(state: AppState, series_id: &str) {
                 .into_iter()
                 .map(|s| (s.id, s.name))
                 .collect();
-            let mut source_names: Vec<(String, String)> = Vec::new();
+            let mut source_names: Vec<(String, String)> = series
+                .sources
+                .iter()
+                .map(|s| (s.source_id.clone(), s.source_name.clone()))
+                .collect();
             for chapter in &series.chapters {
                 if let Some(name) = names.get(&chapter.source_id) {
                     if !source_names.iter().any(|(id, _)| *id == chapter.source_id) {
@@ -179,7 +308,11 @@ pub fn ensure_series_info(state: AppState, series_id: &str) {
                 }
             }
             let mut has_cover = false;
-            if let Some(path) = details.thumbnail_url.as_deref() {
+            let cover_path = details
+                .thumbnail_url
+                .clone()
+                .or_else(|| series.sources.iter().find_map(|s| s.thumbnail.clone()));
+            if let Some(path) = cover_path.as_deref() {
                 if let Ok(bytes) = client.get_bytes(path).await {
                     if converter::decode::image_dimensions(&bytes).is_ok() {
                         let target = files.cover_path(&id);
@@ -252,6 +385,16 @@ async fn load_chapters(state: AppState, members: Vec<ScoredMember>) -> Option<Lo
             .iter()
             .map(|m| m.candidate.source_name.clone())
             .collect(),
+        saved: members
+            .iter()
+            .map(|m| library::SavedSource {
+                source_id: m.candidate.source_id.clone(),
+                source_name: m.candidate.source_name.clone(),
+                lang: m.candidate.lang.clone(),
+                manga_id: m.candidate.manga_id,
+                thumbnail: m.candidate.thumbnail.clone(),
+            })
+            .collect(),
         unreachable,
     })
 }
@@ -273,6 +416,7 @@ pub fn merged_key(ch: &search::MergedChapter) -> String {
 
 // ---- Downloading -----------------------------------------------------------
 
+/// Is an export running? (Downloads have their own queue.)
 fn job_running(state: AppState) -> bool {
     state
         .job
@@ -281,12 +425,10 @@ fn job_running(state: AppState) -> bool {
         .is_some_and(|j| j.result.is_none())
 }
 
-/// Download the ticked chapters that are not downloaded yet.
-pub fn start_download(state: AppState) {
-    if job_running(state) {
-        state.error("Something is already running. Wait for it to finish, or cancel it.");
-        return;
-    }
+/// Add the ticked chapters that are not downloaded yet to the download queue.
+/// They download in turn, so there is nothing to wait for or start by hand:
+/// keep picking chapters, here or in other series.
+pub fn queue_download(state: AppState) {
     let Some(ws) = state.workspace.peek().clone() else {
         return;
     };
@@ -322,13 +464,10 @@ pub fn start_download(state: AppState) {
         .cloned()
         .zip(loaded.member_names.iter().cloned())
         .collect();
-    let mut not_offered: Vec<(String, String)> = Vec::new();
+    let mut not_offered = 0;
     if let SourceChoice::Only(source) = &choice {
-        let names: Vec<String> = requests.iter().map(|r| r.name.clone()).collect();
         let chosen = pipeline::apply_choice(std::mem::take(&mut requests), &choice, &[]);
-        for &i in &chosen.unavailable {
-            not_offered.push((plan[i].clone(), names[i].clone()));
-        }
+        not_offered = chosen.unavailable.len();
         plan = chosen.kept.iter().map(|&i| plan[i].clone()).collect();
         requests = chosen.requests;
         if requests.is_empty() {
@@ -341,185 +480,285 @@ pub fn start_download(state: AppState) {
     }
     if requests.is_empty() {
         state.notify("Everything you picked is already downloaded.");
-        if !have.is_empty() {
-            state.open_tab(SeriesTab::Preview);
-            prepare_preview(state);
-        }
         return;
     }
 
-    let cancel = CancelFlag::new();
-    let plan_keys = plan.clone();
-    let mut job = state.job;
-    job.set(Some(JobView {
-        kind: JobKind::Download,
-        title: ws.title.clone(),
+    // The series is in the library from now on, with where to find it again.
+    add_to_library_quietly(state, &ws.title, &loaded.saved);
+    let batch = Batch::new(
+        ws.series_id.clone(),
+        ws.title.clone(),
+        requests,
         plan,
-        progress: JobProgress::default(),
-        result: None,
-        skipped: not_offered
-            .iter()
-            .map(|(_, name)| {
-                let source = match &choice {
-                    SourceChoice::Only(id) => source_names.get(id).cloned().unwrap_or_default(),
-                    SourceChoice::Adaptive => String::new(),
-                };
-                format!("{name}: {source} does not have it")
-            })
-            .collect(),
-        failed: not_offered.iter().map(|(key, _)| key.clone()).collect(),
-        cancel: cancel.clone(),
-    }));
-    state.open_tab(SeriesTab::Downloads);
-    let shrink = state.settings.peek().shrink_downloads;
+        choice,
+        source_names,
+        now_secs(),
+    );
+    let added = state.edit_queue(|q| q.add(batch));
+    let mut selected = state.selected;
+    selected.set(HashSet::new());
+    if added.chapters == 0 {
+        state.notify("Those chapters are already in the download queue.");
+        return;
+    }
+    let skipped = if not_offered > 0 {
+        format!(", {not_offered} not offered by that source")
+    } else {
+        String::new()
+    };
     info!(
-        "Download started: \"{}\", {} chapter(s){}",
-        ws.title,
-        requests.len(),
+        "Queued {} of \"{}\"{skipped}",
+        logic::plural(added.chapters, "chapter"),
+        ws.title
+    );
+    state.notify(format!(
+        "Added {} of {} to the downloads{skipped}.",
+        logic::plural(added.chapters, "chapter"),
+        ws.title
+    ));
+    ensure_queue_running(state);
+}
+
+/// Put a series in the library as a download is queued, without a message.
+fn add_to_library_quietly(state: AppState, title: &str, sources: &[library::SavedSource]) {
+    let defaults = state.settings.peek().conversion.clone();
+    let preset = state.settings.peek().default_preset_id.clone();
+    let id = {
+        let mut library = state.library;
+        let mut db = library.write();
+        let id = db.add_saved(title, sources.to_vec(), &defaults, now_secs());
+        db.adopt_default_preset(&id, &defaults, &preset);
+        id
+    };
+    state.save_library();
+    ensure_series_info(state, &id);
+}
+
+/// Start working through the download queue, unless that is already going on.
+pub fn ensure_queue_running(state: AppState) {
+    {
+        let queue = state.queue.peek();
+        if queue.runner_active || queue.next_to_start().is_none() {
+            return;
+        }
+    }
+    state.edit_queue(|q| q.runner_active = true);
+    spawn_forever(async move {
+        loop {
+            let next = state.queue.peek().next_to_start();
+            let Some(id) = next else { break };
+            run_batch(state, id).await;
+        }
+        state.edit_queue(|q| q.runner_active = false);
+        // Something may have been added just as the last check was made.
+        ensure_queue_running(state);
+    });
+}
+
+/// Download one batch of the queue.
+async fn run_batch(state: AppState, id: u64) {
+    let Some(batch) = state.queue.peek().get(id).cloned() else {
+        return;
+    };
+    state.edit_queue(|q| q.start(id));
+    let fail = |status: BatchStatus, summary: String, failed: Vec<String>| {
+        state.edit_queue(|q| q.finish(id, status, summary, Vec::new(), failed));
+    };
+    let Some(client) = state.client() else {
+        fail(
+            BatchStatus::Failed("The catalog engine is not running.".into()),
+            "The catalog engine is not running.".into(),
+            batch.plan.clone(),
+        );
+        return;
+    };
+    let started = Instant::now();
+    let files = library_files();
+    let defaults = state.settings.peek().conversion.clone();
+    let default_preset = state.settings.peek().default_preset_id.clone();
+    let shrink = state.settings.peek().shrink_downloads;
+    let policy = RetryPolicy::default();
+    let limits = state.settings.peek().download.limits();
+    info!(
+        "Download started: \"{}\", {}{}",
+        batch.title,
+        logic::plural(batch.requests.len(), "chapter"),
         if shrink { " (saving space)" } else { "" }
     );
-
-    spawn_forever(async move {
-        let Some(client) = state.client() else {
-            return;
-        };
-        let started = Instant::now();
-        let files = library_files();
-        let defaults = state.settings.peek().conversion.clone();
-        let default_preset = state.settings.peek().default_preset_id.clone();
-        let policy = RetryPolicy::default();
-        let limits = state.settings.peek().download.limits();
-        // Adaptive: test the sources that cover about the same, then put the
-        // best first for every chapter (the others stay as fallbacks).
-        let requests = if choice == SourceChoice::Adaptive {
-            order_sources(state, &client, requests, &source_names).await
-        } else {
-            requests
-        };
-        let (tx, mut rx) = unbounded_channel();
-        let run = download_chapters(
-            &*client,
-            &files,
-            &ws.series_id,
-            &requests,
-            shrink,
-            limits,
-            &policy,
-            Some(tx),
-            &cancel,
-        );
-        let watch = async {
-            let mut logged = HashMap::new();
-            while let Some(first) = rx.recv().await {
-                // Take everything that has arrived and show it in one go:
-                // redrawing for every single page would keep the screen busy
-                // far more than anyone can see.
-                let mut batch = vec![first];
-                while let Ok(event) = rx.try_recv() {
-                    batch.push(event);
-                }
-                for event in &batch {
-                    log_event(event, &mut logged);
-                    if let JobEvent::ChapterSaved { chapter } = event {
-                        // Record each chapter as soon as it is safe on disk, so
-                        // cancelling or failing later never loses it.
-                        let mut library = state.library;
-                        {
-                            let mut db = library.write();
-                            let id = db.record_chapter(
-                                &ws.title,
-                                &defaults,
-                                chapter.clone(),
-                                now_secs(),
-                            );
-                            db.adopt_default_preset(&id, &defaults, &default_preset);
-                        }
-                        state.save_library();
-                    }
-                }
-                if let Some(view) = job.write().as_mut() {
-                    for event in &batch {
-                        view.progress.apply(event);
-                    }
-                }
-                tokio::time::sleep(PROGRESS_REFRESH).await;
+    // Adaptive: test the sources that cover about the same, then put the best
+    // first for every chapter (the others stay as fallbacks).
+    let requests = if batch.choice == SourceChoice::Adaptive {
+        order_sources(
+            state,
+            id,
+            &client,
+            batch.requests.clone(),
+            &batch.source_names,
+        )
+        .await
+    } else {
+        batch.requests.clone()
+    };
+    let (tx, mut rx) = unbounded_channel();
+    let run = download_chapters(
+        &*client,
+        &files,
+        &batch.series_id,
+        &requests,
+        shrink,
+        limits,
+        &policy,
+        Some(tx),
+        &batch.cancel,
+    );
+    let watch = async {
+        let mut logged = HashMap::new();
+        while let Some(first) = rx.recv().await {
+            // Take everything that has arrived and show it in one go:
+            // redrawing for every single page would keep the screen busy
+            // far more than anyone can see.
+            let mut events = vec![first];
+            while let Ok(event) = rx.try_recv() {
+                events.push(event);
             }
-        };
-        let (result, ()) = join(run, watch).await;
-
-        match result {
-            Ok(outcome) => {
-                {
-                    let mut health = state.health;
-                    let mut h = health.write();
-                    for u in &outcome.source_use {
-                        h.record_use(&u.source_id, u.ok, u.ms);
+            for event in &events {
+                log_event(event, &mut logged);
+                if let JobEvent::ChapterSaved { chapter } = event {
+                    // Record each chapter as soon as it is safe on disk, so
+                    // cancelling or failing later never loses it.
+                    let mut library = state.library;
+                    {
+                        let mut db = library.write();
+                        let series =
+                            db.record_chapter(&batch.title, &defaults, chapter.clone(), now_secs());
+                        db.adopt_default_preset(&series, &defaults, &default_preset);
                     }
-                }
-                state.save_health();
-                let bytes: u64 = outcome.chapters.iter().map(|c| c.bytes).sum();
-                let skipped: Vec<String> = outcome
-                    .skipped
-                    .iter()
-                    .map(|s| format!("{}: {}", s.name, s.reason))
-                    .collect();
-                let summary = format!(
-                    "Downloaded {} chapter(s), {}{}",
-                    outcome.chapters.len(),
-                    logic::human_bytes(bytes),
-                    if skipped.is_empty() {
-                        String::new()
-                    } else {
-                        format!("; {} could not be downloaded", skipped.len())
-                    }
-                );
-                info!("{summary} in {:.0}s", started.elapsed().as_secs_f32());
-                // `skipped.index` counts within the chapters we asked for.
-                let failed: Vec<String> = outcome
-                    .skipped
-                    .iter()
-                    .filter_map(|s| plan_keys.get(s.index).cloned())
-                    .collect();
-                if let Some(view) = job.write().as_mut() {
-                    view.skipped = skipped;
-                    view.failed = failed;
-                    view.result = Some(Ok(summary));
-                }
-                // Take the user on to the preview.
-                let same = state
-                    .workspace
-                    .peek()
-                    .as_ref()
-                    .is_some_and(|w| w.series_id == ws.series_id);
-                if same {
-                    state.open_tab(SeriesTab::Preview);
-                    prepare_preview(state);
+                    state.save_library();
                 }
             }
-            Err(e) => {
-                let cancelled = matches!(e, PipelineError::Cancelled);
-                let message = if cancelled {
-                    "Cancelled. Chapters that finished are kept.".to_string()
-                } else {
-                    e.to_string()
-                };
-                if cancelled {
-                    info!("Download cancelled");
-                } else {
-                    warn!("Download failed: {message}");
+            state.edit_queue(|q| {
+                if let Some(b) = q.get_mut(id) {
+                    for event in &events {
+                        b.progress.apply(event);
+                    }
                 }
-                if let Some(view) = job.write().as_mut() {
-                    view.result = Some(Err(message));
-                }
-            }
+            });
+            tokio::time::sleep(PROGRESS_REFRESH).await;
         }
+    };
+    let (result, ()) = join(run, watch).await;
+
+    // Chapters of the batch that did not end up saved.
+    let unsaved = |state: AppState| -> Vec<String> {
+        let have = downloaded_keys(state, &batch.series_id);
+        batch
+            .plan
+            .iter()
+            .filter(|k| !have.contains(*k))
+            .cloned()
+            .collect()
+    };
+    match result {
+        Ok(outcome) => {
+            {
+                let mut health = state.health;
+                let mut h = health.write();
+                for u in &outcome.source_use {
+                    h.record_use(&u.source_id, u.ok, u.ms);
+                }
+            }
+            state.save_health();
+            let bytes: u64 = outcome.chapters.iter().map(|c| c.bytes).sum();
+            let skipped: Vec<String> = outcome
+                .skipped
+                .iter()
+                .map(|s| format!("{}: {}", s.name, s.reason))
+                .collect();
+            let summary = format!(
+                "Downloaded {}, {}{}",
+                logic::plural(outcome.chapters.len(), "chapter"),
+                logic::human_bytes(bytes),
+                if skipped.is_empty() {
+                    String::new()
+                } else {
+                    format!("; {} could not be downloaded", skipped.len())
+                }
+            );
+            info!("{summary} in {:.0}s", started.elapsed().as_secs_f32());
+            // `skipped.index` counts within the chapters we asked for.
+            let failed: Vec<String> = outcome
+                .skipped
+                .iter()
+                .filter_map(|s| batch.plan.get(s.index).cloned())
+                .collect();
+            state.edit_queue(|q| q.finish(id, BatchStatus::Done, summary.clone(), skipped, failed));
+            state.notify(format!("{}: {}", batch.title, summary.to_lowercase()));
+        }
+        Err(e) => {
+            let cancelled = matches!(e, PipelineError::Cancelled);
+            let message = if cancelled {
+                "Cancelled. Chapters that finished are kept.".to_string()
+            } else {
+                e.to_string()
+            };
+            if cancelled {
+                info!("Download of \"{}\" cancelled", batch.title);
+            } else {
+                warn!("Download of \"{}\" failed: {message}", batch.title);
+            }
+            let status = if cancelled {
+                BatchStatus::Cancelled
+            } else {
+                BatchStatus::Failed(message.clone())
+            };
+            fail(status, message, unsaved(state));
+        }
+    }
+    ensure_series_info(state, &batch.series_id);
+}
+
+/// Stop one batch of the queue (a waiting one is simply dropped).
+pub fn cancel_batch(state: AppState, id: u64) {
+    state.edit_queue(|q| {
+        q.cancel(id);
     });
+}
+
+/// Stop everything in the queue.
+pub fn cancel_all_downloads(state: AppState) {
+    state.edit_queue(|q| q.cancel_all());
+}
+
+/// Pause the queue (the batch running carries on) or let it go on.
+pub fn set_queue_paused(state: AppState, paused: bool) {
+    state.edit_queue(|q| q.paused = paused);
+    if !paused {
+        ensure_queue_running(state);
+    }
+}
+
+/// Try the chapters of a finished batch that were not downloaded once more.
+pub fn retry_batch(state: AppState, id: u64) {
+    let queued = state.edit_queue(|q| q.retry(id, now_secs()));
+    if queued > 0 {
+        state.notify(format!(
+            "Trying {} again.",
+            logic::plural(queued, "chapter")
+        ));
+        ensure_queue_running(state);
+    }
+}
+
+/// Move a waiting batch to the front of the line.
+pub fn prioritize_batch(state: AppState, id: u64) {
+    state.edit_queue(|q| q.prioritize(id));
 }
 
 /// Rank the sources for these chapters, speed-testing the ones that matter
 /// and have not been tested lately, and put the best first for every chapter.
 async fn order_sources(
     state: AppState,
+    batch_id: u64,
     client: &catalog::SuwayomiClient,
     requests: Vec<pipeline::ChapterRequest>,
     names: &HashMap<String, String>,
@@ -547,10 +786,11 @@ async fn order_sources(
         }
     };
     if !to_test.is_empty() {
-        let mut job = state.job;
-        if let Some(view) = job.write().as_mut() {
-            view.progress.note = Some("Checking which source is fastest…".into());
-        }
+        state.edit_queue(|q| {
+            if let Some(b) = q.get_mut(batch_id) {
+                b.progress.note = Some("Checking which source is fastest…".into());
+            }
+        });
         let results = pipeline::probe_sources(client, &to_test, &RetryPolicy::default()).await;
         for (source, speed) in results {
             match speed {
@@ -924,11 +1164,8 @@ pub fn start_export(state: AppState) {
     job.set(Some(JobView {
         kind: JobKind::Export,
         title: ws.title.clone(),
-        plan: keys.clone(),
         progress: JobProgress::default(),
         result: None,
-        skipped: Vec::new(),
-        failed: Vec::new(),
         cancel: cancel.clone(),
     }));
     info!(
@@ -1087,7 +1324,15 @@ fn log_event(event: &JobEvent, logged_pages: &mut HashMap<usize, usize>) {
 
 /// Delete every downloaded page of a series. Exported files are kept.
 pub fn delete_downloaded_series(state: AppState, series_id: String) {
+    // Stop anything downloading for it, and give that a moment to let go.
+    state.edit_queue(|q| q.cancel_series(&series_id));
     spawn_forever(async move {
+        for _ in 0..40 {
+            if !state.queue.peek().series_has_work(&series_id) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
         let files = library_files();
         let id = series_id.clone();
         let removed = tokio::task::spawn_blocking(move || files.remove_series(&id)).await;
@@ -1130,13 +1375,15 @@ pub fn delete_downloaded_chapter(state: AppState, series_id: String, key: String
                 let mut library = state.library;
                 library.write().remove_chapter(&series_id, &key);
                 state.save_library();
-                // Keep the preview pointing at something that still exists.
-                let gone = state.library.peek().find(&series_id).is_none();
-                if gone {
-                    let _ = library_files().remove_series(&series_id);
-                    let mut ws = state.workspace;
-                    ws.set(None);
-                    state.go(Page::Library);
+                // The series stays in the library, so with nothing left to
+                // preview or export, go back to its overview.
+                let empty = state
+                    .library
+                    .peek()
+                    .find(&series_id)
+                    .is_none_or(|s| s.chapters.is_empty());
+                if empty {
+                    state.open_tab(SeriesTab::Overview);
                 } else {
                     prepare_preview(state);
                 }

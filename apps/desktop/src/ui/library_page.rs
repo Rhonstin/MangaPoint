@@ -1,17 +1,21 @@
-//! The Library: everything downloaded, and every file exported.
+//! The Library: the series you keep (downloaded or saved for later), and
+//! every file exported.
 
 use super::widgets::{show_in_folder, Chip, Cover, EmptyState, Icon};
 use super::work::{
     ensure_series_info, forget_exported_file, load_saved_cover, open_series_from_library,
     saved_cover_key,
 };
-use crate::logic::{ago, human_bytes, plural};
+use crate::logic::{ago, human_bytes, library_order, plural, LibrarySort, LibraryView};
 use crate::state::{now_secs, AppState, Modal, ModalAction, Page};
 use dioxus::prelude::*;
 
 #[component]
 pub fn LibraryPage() -> Element {
     let state = use_context::<AppState>();
+    let mut view = use_signal(LibraryView::default);
+    let mut sort = use_signal(LibrarySort::default);
+    let mut filter = use_signal(String::new);
     // Fetch the details and covers of series that do not have them yet, and
     // show the saved covers. Runs again when the catalog comes up or the
     // library changes.
@@ -43,86 +47,130 @@ pub fn LibraryPage() -> Element {
     records.reverse(); // newest first
     let now = now_secs();
     let total = library.total_bytes();
+    let order = library_order(&library.series, view(), sort(), &filter.read());
+    let downloaded_count = library
+        .series
+        .iter()
+        .filter(|s| !s.chapters.is_empty())
+        .count();
+    let saved_count = library.series.len() - downloaded_count;
+    let queue = state.queue.read().clone();
+    let (running, waiting, chapters_left) = queue.counts();
 
     rsx! {
-        h1 { "Library" }
-        p { class: "muted", "Everything you have downloaded, and every file you have exported." }
+        div { class: "q-head",
+            div { class: "grow",
+                h1 { "Library" }
+                p { class: "muted",
+                    if library.series.is_empty() {
+                        "Series you keep, to read now or later."
+                    } else {
+                        "{downloaded_count} downloaded · {human_bytes(total)} on this computer"
+                        if saved_count > 0 { " · {saved_count} saved for later" }
+                    }
+                }
+            }
+        }
 
-        div { class: "card",
-            div { class: "row",
-                h2 { class: "grow", Icon { name: "book-open", size: 17 } "Downloaded" }
-                if !library.series.is_empty() {
-                    span { class: "muted small", "{library.series.len()} series · {human_bytes(total)}" }
+        if running + waiting > 0 {
+            div { class: "lib-strip", onclick: move |_| state.go(Page::Downloads),
+                Icon { name: "download", size: 16 }
+                span { class: "grow",
+                    "Downloading: {plural(chapters_left, \"chapter\")} to go"
+                    if waiting > 0 { " · {waiting} more in line" }
+                }
+                span { class: "muted small", "See the queue" }
+            }
+        }
+
+        if library.series.is_empty() {
+            EmptyState {
+                title: "Your library is empty",
+                message: "Find a series and add it to your library. You can download its chapters now or whenever you like.",
+                shelf: true,
+            }
+            div { style: "text-align: center",
+                button { class: "btn primary", onclick: move |_| state.go(Page::Search), Icon { name: "search", size: 16 } "Find a series" }
+            }
+        } else {
+            div { class: "lib-tools",
+                div { class: "pillrow",
+                    for v in LibraryView::ALL {
+                        button {
+                            key: "{v.label()}",
+                            class: if view() == v { "pill on" } else { "pill" },
+                            onclick: move |_| view.set(v),
+                            "{v.label()}"
+                        }
+                    }
+                }
+                input {
+                    class: "lib-filter", r#type: "search", placeholder: "Filter your library",
+                    value: "{filter}", oninput: move |e| filter.set(e.value()),
+                }
+                select {
+                    class: "lib-sort", value: "{sort().key()}",
+                    onchange: move |e| sort.set(LibrarySort::from_key(&e.value())),
+                    for o in LibrarySort::ALL {
+                        option { key: "{o.key()}", value: "{o.key()}", selected: sort() == o, "{o.label()}" }
+                    }
                 }
             }
-            if library.series.is_empty() {
-                EmptyState {
-                    title: "Nothing downloaded yet",
-                    message: "Search for a series, tick the chapters you want and download them. They'll live here.",
-                    shelf: true,
-                }
-                div { style: "text-align: center",
-                    button { class: "btn", onclick: move |_| state.go(Page::Search), Icon { name: "search", size: 16 } "Find a series" }
-                }
+            if order.is_empty() {
+                p { class: "muted", style: "margin: 28px 0", "Nothing here matches. Try another filter." }
             }
-            div { class: "lib-grid",
-                for s in library.series.iter() {
+            div { class: "poster-grid",
+                for &i in order.iter() {
                     {
-                        let id = s.id.clone();
+                        let s = &library.series[i];
                         let open_id = s.id.clone();
-                        let title = s.title.clone();
-                        let size = human_bytes(s.bytes());
-                        let body = format!(
-                            "The downloaded pages of {} ({size}) will be deleted. Files you already exported are kept, and you can download the chapters again later.",
-                            s.title
-                        );
-                        let info = s.info.clone();
-                        let has_cover = info.as_ref().is_some_and(|i| i.has_cover);
+                        let has_cover = s.info.as_ref().is_some_and(|i| i.has_cover);
                         let cover_key = saved_cover_key(&s.id);
-                        let status = info.as_ref().map(|i| i.status.clone()).unwrap_or_default();
-                        let genres = info.as_ref().map(|i| i.genres.iter().take(4).cloned().collect::<Vec<_>>().join(" · ")).unwrap_or_default();
-                        let blurb = info.as_ref().map(|i| i.description.clone()).unwrap_or_default();
-                        let sources = info
-                            .as_ref()
-                            .map(|i| i.source_names.iter().map(|(_, n)| n.clone()).collect::<Vec<_>>().join(", "))
-                            .unwrap_or_default();
-                        let loading = state.info_busy.read().contains(&s.id);
+                        let chapters = s.chapters.len();
+                        let size = human_bytes(s.bytes());
+                        let sub = if chapters == 0 {
+                            "Not downloaded yet".to_string()
+                        } else {
+                            format!("{} · {size}", plural(chapters, "chapter"))
+                        };
+                        let queued = queue.series_has_work(&s.id);
+                        let body = if chapters == 0 {
+                            format!("{} will be taken off your list. Nothing is stored on this computer for it.", s.title)
+                        } else {
+                            format!(
+                                "{} and its {} downloaded chapters ({size}) will be deleted from this computer. Files you already exported are kept.",
+                                s.title, chapters
+                            )
+                        };
+                        let modal = Modal {
+                            title: format!("Remove {} from your library?", s.title),
+                            body,
+                            confirm: "Remove".into(),
+                            cancel: "Keep".into(),
+                            danger: true,
+                            action: ModalAction::DeleteDownloadedSeries { series_id: s.id.clone() },
+                        };
                         rsx! {
-                            div { class: "lib-card", key: "{s.id}",
-                                div { class: "lib-main", title: "Open {s.title}",
+                            div { class: "poster", key: "{s.id}",
+                                div { class: "poster-art", title: "Open {s.title}",
                                     onclick: move |_| open_series_from_library(state, &open_id),
-                                    div { class: "lib-cover",
-                                        if has_cover { Cover { key_id: cover_key } } else { div { class: "cover empty", "📖" } }
+                                    if has_cover { Cover { key_id: cover_key } } else { div { class: "cover empty", "📖" } }
+                                    span { class: if chapters == 0 { "poster-badge saved" } else { "poster-badge" },
+                                        if chapters == 0 { "Saved" } else { "{chapters} ch" }
                                     }
-                                    div { class: "lib-text",
-                                        strong { class: "lib-title", "{s.title}" }
-                                        div { class: "row wrap", style: "margin: 4px 0",
-                                            if !status.is_empty() { Chip { text: status, kind: Some("accent".to_string()) } }
-                                            span { class: "muted small", "{plural(s.chapters.len(), \"chapter\")} · {plural(s.page_count(), \"page\")} · {size}" }
+                                    if queued {
+                                        span { class: "poster-badge queued", title: "Downloading",
+                                            Icon { name: "download", size: 12 }
                                         }
-                                        if !genres.is_empty() { div { class: "muted small", "{genres}" } }
-                                        if !blurb.is_empty() {
-                                            p { class: "muted small clamp2", style: "margin: 6px 0 0", "{blurb}" }
-                                        } else if loading {
-                                            p { class: "muted small", style: "margin: 6px 0 0", "Loading details…" }
-                                        }
-                                        if !sources.is_empty() { div { class: "muted small", style: "margin-top: 4px", "From {sources}" } }
                                     }
-                                }
-                                div { class: "lib-actions",
                                     button {
-                                        class: "btn small danger", title: "Delete the downloaded pages",
-                                        onclick: move |_| state.ask(Modal {
-                                            title: format!("Delete {title}?"),
-                                            body: body.clone(),
-                                            confirm: "Delete".into(),
-                                            cancel: "Keep".into(),
-                                            danger: true,
-                                            action: ModalAction::DeleteDownloadedSeries { series_id: id.clone() },
-                                        }),
-                                        Icon { name: "trash", size: 14 }
+                                        class: "poster-remove", title: "Remove from your library",
+                                        onclick: move |e| { e.stop_propagation(); state.ask(modal.clone()); },
+                                        Icon { name: "x", size: 14 }
                                     }
                                 }
+                                strong { class: "poster-title", title: "{s.title}", "{s.title}" }
+                                span { class: "muted small", "{sub}" }
                             }
                         }
                     }
@@ -130,8 +178,8 @@ pub fn LibraryPage() -> Element {
             }
         }
 
-        div { class: "card",
-            h2 { Icon { name: "file-down", size: 17 } "Exported files" }
+        div { class: "lib-exports",
+            h2 { class: "q-title", "Exported files" }
             if records.is_empty() {
                 EmptyState {
                     title: "No exports yet",

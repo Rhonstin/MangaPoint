@@ -283,32 +283,6 @@ pub enum ChapterStatus {
     Failed,
 }
 
-/// `plan` is the order the running download was asked for chapters, and
-/// `active` the positions being downloaded right now (several, when chapters
-/// download together); `failed` lists chapters no source could supply.
-pub fn download_status(
-    key: &str,
-    saved: &HashSet<String>,
-    plan: &[String],
-    active: &[usize],
-    running: bool,
-    failed: &[String],
-) -> ChapterStatus {
-    if saved.contains(key) {
-        ChapterStatus::Saved
-    } else if failed.iter().any(|k| k == key) {
-        ChapterStatus::Failed
-    } else if running
-        && active
-            .iter()
-            .any(|&i| plan.get(i).is_some_and(|k| k == key))
-    {
-        ChapterStatus::Downloading
-    } else {
-        ChapterStatus::Waiting
-    }
-}
-
 // ---- Progress --------------------------------------------------------------
 
 /// One chapter being worked on right now.
@@ -392,11 +366,6 @@ impl JobProgress {
     pub fn pages_per_second(&self) -> Option<f32> {
         let seconds = self.started?.elapsed().as_secs_f32();
         (seconds >= 4.0 && self.pages_seen >= 6).then(|| self.pages_seen as f32 / seconds)
-    }
-
-    /// The positions of the chapters under way.
-    pub fn active_indexes(&self) -> Vec<usize> {
-        self.active.keys().copied().collect()
     }
 
     /// Overall progress, 0.0 to 1.0.
@@ -656,6 +625,119 @@ pub fn sorted_order(ranked: &[search::RankedSeries], sort: SearchSort) -> Vec<us
     order
 }
 
+/// Which series the Library shows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LibraryView {
+    #[default]
+    All,
+    /// Series with chapters on this computer.
+    Downloaded,
+    /// Series put in the library but not downloaded yet.
+    Saved,
+}
+
+impl LibraryView {
+    pub const ALL: [LibraryView; 3] = [
+        LibraryView::All,
+        LibraryView::Downloaded,
+        LibraryView::Saved,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            LibraryView::All => "All",
+            LibraryView::Downloaded => "Downloaded",
+            LibraryView::Saved => "Saved for later",
+        }
+    }
+
+    pub fn includes(self, series: &library::DownloadedSeries) -> bool {
+        match self {
+            LibraryView::All => true,
+            LibraryView::Downloaded => !series.chapters.is_empty(),
+            LibraryView::Saved => series.chapters.is_empty(),
+        }
+    }
+}
+
+/// How the Library orders its series.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LibrarySort {
+    /// The ones touched most recently first.
+    #[default]
+    Recent,
+    Title,
+    MostChapters,
+    Size,
+}
+
+impl LibrarySort {
+    pub const ALL: [LibrarySort; 4] = [
+        LibrarySort::Recent,
+        LibrarySort::Title,
+        LibrarySort::MostChapters,
+        LibrarySort::Size,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            LibrarySort::Recent => "Recently added",
+            LibrarySort::Title => "Title A to Z",
+            LibrarySort::MostChapters => "Most chapters",
+            LibrarySort::Size => "Biggest on disk",
+        }
+    }
+
+    pub fn key(self) -> &'static str {
+        match self {
+            LibrarySort::Recent => "recent",
+            LibrarySort::Title => "title",
+            LibrarySort::MostChapters => "chapters",
+            LibrarySort::Size => "size",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Self {
+        Self::ALL
+            .into_iter()
+            .find(|s| s.key() == key)
+            .unwrap_or_default()
+    }
+}
+
+/// The library's series to show, as positions in `series`: those in the view
+/// that match the filter text (in the title, the author or a genre), in order.
+pub fn library_order(
+    series: &[library::DownloadedSeries],
+    view: LibraryView,
+    sort: LibrarySort,
+    filter: &str,
+) -> Vec<usize> {
+    let needle = filter.trim().to_lowercase();
+    let matches = |s: &library::DownloadedSeries| {
+        needle.is_empty()
+            || s.title.to_lowercase().contains(&needle)
+            || s.info.as_ref().is_some_and(|i| {
+                i.author.to_lowercase().contains(&needle)
+                    || i.genres.iter().any(|g| g.to_lowercase().contains(&needle))
+            })
+    };
+    let mut order: Vec<usize> = (0..series.len())
+        .filter(|&i| view.includes(&series[i]) && matches(&series[i]))
+        .collect();
+    match sort {
+        LibrarySort::Recent => {
+            order.sort_by_key(|&i| std::cmp::Reverse(series[i].updated_at.max(series[i].added_at)))
+        }
+        LibrarySort::Title => order.sort_by_key(|&i| series[i].title.to_lowercase()),
+        LibrarySort::MostChapters => {
+            order.sort_by_key(|&i| std::cmp::Reverse(series[i].chapters.len()))
+        }
+        LibrarySort::Size => order.sort_by_key(|&i| std::cmp::Reverse(series[i].bytes())),
+    }
+    order
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -804,39 +886,6 @@ mod tests {
             Some("Download a chapter first")
         );
         assert_eq!(tab_blocked(Needs::Downloads, 0, 1, false), None);
-    }
-
-    #[test]
-    fn a_chapters_download_status_follows_the_running_job() {
-        let saved: HashSet<String> = ["c1".to_string()].into();
-        let plan: Vec<String> = ["c2", "c3", "c4"].map(String::from).to_vec();
-        let failed = vec!["c4".to_string()];
-        let status = |key: &str, active: &[usize], running| {
-            download_status(key, &saved, &plan, active, running, &failed)
-        };
-        assert_eq!(
-            status("c1", &[0], true),
-            ChapterStatus::Saved,
-            "downloaded wins"
-        );
-        assert_eq!(status("c2", &[0], true), ChapterStatus::Downloading);
-        assert_eq!(status("c3", &[0], true), ChapterStatus::Waiting);
-        assert_eq!(status("c3", &[1], true), ChapterStatus::Downloading);
-        assert_eq!(
-            status("c3", &[0, 1], true),
-            ChapterStatus::Downloading,
-            "chapters can download together"
-        );
-        assert_eq!(
-            status("c4", &[2], true),
-            ChapterStatus::Failed,
-            "a failure is not 'downloading'"
-        );
-        assert_eq!(
-            status("c2", &[0], false),
-            ChapterStatus::Waiting,
-            "nothing is downloading once it ends"
-        );
     }
 
     fn member(source: &str, manga_id: i64, score: f32) -> ScoredMember {
@@ -1007,12 +1056,12 @@ mod tests {
         p.apply(&pages(0, 5, 10));
         p.apply(&pages(1, 10, 10));
         p.apply(&pages(2, 0, 10));
-        assert_eq!(p.active_indexes(), [0, 1, 2]);
+        assert_eq!(p.active.keys().copied().collect::<Vec<_>>(), [0, 1, 2]);
         assert_eq!(p.label(), "0 of 6 chapters done, 3 in progress");
         assert!((p.fraction() - 1.5 / 6.0).abs() < 1e-6);
 
         p.apply(&JobEvent::ChapterDone { index: 1 });
-        assert_eq!(p.active_indexes(), [0, 2]);
+        assert_eq!(p.active.keys().copied().collect::<Vec<_>>(), [0, 2]);
         assert_eq!(p.label(), "1 of 6 chapters done, 2 in progress");
         assert!(
             (p.fraction() - 1.5 / 6.0).abs() < 1e-6,
@@ -1288,5 +1337,109 @@ mod sort_tests {
             sorted_order(&[], SearchSort::MostChapters),
             Vec::<usize>::new()
         );
+    }
+}
+
+#[cfg(test)]
+mod library_view_tests {
+    use super::*;
+    use library::{DownloadedChapter, DownloadedSeries, SeriesInfo};
+
+    fn chapter(bytes: u64) -> DownloadedChapter {
+        DownloadedChapter {
+            key: "c1".into(),
+            number: Some(1.0),
+            name: "Chapter 1".into(),
+            source_id: "s".into(),
+            chapter_id: 1,
+            pages: 10,
+            bytes,
+            downloaded_at: 0,
+        }
+    }
+
+    fn series(
+        title: &str,
+        chapters: usize,
+        bytes: u64,
+        added: u64,
+        updated: u64,
+    ) -> DownloadedSeries {
+        DownloadedSeries {
+            id: title.to_lowercase(),
+            title: title.into(),
+            chapters: (0..chapters).map(|_| chapter(bytes)).collect(),
+            added_at: added,
+            updated_at: updated,
+            ..Default::default()
+        }
+    }
+
+    fn shelf() -> Vec<DownloadedSeries> {
+        let mut a = series("Berserk", 3, 100, 10, 50);
+        a.info = Some(SeriesInfo {
+            author: "Kentaro Miura".into(),
+            genres: vec!["Dark Fantasy".into()],
+            ..Default::default()
+        });
+        vec![
+            a,
+            series("alpha", 0, 0, 40, 40), // saved, not downloaded
+            series("Zeta", 10, 5, 30, 30),
+            series("Delta", 0, 0, 5, 5),
+        ]
+    }
+
+    #[test]
+    fn the_views_split_downloaded_from_saved() {
+        let s = shelf();
+        let order = |v| library_order(&s, v, LibrarySort::Title, "");
+        assert_eq!(order(LibraryView::All), [1, 0, 3, 2]);
+        assert_eq!(order(LibraryView::Downloaded), [0, 2]);
+        assert_eq!(order(LibraryView::Saved), [1, 3]);
+    }
+
+    #[test]
+    fn the_sorts_order_as_they_say() {
+        let s = shelf();
+        let by = |sort| library_order(&s, LibraryView::All, sort, "");
+        assert_eq!(
+            by(LibrarySort::Recent),
+            [0, 1, 2, 3],
+            "latest touch first (50, 40, 30, 5)"
+        );
+        assert_eq!(
+            by(LibrarySort::Title),
+            [1, 0, 3, 2],
+            "A to Z, ignoring case"
+        );
+        assert_eq!(by(LibrarySort::MostChapters), [2, 0, 1, 3]);
+        assert_eq!(
+            by(LibrarySort::Size),
+            [0, 2, 1, 3],
+            "300 bytes, 50, then the empty ones"
+        );
+    }
+
+    #[test]
+    fn the_filter_looks_at_the_title_author_and_genres() {
+        let s = shelf();
+        let find = |text: &str| library_order(&s, LibraryView::All, LibrarySort::Title, text);
+        assert_eq!(find("  ZET "), [2]);
+        assert_eq!(find("miura"), [0], "author");
+        assert_eq!(find("dark fantasy"), [0], "genre");
+        assert!(find("nothing like this").is_empty());
+        assert_eq!(
+            library_order(&s, LibraryView::Saved, LibrarySort::Title, "berserk"),
+            Vec::<usize>::new()
+        );
+    }
+
+    #[test]
+    fn sort_choices_round_trip_through_their_keys() {
+        for sort in LibrarySort::ALL {
+            assert_eq!(LibrarySort::from_key(sort.key()), sort);
+        }
+        assert_eq!(LibrarySort::from_key("???"), LibrarySort::Recent);
     }
 }

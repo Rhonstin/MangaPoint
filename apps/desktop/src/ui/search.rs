@@ -322,7 +322,29 @@ fn SeriesCard(index: usize) -> Element {
     let others = series.members.len() - 1;
     let chapters = best.enrichment.as_ref().and_then(|e| e.chapter_count);
     let for_click = series.clone();
+    let for_save = series.clone();
+    let in_library = state
+        .library
+        .read()
+        .find(&library::series_id(&series.title))
+        .is_some();
+    let save_class = if in_library {
+        "save-btn on"
+    } else {
+        "save-btn"
+    };
+    let save_title = if in_library {
+        "In your library"
+    } else {
+        "Add to your library"
+    };
+    let save_icon = if in_library {
+        "bookmark-check"
+    } else {
+        "bookmark-plus"
+    };
     rsx! {
+        div { class: "series-wrap",
         button {
             class: "series-card",
             onclick: move |_| {
@@ -341,6 +363,13 @@ fn SeriesCard(index: usize) -> Element {
                     }
                 }
             }
+        }
+        button {
+            class: save_class,
+            title: save_title,
+            onclick: move |_| super::work::add_ranked_to_library(state, &for_save),
+            Icon { name: save_icon, size: 16 }
+        }
         }
     }
 }

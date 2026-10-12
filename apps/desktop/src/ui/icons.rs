@@ -105,6 +105,25 @@ pub fn body(name: &str) -> Option<&'static str> {
         "crop" => {
             Some(r#"<path d="M6 2v14a2 2 0 0 0 2 2h14" /> <path d="M18 22V8a2 2 0 0 0-2-2H2" />"#)
         }
+        "bookmark-plus" => Some(
+            r#"<path d="M12 7v6" /> <path d="M15 10H9" /> <path d="M17 3a2 2 0 0 1 2 2v15a1 1 0 0 1-1.496.868l-4.512-2.578a2 2 0 0 0-1.984 0l-4.512 2.578A1 1 0 0 1 5 20V5a2 2 0 0 1 2-2z" />"#,
+        ),
+        "bookmark-check" => Some(
+            r#"<path d="M17 3a2 2 0 0 1 2 2v15a1 1 0 0 1-1.496.868l-4.512-2.578a2 2 0 0 0-1.984 0l-4.512 2.578A1 1 0 0 1 5 20V5a2 2 0 0 1 2-2z" /> <path d="m9 10 2 2 4-4" />"#,
+        ),
+        "pause" => Some(
+            r#"<rect x="14" y="3" width="5" height="18" rx="1" /> <rect x="5" y="3" width="5" height="18" rx="1" />"#,
+        ),
+        "play" => Some(
+            r#"<path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z" />"#,
+        ),
+        "arrow-up-to-line" => {
+            Some(r#"<path d="M5 3h14" /> <path d="m18 13-6-6-6 6" /> <path d="M12 7v14" />"#)
+        }
+        "rotate-cw" => Some(
+            r#"<path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8" /> <path d="M21 3v5h-5" />"#,
+        ),
+        "clock-3" => Some(r#"<circle cx="12" cy="12" r="10" /> <path d="M12 6v6h4" />"#),
         _ => None,
     }
 }

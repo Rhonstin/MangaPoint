@@ -4,7 +4,7 @@ use crate::logic::{self, SortKey};
 use crate::state::{AppState, ChaptersState, Page, SeriesTab};
 use crate::ui::search::run_search;
 use crate::ui::widgets::{Chip, EmptyState, Icon};
-use crate::ui::work::{downloaded_keys, merged_key, start_download};
+use crate::ui::work::{downloaded_keys, merged_key, queue_download};
 use dioxus::prelude::*;
 use pipeline::SourceChoice;
 use search::missing_numbers;
@@ -67,6 +67,9 @@ pub fn ChaptersTab() -> Element {
     };
 
     let have = downloaded_keys(state, &ws.series_id);
+    let queue = state.queue.read().clone();
+    let queued =
+        |key: &str| !have.contains(key) && queue.chapter_state(&ws.series_id, key).is_some();
     let total = loaded.merged.len();
     let numbers: Vec<Option<f64>> = loaded.merged.iter().map(|m| m.number).collect();
     let missing = missing_numbers(&loaded.merged);
@@ -86,14 +89,19 @@ pub fn ChaptersTab() -> Element {
                 .is_some_and(|c| have.contains(&merged_key(c)))
         })
         .count();
-    let to_download = picked - already;
+    let queued_picked = selected_now
+        .iter()
+        .filter(|&&i| loaded.merged.get(i).is_some_and(|c| queued(&merged_key(c))))
+        .count();
+    // Picked chapters that are neither downloaded nor already in the queue.
+    let to_download = picked - already - queued_picked;
     // Which sources can supply the chapters still to download, and how many each.
     let mut per_source: Vec<(String, String, usize)> = Vec::new();
     for &i in selected_now.iter() {
         let Some(ch) = loaded.merged.get(i) else {
             continue;
         };
-        if have.contains(&merged_key(ch)) {
+        if have.contains(&merged_key(ch)) || queued(&merged_key(ch)) {
             continue;
         }
         let mut seen: Vec<&str> = Vec::new();
@@ -172,6 +180,7 @@ pub fn ChaptersTab() -> Element {
                     index: i,
                     on: selected_now.contains(&i),
                     saved: have.contains(&merged_key(ch)),
+                    queued: queued(&merged_key(ch)),
                     number: ch.number.map(logic::format_number).unwrap_or_else(|| "–".to_string()),
                     name: ch.name.clone(),
                     sources: ch.options.len(),
@@ -285,7 +294,11 @@ pub fn ChaptersTab() -> Element {
             div { class: "action-bar",
                 div { class: "bar-count",
                     strong { "{picked} selected" }
-                    if already > 0 { span { class: "muted small", "{already} already downloaded" } }
+                    span { class: "muted small",
+                        if already > 0 { "{already} downloaded" }
+                        if already > 0 && queued_picked > 0 { " · " }
+                        if queued_picked > 0 { "{queued_picked} in the queue" }
+                    }
                 }
                 if per_source.len() >= 2 && to_download > 0 {
                     div { class: "bar-source",
@@ -308,7 +321,11 @@ pub fn ChaptersTab() -> Element {
                 if not_offered > 0 {
                     Chip { text: format!("{not_offered} not offered"), kind: Some("warn".to_string()) }
                 }
-                if to_download == 0 {
+                if to_download == 0 && queued_picked > 0 {
+                    button { class: "btn primary", onclick: move |_| state.go(Page::Downloads),
+                        Icon { name: "download", size: 16 } "View downloads"
+                    }
+                } else if to_download == 0 {
                     button { class: "btn primary", onclick: move |_| {
                         state.open_tab(SeriesTab::Preview);
                         crate::ui::work::prepare_preview(state);
@@ -316,8 +333,8 @@ pub fn ChaptersTab() -> Element {
                         Icon { name: "eye", size: 16 } "Preview them"
                     }
                 } else {
-                    button { class: "btn primary", onclick: move |_| start_download(state),
-                        Icon { name: "download", size: 16 } "Download {to_download - not_offered}"
+                    button { class: "btn primary", onclick: move |_| queue_download(state),
+                        Icon { name: "download", size: 16 } "Add {to_download - not_offered} to downloads"
                     }
                 }
             }
@@ -332,6 +349,7 @@ fn ChapterRow(
     index: usize,
     on: bool,
     saved: bool,
+    queued: bool,
     number: String,
     name: String,
     sources: usize,
@@ -350,7 +368,10 @@ fn ChapterRow(
             td { class: "check", input { r#type: "checkbox", checked: on, readonly: true, style: "pointer-events: none" } }
             td { class: "num", "{number}" }
             td { class: "name", title: "{name}", "{name}" }
-            td { class: "saved", if saved { Icon { name: "circle-check", size: 15 } } }
+            td { class: "saved",
+                if saved { Icon { name: "circle-check", size: 15 } }
+                else if queued { span { title: "In the download queue", Icon { name: "clock-3", size: 15 } } }
+            }
             td { class: "src", title: "{tip}", "{sources}" }
             td { class: "date", "{date}" }
         }

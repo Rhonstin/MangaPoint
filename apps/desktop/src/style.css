@@ -392,7 +392,7 @@ td.status, th.status { width: 170px; }
 .cardwrap { align-self: start; position: relative; }
 .cardwrap .popover { left: auto; right: 0; }
 .searchbox {
-  display: flex; flex-direction: column; gap: 12px; padding: 16px 20px 14px 24px;
+  display: flex; flex-direction: column; gap: 12px; padding: 16px 10px 10px 24px;
   background: var(--panel); border: 1px solid var(--line-strong); border-radius: 28px;
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.6); transition: border-color 0.15s;
 }
@@ -454,3 +454,51 @@ td.status, th.status { width: 170px; }
 /* A gap between the box and the results. */
 .searchwrap ~ .grid { margin-top: 20px; }
 @media (prefers-reduced-motion: reduce) { .pill-btn, .src-pill { transition: none; } }
+
+/* ---- the download queue ---- */
+.nav-item { position: relative; }
+.nav-badge { min-width: 20px; padding: 1px 7px; border-radius: 999px; background: var(--accent); color: var(--accent-text); font-size: 0.74rem; font-weight: 700; text-align: center; }
+.q-head { display: flex; align-items: flex-start; gap: 10px; flex-wrap: wrap; margin-bottom: 4px; }
+.q-head .btn { margin-top: 4px; }
+.q-title { margin: 26px 0 6px; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); font-weight: 600; }
+.q-row { display: flex; gap: 16px; align-items: flex-start; padding: 14px 4px; border-top: 1px solid var(--line); }
+.q-title + .q-row { border-top: 0; }
+.q-row.running { padding: 18px 4px 20px; }
+.q-cover { width: 54px; flex: none; }
+.q-row.running .q-cover { width: 72px; }
+.q-cover .cover { width: 100%; aspect-ratio: 2 / 3; object-fit: cover; border-radius: 8px; display: block; }
+.q-cover .cover.empty { display: flex; align-items: center; justify-content: center; background: var(--panel); border: 1px solid var(--line); }
+.q-main { flex: 1; min-width: 0; }
+.q-name { font-size: 1.02rem; }
+.q-line { margin-top: 3px; }
+.q-actions { display: flex; gap: 6px; flex: none; align-items: flex-start; }
+.downloadbar { margin-bottom: 14px; }
+
+/* ---- the flat library ---- */
+.lib-strip { display: flex; align-items: center; gap: 10px; padding: 10px 14px; margin: 6px 0 14px; border-radius: 999px; background: var(--panel); border: 1px solid var(--line); cursor: pointer; }
+.lib-strip:hover { border-color: var(--line-strong); }
+.lib-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 8px 0 18px; }
+.lib-tools .pillrow { display: flex; gap: 6px; flex: 1; flex-wrap: wrap; }
+.lib-filter { width: 220px; }
+.lib-sort { width: auto; }
+.poster-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 22px 18px; }
+.poster { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.poster-art { position: relative; cursor: pointer; border-radius: 10px; overflow: hidden; transition: transform 0.15s; }
+.poster-art:hover { transform: translateY(-3px); }
+.poster-art .cover { width: 100%; aspect-ratio: 2 / 3; object-fit: cover; display: block; border-radius: 10px; }
+.poster-art .cover.empty { display: flex; align-items: center; justify-content: center; background: var(--panel); border: 1px solid var(--line); font-size: 2rem; }
+.poster-badge { position: absolute; left: 8px; bottom: 8px; padding: 2px 9px; border-radius: 999px; font-size: 0.75rem; font-weight: 600; background: rgba(0, 0, 0, 0.72); color: #e8e8e8; }
+.poster-badge.saved { background: rgba(60, 80, 130, 0.85); }
+.poster-badge.queued { left: auto; right: 8px; bottom: 8px; padding: 4px 6px; display: inline-flex; background: var(--accent); color: var(--accent-text); }
+.poster-remove { position: absolute; top: 8px; right: 8px; width: 26px; height: 26px; border-radius: 50%; border: 0; background: rgba(0, 0, 0, 0.72); color: #ddd; display: none; align-items: center; justify-content: center; cursor: pointer; padding: 0; }
+.poster-art:hover .poster-remove { display: inline-flex; }
+.poster-remove:hover { background: #8a2a2a; color: #fff; }
+.poster-title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 4px; }
+.lib-exports { margin-top: 36px; }
+
+.series-wrap { position: relative; display: flex; }
+.series-wrap .series-card { flex: 1; }
+.save-btn { position: absolute; top: 8px; right: 8px; width: 30px; height: 30px; border-radius: 50%; border: 0; padding: 0; display: inline-flex; align-items: center; justify-content: center; background: rgba(0, 0, 0, 0.72); color: #ddd; cursor: pointer; opacity: 0; transition: opacity 0.15s; }
+.series-wrap:hover .save-btn, .save-btn.on { opacity: 1; }
+.save-btn:hover { background: var(--accent); color: var(--accent-text); }
+.save-btn.on { color: var(--accent); }

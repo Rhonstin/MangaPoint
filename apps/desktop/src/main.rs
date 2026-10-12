@@ -3,6 +3,7 @@
 mod assets;
 mod backend;
 mod logic;
+mod queue;
 mod state;
 mod ui;
 

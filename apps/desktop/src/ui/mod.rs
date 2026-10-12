@@ -2,6 +2,7 @@
 
 pub mod cat;
 mod conversion;
+mod downloads_page;
 mod icons;
 mod library_page;
 mod presets;
@@ -16,6 +17,7 @@ mod work;
 mod workspace;
 
 use crate::backend;
+use crate::logic::plural;
 use crate::state::spawn_forever;
 use crate::state::{AppState, BootState, JobKind, Modal, ModalAction, Page};
 use dioxus::desktop::tao::event::{Event, WindowEvent};
@@ -99,6 +101,9 @@ fn Failed(message: String) -> Element {
 fn Shell() -> Element {
     let state = use_context::<AppState>();
     let page = *state.page.read();
+    // How many batches are downloading or waiting, for the badge on Downloads.
+    let (running, waiting, _) = state.queue.read().counts();
+    let in_queue = running + waiting;
     rsx! {
         nav { class: "nav",
             div { class: "brand",
@@ -107,17 +112,23 @@ fn Shell() -> Element {
             }
             NavItem { page: Page::Search, label: "Search", icon: "search" }
             NavItem { page: Page::Library, label: "Library", icon: "book-open" }
+            NavItem {
+                page: Page::Downloads, label: "Downloads", icon: "download",
+                badge: (in_queue > 0).then(|| in_queue.to_string()),
+            }
             NavItem { page: Page::Sources, label: "Sources", icon: "layers" }
             NavItem { page: Page::Settings, label: "Settings", icon: "settings" }
         }
         main { class: "content",
             div { class: "page",
                 JobBar {}
+                DownloadBar {}
                 {match page {
                     Page::Setup => rsx! { setup::Setup {} },
                     Page::Search => rsx! { search::SearchPage {} },
                     Page::Series => rsx! { workspace::WorkspacePage {} },
                     Page::Library => rsx! { library_page::LibraryPage {} },
+                    Page::Downloads => rsx! { downloads_page::DownloadsPage {} },
                     Page::Sources => rsx! { sources_page::SourcesPage {} },
                     Page::Settings => rsx! { settings::SettingsPage {} },
                 }}
@@ -127,7 +138,7 @@ fn Shell() -> Element {
 }
 
 #[component]
-fn NavItem(page: Page, label: &'static str, icon: &'static str) -> Element {
+fn NavItem(page: Page, label: &'static str, icon: &'static str, badge: Option<String>) -> Element {
     let state = use_context::<AppState>();
     let current = *state.page.read();
     // An open series belongs to wherever it was opened from; first-run
@@ -149,12 +160,58 @@ fn NavItem(page: Page, label: &'static str, icon: &'static str) -> Element {
     rsx! {
         button { class: "{class}", onclick: move |_| state.go(page),
             Icon { name: icon, size: 17 }
-            "{label}"
+            span { class: "grow", "{label}" }
+            if let Some(count) = badge { span { class: "nav-badge", "{count}" } }
         }
     }
 }
 
-/// The running (or just finished) download or export, shown above every screen.
+/// The download queue at a glance, above every screen except its own page.
+#[component]
+fn DownloadBar() -> Element {
+    let state = use_context::<AppState>();
+    if *state.page.read() == Page::Downloads {
+        return rsx! {};
+    }
+    let queue = state.queue.read().clone();
+    let running = queue.running().cloned();
+    let (_, waiting, chapters_left) = queue.counts();
+    let paused = queue.paused;
+    if running.is_none() && !(paused && waiting > 0) {
+        return rsx! {};
+    }
+    rsx! {
+        div { class: "jobbar downloadbar",
+            div { class: "row",
+                Icon { name: "download", size: 16 }
+                div { class: "grow",
+                    if let Some(batch) = &running {
+                        strong { "{batch.title}" }
+                        span { class: "muted", " · {batch.progress.label()}" }
+                        if let Some(v) = batch.progress.pages_per_second() {
+                            span { class: "muted small", " · about {v:.1} pages a second" }
+                        }
+                        if waiting > 0 { span { class: "muted small", " · {waiting} more in line" } }
+                    } else {
+                        strong { "Downloads are paused" }
+                        span { class: "muted", " · {plural(chapters_left, \"chapter\")} waiting" }
+                    }
+                }
+                if paused {
+                    button { class: "btn small", onclick: move |_| work::set_queue_paused(state, false),
+                        Icon { name: "play", size: 14 } "Resume"
+                    }
+                }
+                button { class: "btn small", onclick: move |_| state.go(Page::Downloads), "Downloads" }
+            }
+            if let Some(batch) = &running {
+                div { style: "margin-top: 8px", ProgressBar { fraction: Some(batch.progress.fraction()) } }
+            }
+        }
+    }
+}
+
+/// The running (or just finished) export, shown above every screen.
 #[component]
 fn JobBar() -> Element {
     let state = use_context::<AppState>();
@@ -162,7 +219,6 @@ fn JobBar() -> Element {
     let Some(job) = job else { return rsx! {} };
     let running = job.result.is_none();
     let verb = match job.kind {
-        JobKind::Download => "Downloading",
         JobKind::Export => "Exporting",
     };
     let kind = job.kind;

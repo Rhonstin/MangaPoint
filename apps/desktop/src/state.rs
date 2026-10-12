@@ -1,6 +1,7 @@
 //! Everything the screens share.
 
 use crate::logic::{JobProgress, SearchSort, SortKey, TargetChoice};
+use crate::queue::DownloadQueue;
 use catalog::SuwayomiClient;
 use dioxus::prelude::*;
 use library::{
@@ -39,6 +40,8 @@ pub enum Page {
     /// A series the user opened: chapters, downloads, preview, export.
     Series,
     Library,
+    /// The download queue, for every series.
+    Downloads,
     Sources,
     Settings,
 }
@@ -185,6 +188,8 @@ pub struct LoadedChapters {
     /// Source id of each member, best first; chapter options point into this.
     pub member_sources: Vec<String>,
     pub member_names: Vec<String>,
+    /// The same members as they are kept in the library.
+    pub saved: Vec<library::SavedSource>,
     pub unreachable: usize,
 }
 
@@ -322,7 +327,6 @@ impl Default for ExportOpts {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum JobKind {
-    Download,
     Export,
 }
 
@@ -330,16 +334,9 @@ pub enum JobKind {
 pub struct JobView {
     pub kind: JobKind,
     pub title: String,
-    /// Chapter keys in the order they are processed, so a position in the
-    /// progress report can be matched to a chapter.
-    pub plan: Vec<String>,
     pub progress: JobProgress,
     /// `None` while running, then a one-line summary or the error.
     pub result: Option<Result<String, String>>,
-    /// Chapters no source could supply, in words.
-    pub skipped: Vec<String>,
-    /// The same chapters, by key.
-    pub failed: Vec<String>,
     pub cancel: CancelFlag,
 }
 
@@ -370,6 +367,8 @@ pub struct AppState {
     pub speeds: Signal<SpeedDb>,
     /// Where the next download takes its chapters from.
     pub download_source: Signal<SourceChoice>,
+    /// Chapters waiting to download, the batch downloading now, and what finished.
+    pub queue: Signal<DownloadQueue>,
     /// Series whose details are being fetched right now.
     pub info_busy: Signal<HashSet<String>>,
     pub workspace: Signal<Option<Workspace>>,
@@ -433,6 +432,7 @@ impl AppState {
             presets: sig(JsonFile::<PresetsDb>::new(paths().presets_file()).load()),
             speeds: sig(JsonFile::<SpeedDb>::new(paths().speeds_file()).load()),
             download_source: sig(SourceChoice::Adaptive),
+            queue: sig(DownloadQueue::default()),
             info_busy: sig(HashSet::new()),
             workspace: sig(None),
             chapters: sig(ChaptersState::Idle),
@@ -504,6 +504,13 @@ impl AppState {
     pub fn edit_presets<R>(&self, edit: impl FnOnce(&mut PresetsDb) -> R) -> R {
         let mut presets = self.presets;
         let mut guard = presets.write();
+        edit(&mut guard)
+    }
+
+    /// Change the download queue.
+    pub fn edit_queue<R>(&self, edit: impl FnOnce(&mut DownloadQueue) -> R) -> R {
+        let mut queue = self.queue;
+        let mut guard = queue.write();
         edit(&mut guard)
     }
 
