@@ -29,6 +29,12 @@ fn init_logging() {
 
 fn main() {
     init_logging();
+    // Ctrl+C in the terminal would otherwise leave the catalog server running
+    // and holding its database, so the next start could not open it.
+    let _ = ctrlc::set_handler(|| {
+        backend::shutdown();
+        std::process::exit(130);
+    });
     tracing::info!(
         "MangaPoint starting; data folder: {}",
         state::paths().root().display()

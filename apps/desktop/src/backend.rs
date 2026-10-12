@@ -9,7 +9,6 @@ use dioxus::prelude::*;
 use library::Choice;
 use sources::SourceManager;
 use std::cell::Cell;
-use std::fs;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -17,10 +16,6 @@ use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 use tracing::{error, info, warn};
 
 static SERVER: Mutex<Option<RunningServer>> = Mutex::new(None);
-
-fn pid_file() -> std::path::PathBuf {
-    paths().root().join("server.pid")
-}
 
 /// Bring the server up, showing progress, and publish it to the app.
 /// Safe to call again: any server already running is stopped first.
@@ -33,7 +28,7 @@ pub async fn boot(state: AppState) {
         percent: None,
     });
     stop_running().await;
-    kill_orphan();
+    stop_leftover_servers().await;
 
     match start(state).await {
         Ok(svc) => {
@@ -178,9 +173,6 @@ async fn start(state: AppState) -> Result<Services, String> {
         port: server.port,
         data_dir: config.data_dir.clone(),
     };
-    if let Some(pid) = server.pid() {
-        let _ = fs::write(pid_file(), pid.to_string());
-    }
     *SERVER.lock().unwrap() = Some(server);
     Ok(services)
 }
@@ -191,45 +183,93 @@ async fn stop_running() {
         info!("Stopping the catalog server");
         let _ = server.stop().await;
     }
-    let _ = fs::remove_file(pid_file());
 }
 
-/// End the server right now. Used when the window closes.
+/// End the server right now. Used when the window closes or on Ctrl+C.
 pub fn shutdown() {
     if let Some(mut server) = SERVER.lock().unwrap().take() {
-        info!("Window closed; stopping the catalog server");
+        info!("Closing: stopping the catalog server");
         server.kill_now();
     }
-    let _ = fs::remove_file(pid_file());
 }
 
-/// If the app crashed last time, its server may still be running. Stop it,
-/// but only if the recorded process really is the Suwayomi server (process
-/// ids get reused).
-fn kill_orphan() {
-    let Ok(text) = fs::read_to_string(pid_file()) else {
-        return;
-    };
-    let _ = fs::remove_file(pid_file());
-    let Ok(pid) = text.trim().parse::<u32>() else {
-        return;
-    };
-    let pid = Pid::from_u32(pid);
-    let mut sys = System::new();
-    sys.refresh_processes_specifics(
-        ProcessesToUpdate::Some(&[pid]),
-        true,
-        ProcessRefreshKind::nothing().with_cmd(UpdateKind::Always),
-    );
-    if let Some(process) = sys.process(pid) {
-        if process
-            .cmd()
+const ROOT_DIR_ARG: &str = "-Dsuwayomi.tachidesk.config.server.rootDir=";
+
+/// Is this command line a Suwayomi server using `data_dir`?
+///
+/// Matching on the command line (rather than a remembered process id) finds
+/// a server left behind however the last run ended, and cannot be fooled by
+/// a recycled process id.
+fn is_our_server(cmd: &[String], data_dir: &str) -> bool {
+    let norm = |p: &str| p.replace('/', "\\").trim_end_matches('\\').to_lowercase();
+    cmd.iter().any(|a| a.contains("Suwayomi-Server.jar"))
+        && cmd.iter().any(|a| {
+            a.strip_prefix(ROOT_DIR_ARG)
+                .is_some_and(|dir| norm(dir) == norm(data_dir))
+        })
+}
+
+/// A catalog server left over from an earlier run (a crash, or Ctrl+C in the
+/// terminal) keeps the database locked, so a new one cannot start. Stop any
+/// such server and wait until it has really exited.
+async fn stop_leftover_servers() {
+    let data_dir = paths().server_data_dir().display().to_string();
+    let find = || {
+        let mut sys = System::new();
+        sys.refresh_processes_specifics(
+            ProcessesToUpdate::All,
+            true,
+            ProcessRefreshKind::nothing().with_cmd(UpdateKind::Always),
+        );
+        let leftovers: Vec<Pid> = sys
+            .processes()
             .iter()
-            .any(|arg| arg.to_string_lossy().contains("Suwayomi-Server.jar"))
-        {
-            warn!("Found the catalog server left over from a crash (process {pid}); stopping it");
-            process.kill();
+            .filter(|(_, p)| {
+                let cmd: Vec<String> = p
+                    .cmd()
+                    .iter()
+                    .map(|a| a.to_string_lossy().into_owned())
+                    .collect();
+                is_our_server(&cmd, &data_dir)
+            })
+            .map(|(pid, p)| {
+                p.kill();
+                *pid
+            })
+            .collect();
+        leftovers
+    };
+
+    let killed = find();
+    if killed.is_empty() {
+        return;
+    }
+    warn!(
+        "A catalog server from an earlier run was still running (process {}); stopping it",
+        killed
+            .iter()
+            .map(|p| p.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    // Wait for it to let go of the database before starting a new one.
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let mut sys = System::new();
+        sys.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&killed),
+            true,
+            ProcessRefreshKind::nothing(),
+        );
+        if killed.iter().all(|pid| sys.process(*pid).is_none()) {
+            info!("The earlier server has stopped");
+            return;
         }
+        if Instant::now() > deadline {
+            warn!("The earlier server is slow to stop; continuing anyway");
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
     }
 }
 
@@ -288,5 +328,69 @@ pub async fn install_default(state: AppState, id: &str) -> bool {
             state.error(format!("Could not install {}: {e}", default.name));
             false
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cmd(args: &[&str]) -> Vec<String> {
+        args.iter().map(|a| a.to_string()).collect()
+    }
+
+    const DATA: &str = r"C:\Users\me\AppData\Roaming\MangaPoint\server-data";
+
+    #[test]
+    fn recognises_our_server_by_jar_and_data_folder() {
+        let ours = cmd(&[
+            r"C:\x\jre\bin\java.exe",
+            "--enable-native-access=ALL-UNNAMED",
+            &format!("{ROOT_DIR_ARG}{DATA}"),
+            "-Dsuwayomi.tachidesk.config.server.port=4567",
+            "-jar",
+            r"C:\x\bin\Suwayomi-Server.jar",
+        ]);
+        assert!(is_our_server(&ours, DATA));
+    }
+
+    #[test]
+    fn ignores_servers_for_other_folders_and_unrelated_programs() {
+        let other_folder = cmd(&[
+            "java.exe",
+            &format!(r"{ROOT_DIR_ARG}C:\other\data"),
+            "-jar",
+            "Suwayomi-Server.jar",
+        ]);
+        assert!(
+            !is_our_server(&other_folder, DATA),
+            "another data folder is not ours"
+        );
+
+        let not_suwayomi = cmd(&[
+            "java.exe",
+            &format!("{ROOT_DIR_ARG}{DATA}"),
+            "-jar",
+            "other.jar",
+        ]);
+        assert!(!is_our_server(&not_suwayomi, DATA));
+
+        let no_root = cmd(&["java.exe", "-jar", "Suwayomi-Server.jar"]);
+        assert!(!is_our_server(&no_root, DATA));
+        assert!(!is_our_server(&[], DATA));
+    }
+
+    #[test]
+    fn path_spelling_differences_still_match() {
+        let c = cmd(&[
+            "java.exe",
+            &format!("{ROOT_DIR_ARG}c:/users/me/appdata/roaming/mangapoint/server-data/"),
+            "-jar",
+            "Suwayomi-Server.jar",
+        ]);
+        assert!(
+            is_our_server(&c, DATA),
+            "case, slashes and a trailing slash do not matter"
+        );
     }
 }
