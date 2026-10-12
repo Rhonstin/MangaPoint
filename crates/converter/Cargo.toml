@@ -1,0 +1,8 @@
+[package]
+name = "converter"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+device-profiles = { path = "../device-profiles" }
