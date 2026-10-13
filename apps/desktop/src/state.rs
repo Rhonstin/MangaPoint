@@ -551,7 +551,13 @@ impl AppState {
         p.set(page);
     }
 
-    /// Switch tab within the open series.
+    /// Leave the open series for the page it was opened from.
+    pub fn close_series(&self, back: Page) {
+        let mut workspace = self.workspace;
+        workspace.set(None);
+        self.go(back);
+    }
+
     pub fn notify(&self, text: impl Into<String>) {
         let text = text.into();
         tracing::info!("{text}");

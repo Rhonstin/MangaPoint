@@ -58,7 +58,6 @@ pub fn LibraryPage() -> Element {
         .count();
     let saved_count = library.series.len() - downloaded_count;
     let queue = state.queue.read().clone();
-    let (running, waiting, chapters_left) = queue.counts();
 
     // The ticked series that are still shown, in the order shown.
     let chosen: Vec<&library::DownloadedSeries> = order
@@ -139,17 +138,6 @@ pub fn LibraryPage() -> Element {
                     open_folder(&root);
                 },
                 Icon { name: "folder-open", size: 16 } "Open folder"
-            }
-        }
-
-        if running + waiting > 0 {
-            div { class: "lib-strip", onclick: move |_| state.go(Page::Downloads),
-                Icon { name: "download", size: 16 }
-                span { class: "grow",
-                    "Downloading: {plural(chapters_left, \"chapter\")} to go"
-                    if waiting > 0 { " · {waiting} more in line" }
-                }
-                span { class: "muted small", "See the queue" }
             }
         }
 

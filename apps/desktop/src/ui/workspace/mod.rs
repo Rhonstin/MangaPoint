@@ -73,7 +73,7 @@ pub fn WorkspacePage() -> Element {
         .unwrap_or_default();
 
     rsx! {
-        button { class: "btn ghost small", onclick: move |_| state.go(origin),
+        button { class: "btn ghost small", onclick: move |_| state.close_series(origin),
             Icon { name: "arrow-left", size: 16 }
             "{back_label}"
         }

@@ -7,7 +7,7 @@ use super::work::{
     cancel_all_downloads, cancel_batch, cancel_job, forget_exported_file, load_saved_cover,
     open_series_from_library, prioritize_batch, retry_batch, saved_cover_key, set_queue_paused,
 };
-use crate::logic::{ago, human_bytes, human_duration, plural};
+use crate::logic::{ago, human_bytes, human_duration, plural, JobProgress};
 use crate::queue::BatchStatus;
 use crate::state::{now_secs, AppState, Modal, ModalAction, Page};
 use dioxus::prelude::*;
@@ -139,19 +139,6 @@ fn ExportJobRow() -> Element {
     };
     let speed = job.progress.pages_per_second();
     let left = job.progress.eta_secs();
-    let actives: Vec<String> = job
-        .progress
-        .active
-        .values()
-        .take(4)
-        .map(|a| {
-            if a.pages_total > 0 {
-                format!("{} · page {} of {}", a.name, a.pages_done, a.pages_total)
-            } else {
-                a.name.clone()
-            }
-        })
-        .collect();
     rsx! {
         div { class: if running { "q-row running" } else { "q-row" },
             div { class: "q-cover",
@@ -167,15 +154,13 @@ fn ExportJobRow() -> Element {
                     }
                 }
                 if running {
-                    div { class: "muted small", style: "margin: 2px 0 8px",
-                        "{job.progress.label()}"
-                        if let Some(v) = speed { " · about {v:.1} pages a second" }
-                        if let Some(s) = left { " · about {human_duration(s)} left" }
+                    div { class: "q-stats", style: "margin: 2px 0 8px",
+                        span { "{job.progress.finished} of {plural(job.progress.chapter_total, \"chapter\")} done" }
+                        if let Some(v) = speed { span { "about {v:.1} pages a second" } }
+                        if let Some(s) = left { span { "about {human_duration(s)} left" } }
                     }
                     ProgressBar { fraction: Some(job.progress.fraction()) }
-                    for line in actives.iter() {
-                        div { class: "muted small q-line", key: "{line}", "{line}" }
-                    }
+                    ActiveChapters { progress: job.progress.clone() }
                     if let Some(note) = &job.progress.note {
                         div { class: "muted small q-line", "{note}" }
                     }
@@ -314,20 +299,6 @@ fn BatchRow(id: u64) -> Element {
     let running = batch.status == BatchStatus::Running;
     let waiting = batch.status == BatchStatus::Waiting;
     let speed = batch.progress.pages_per_second();
-    let actives: Vec<String> = batch
-        .progress
-        .active
-        .values()
-        .take(4)
-        .map(|a| {
-            if a.pages_total > 0 {
-                format!("{} · {} of {} pages", a.name, a.pages_done, a.pages_total)
-            } else {
-                format!("{} · starting…", a.name)
-            }
-        })
-        .collect();
-    let more_active = batch.progress.active.len().saturating_sub(actives.len());
     let stopping = batch.progress.stopping;
     let failed = batch.failed.len();
     let skipped_lines: Vec<String> = batch.skipped.iter().take(3).cloned().collect();
@@ -353,15 +324,13 @@ fn BatchRow(id: u64) -> Element {
                     if batch.choice != pipeline::SourceChoice::Adaptive { Chip { text: "one source" } }
                 }
                 if running {
-                    div { class: "muted small", style: "margin: 2px 0 8px",
-                        "{done} of {plural(total, \"chapter\")} · {batch.progress.label()}"
-                        if let Some(v) = speed { " · about {v:.1} pages a second" }
+                    div { class: "q-stats", style: "margin: 2px 0 8px",
+                        span { "{done} of {plural(total, \"chapter\")} done" }
+                        if let Some(v) = speed { span { "about {v:.1} pages a second" } }
+                        if let Some(s) = batch.progress.eta_secs() { span { "about {human_duration(s)} left" } }
                     }
                     ProgressBar { fraction: Some(batch.progress.fraction()) }
-                    for line in actives.iter() {
-                        div { class: "muted small q-line", key: "{line}", "{line}" }
-                    }
-                    if more_active > 0 { div { class: "muted small q-line", "and {more_active} more…" } }
+                    ActiveChapters { progress: batch.progress.clone() }
                     if let Some(note) = &batch.progress.note {
                         div { class: "muted small q-line", "{note}" }
                     }
@@ -412,6 +381,36 @@ fn BatchRow(id: u64) -> Element {
                     button { class: "btn small ghost", title: "Dismiss", onclick: move |_| { state.edit_queue(|q| { q.remove(id); }); },
                         Icon { name: "x", size: 14 }
                     }
+                }
+            }
+        }
+    }
+}
+
+/// The chapters being worked on, each with its own small bar.
+#[component]
+fn ActiveChapters(progress: JobProgress) -> Element {
+    const SHOWN: usize = 12;
+    let more = progress.active.len().saturating_sub(SHOWN);
+    rsx! {
+        if !progress.active.is_empty() {
+            div { class: "q-chapters",
+                for (index, chapter) in progress.active.iter().take(SHOWN) {
+                    div { class: "q-chap", key: "{index}",
+                        div { class: "q-chap-top",
+                            span { class: "q-chap-name", title: "{chapter.name}", "{chapter.name}" }
+                            span { class: "muted",
+                                if chapter.pages_total > 0 { "{chapter.pages_done}/{chapter.pages_total}" } else { "starting" }
+                            }
+                        }
+                        ProgressBar {
+                            fraction: (chapter.pages_total > 0)
+                                .then(|| chapter.pages_done as f32 / chapter.pages_total as f32),
+                        }
+                    }
+                }
+                if more > 0 {
+                    div { class: "q-chap more muted", "and {more} more" }
                 }
             }
         }

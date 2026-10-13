@@ -337,19 +337,24 @@ fn SeriesCard(index: usize) -> Element {
         .find(&library::series_id(&series.title))
         .is_some();
     let save_class = if in_library {
-        "save-btn on"
+        "btn small ghost add-btn on"
     } else {
-        "save-btn"
+        "btn small add-btn"
     };
     let save_title = if in_library {
-        "In your library"
+        "It is in your library"
     } else {
-        "Add to your library"
+        "Keep it in your library without opening it"
     };
     let save_icon = if in_library {
         "bookmark-check"
     } else {
         "bookmark-plus"
+    };
+    let save_text = if in_library {
+        "In library"
+    } else {
+        "Add to library"
     };
     rsx! {
         div { class: "series-wrap",
@@ -376,7 +381,8 @@ fn SeriesCard(index: usize) -> Element {
             class: save_class,
             title: save_title,
             onclick: move |_| super::work::add_ranked_to_library(state, &for_save),
-            Icon { name: save_icon, size: 16 }
+            Icon { name: save_icon, size: 15 }
+            "{save_text}"
         }
         }
     }

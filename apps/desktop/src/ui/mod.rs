@@ -37,6 +37,8 @@ use widgets::{Icon, ProgressBar};
 const CSS: &str = include_str!("../style.css");
 /// Floats the explanation of a question mark above everything else.
 const TOOLTIP_SCRIPT: &str = include_str!("../js/tooltip.js");
+/// Keeps the height of the bars above the page in a CSS variable.
+const LAYOUT_SCRIPT: &str = include_str!("../js/layout.js");
 
 #[component]
 pub fn App() -> Element {
@@ -61,6 +63,7 @@ pub fn App() -> Element {
     use_hook(|| {
         spawn(async move {
             let _ = document::eval(TOOLTIP_SCRIPT).await;
+            let _ = document::eval(LAYOUT_SCRIPT).await;
         });
     });
 
@@ -142,8 +145,10 @@ fn Shell() -> Element {
         }
         main { class: "content",
             div { class: "page",
-                JobBar {}
-                DownloadBar {}
+                div { class: "bars",
+                    JobBar {}
+                    DownloadBar {}
+                }
                 {match page {
                     Page::Setup => rsx! { setup::Setup {} },
                     Page::Search => rsx! { search::SearchPage {} },
@@ -171,6 +176,7 @@ fn NavItem(page: Page, label: &'static str, icon: &'static str, badge: Option<St
         .read()
         .as_ref()
         .is_some_and(|w| w.origin == Page::Library);
+    let open_from = state.workspace.read().as_ref().map(|w| w.origin);
     let active = current == page
         || (page == Page::Search && current == Page::Series && !opened_from_library)
         || (page == Page::Library && current == Page::Series && opened_from_library)
@@ -181,7 +187,16 @@ fn NavItem(page: Page, label: &'static str, icon: &'static str, badge: Option<St
         "nav-item"
     };
     rsx! {
-        button { class: "{class}", onclick: move |_| state.go(page),
+        button { class: "{class}",
+            onclick: move |_| {
+                // A series left open is where you come back to; pressing the
+                // tab it belongs to while looking at it goes to the list.
+                match open_from {
+                    Some(origin) if origin == page && current == Page::Series => state.close_series(page),
+                    Some(origin) if origin == page && current != Page::Series => state.go(Page::Series),
+                    _ => state.go(page),
+                }
+            },
             Icon { name: icon, size: 17 }
             span { class: "grow", "{label}" }
             if let Some(count) = badge { span { class: "nav-badge", "{count}" } }
@@ -419,11 +434,12 @@ fn ToastHost() -> Element {
 
 #[cfg(test)]
 mod script_tests {
-    const SCRIPTS: [(&str, &str); 4] = [
+    const SCRIPTS: [(&str, &str); 5] = [
         ("crop-drag.js", include_str!("../js/crop-drag.js")),
         ("export-split.js", include_str!("../js/export-split.js")),
         ("preview-editor.js", include_str!("../js/preview-editor.js")),
         ("tooltip.js", include_str!("../js/tooltip.js")),
+        ("layout.js", include_str!("../js/layout.js")),
     ];
 
     /// `cropBound` as it is written in HTML: `data-crop-bound`.
