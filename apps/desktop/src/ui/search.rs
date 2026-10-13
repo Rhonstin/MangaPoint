@@ -257,11 +257,14 @@ fn SourcePanel(
 
     rsx! {
         div { class: "popover",
-            div { class: "row", style: "margin-bottom: 8px",
+            div { class: "popover-head",
                 strong { class: "grow", "Search these sources" }
-                button { class: "btn ghost small", r#type: "button", onclick: move |_| on_change.call(Vec::new()), "All" }
-                button { class: "btn ghost small", r#type: "button", onclick: move |_| on_change.call(all_ids.clone()), "None" }
-                button { class: "btn ghost small", r#type: "button", title: "Only the sources whose last test passed",
+                span { class: "muted small", "{on} of {total}" }
+            }
+            div { class: "popover-quick",
+                button { class: "pill small", r#type: "button", onclick: move |_| on_change.call(Vec::new()), "All" }
+                button { class: "pill small", r#type: "button", onclick: move |_| on_change.call(all_ids.clone()), "None" }
+                button { class: "pill small", r#type: "button", title: "Only the sources whose last test passed",
                     onclick: move |_| on_change.call(failing.clone()),
                     "Tested OK"
                 }

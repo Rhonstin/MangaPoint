@@ -119,31 +119,46 @@ pub fn cover_key(source_id: &str, manga_id: i64) -> String {
     format!("{source_id}:{manga_id}")
 }
 
-/// Open a file's folder in the system file manager.
+/// A path written the way the system expects: on Windows every separator is a
+/// backslash. A path mixing `/` and `\` is not understood by Explorer or the
+/// folder dialog, which then open Documents instead.
+pub fn native_path(path: &std::path::Path) -> std::path::PathBuf {
+    if cfg!(target_os = "windows") {
+        std::path::PathBuf::from(path.display().to_string().replace('/', "\\"))
+    } else {
+        path.to_path_buf()
+    }
+}
+
+/// Open a file's folder in the system file manager, with the file selected.
 pub fn show_in_folder(path: &str) {
-    let path = std::path::Path::new(path);
+    let path = native_path(std::path::Path::new(path));
     #[cfg(target_os = "windows")]
     {
+        use std::os::windows::process::CommandExt;
+        // Explorer wants `/select,"path"` as one piece, quotes included.
         let _ = std::process::Command::new("explorer")
-            .arg(format!("/select,{}", path.display()))
+            .raw_arg(format!("/select,\"{}\"", path.display()))
             .spawn();
     }
     #[cfg(target_os = "macos")]
     {
         let _ = std::process::Command::new("open")
             .arg("-R")
-            .arg(path)
+            .arg(&path)
             .spawn();
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
-        let dir = path.parent().unwrap_or(path);
+        let dir = path.parent().unwrap_or(&path);
         let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
     }
 }
 
 /// Open a folder in the system's file browser.
 pub fn open_folder(dir: &std::path::Path) {
+    let dir = native_path(dir);
+    let dir = dir.as_path();
     #[cfg(target_os = "windows")]
     {
         let _ = std::process::Command::new("explorer").arg(dir).spawn();
@@ -182,7 +197,7 @@ pub async fn pick_folder(
 ) -> Option<std::path::PathBuf> {
     let mut dialog = rfd::AsyncFileDialog::new().set_title(title);
     if let Some(dir) = start.filter(|d| d.is_dir()) {
-        dialog = dialog.set_directory(dir);
+        dialog = dialog.set_directory(native_path(&dir));
     }
     dialog.pick_folder().await.map(|h| h.path().to_path_buf())
 }

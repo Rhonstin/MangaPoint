@@ -19,6 +19,8 @@ pub fn LibraryPage() -> Element {
     let mut filter = use_signal(String::new);
     let mut picked = use_signal(HashSet::<String>::new);
     let mut more = use_signal(|| false);
+    // The poster whose menu is open.
+    let mut menu = use_signal(|| None::<String>);
     // Fetch the details and covers of series that do not have them yet, and
     // show the saved covers. Runs again when the catalog comes up or the
     // library changes.
@@ -203,6 +205,37 @@ pub fn LibraryPage() -> Element {
                             format!("{} · {size}", plural(chapters, "chapter"))
                         };
                         let queued = queue.series_has_work(&s.id);
+                        let menu_id = s.id.clone();
+                        let menu_open = menu().as_deref() == Some(s.id.as_str());
+                        let (export_id, plan_id, view_id, delete_id, remove_id) = (
+                            s.id.clone(),
+                            s.id.clone(),
+                            s.id.clone(),
+                            s.id.clone(),
+                            s.id.clone(),
+                        );
+                        let delete_modal = Modal {
+                            title: format!("Delete the downloads of {}?", s.title),
+                            body: format!(
+                                "The downloaded chapters ({size}) will be deleted from this computer. The series stays in your library, so you can download it again later. Files you already exported are kept."
+                            ),
+                            confirm: "Delete downloads".into(),
+                            cancel: "Keep".into(),
+                            danger: true,
+                            action: ModalAction::DeleteDownloads { series_ids: vec![delete_id] },
+                        };
+                        let remove_modal = Modal {
+                            title: format!("Remove {} from your library?", s.title),
+                            body: if chapters == 0 {
+                                "It will be taken off your list. Nothing is stored on this computer for it.".to_string()
+                            } else {
+                                format!("Its downloaded chapters ({size}) will be deleted from this computer too. Files you already exported are kept.")
+                            },
+                            confirm: "Remove".into(),
+                            cancel: "Keep".into(),
+                            danger: true,
+                            action: ModalAction::RemoveSeries { series_ids: vec![remove_id] },
+                        };
                         rsx! {
                             div { class: if on { "poster on" } else { "poster" }, key: "{s.id}",
                                 div { class: "poster-art", title: "Open {s.title}",
@@ -232,6 +265,44 @@ pub fn LibraryPage() -> Element {
                                             if !p.remove(&tick_id) { p.insert(tick_id.clone()); }
                                         },
                                         if on { Icon { name: "check", size: 14 } }
+                                    }
+                                    button {
+                                        class: if menu_open { "poster-more open" } else { "poster-more" },
+                                        title: "More actions",
+                                        onclick: move |e| {
+                                            e.stop_propagation();
+                                            menu.set(if menu_open { None } else { Some(menu_id.clone()) });
+                                        },
+                                        Icon { name: "ellipsis", size: 16 }
+                                    }
+                                }
+                                if menu_open {
+                                    div { class: "menu-scrim", onclick: move |_| menu.set(None) }
+                                    div { class: "menu down",
+                                        button { class: "menu-item",
+                                            onclick: move |_| { menu.set(None); open_series_from_library(state, &view_id); },
+                                            Icon { name: "book-open", size: 15 } "Open"
+                                        }
+                                        if chapters > 0 {
+                                            button { class: "menu-item",
+                                                onclick: move |_| { menu.set(None); open_export(state, vec![export_id.clone()]); },
+                                                Icon { name: "file-down", size: 15 } "Export…"
+                                            }
+                                        }
+                                        button { class: "menu-item",
+                                            onclick: move |_| { menu.set(None); open_plan(state, vec![plan_id.clone()]); },
+                                            Icon { name: "download", size: 15 } "Download chapters…"
+                                        }
+                                        if chapters > 0 {
+                                            button { class: "menu-item danger",
+                                                onclick: move |_| { menu.set(None); state.ask(delete_modal.clone()); },
+                                                Icon { name: "trash", size: 15 } "Delete downloads"
+                                            }
+                                        }
+                                        button { class: "menu-item danger",
+                                            onclick: move |_| { menu.set(None); state.ask(remove_modal.clone()); },
+                                            Icon { name: "x", size: 15 } "Remove from library"
+                                        }
                                     }
                                 }
                                 strong { class: "poster-title", title: "{s.title}", "{s.title}" }
