@@ -456,10 +456,13 @@ pub fn stretch_levels(img: &mut GrayImage) {
         return;
     }
     let range = (hi - lo) as f32;
-    for p in &mut img.pixels {
-        *p = ((*p as f32 - lo as f32) / range * 255.0)
+    let lookup: [u8; 256] = std::array::from_fn(|value| {
+        ((value as f32 - lo as f32) / range * 255.0)
             .round()
-            .clamp(0.0, 255.0) as u8;
+            .clamp(0.0, 255.0) as u8
+    });
+    for p in &mut img.pixels {
+        *p = lookup[*p as usize];
     }
 }
 
@@ -469,10 +472,13 @@ pub fn apply_contrast(img: &mut GrayImage, contrast: u8) {
         return;
     }
     let factor = contrast.min(100) as f32 / 50.0;
-    for p in &mut img.pixels {
-        *p = ((*p as f32 - 128.0) * factor + 128.0)
+    let lookup: [u8; 256] = std::array::from_fn(|value| {
+        ((value as f32 - 128.0) * factor + 128.0)
             .round()
-            .clamp(0.0, 255.0) as u8;
+            .clamp(0.0, 255.0) as u8
+    });
+    for p in &mut img.pixels {
+        *p = lookup[*p as usize];
     }
 }
 
@@ -482,6 +488,50 @@ mod tests {
 
     fn opts() -> ProcessOptions {
         ProcessOptions::manga_default(480, 800, Depth::Two)
+    }
+
+    #[test]
+    #[ignore = "manual throughput check on the export benchmark machine; run in release"]
+    fn tone_reader_pages_throughput() {
+        let image = GrayImage::from_fn(480, 800, |x, y| ((x * 71 + y * 29) % 256) as u8).unwrap();
+        let started = std::time::Instant::now();
+        for _ in 0..250 {
+            let mut page = image.clone();
+            stretch_levels(&mut page);
+            apply_contrast(&mut page, 55);
+            std::hint::black_box(page);
+        }
+        let elapsed = started.elapsed();
+        eprintln!("250 reader pages tone adjustment: {elapsed:?}");
+        assert!(
+            elapsed < std::time::Duration::from_millis(200),
+            "first-export tone throughput target missed: {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn tone_adjustment_matches_scalar_math_for_all_byte_values() {
+        let ramp = GrayImage::from_pixels(256, 1, (0..=255).collect()).unwrap();
+        for contrast in [0, 1, 49, 50, 55, 99, 100, 255] {
+            let mut actual = ramp.clone();
+            apply_contrast(&mut actual, contrast);
+            let factor = contrast.min(100) as f32 / 50.0;
+            let expected: Vec<_> = (0..=255)
+                .map(|v| {
+                    ((v as f32 - 128.0) * factor + 128.0)
+                        .round()
+                        .clamp(0.0, 255.0) as u8
+                })
+                .collect();
+            assert_eq!(actual.pixels, expected);
+        }
+        // The ramp's 1st and 99th percentile bins are 2 and 253.
+        let mut stretched = ramp;
+        stretch_levels(&mut stretched);
+        let expected: Vec<_> = (0..=255)
+            .map(|v| ((v as f32 - 2.0) / 251.0 * 255.0).round().clamp(0.0, 255.0) as u8)
+            .collect();
+        assert_eq!(stretched.pixels, expected);
     }
 
     #[test]

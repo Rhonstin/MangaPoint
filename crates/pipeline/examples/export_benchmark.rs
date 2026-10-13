@@ -2,7 +2,10 @@
 //! populates per-chapter caches; the second reuses them. Original images and
 //! library metadata are unchanged. Output goes only to the supplied folder.
 //!
-//! cargo run --release -p pipeline --example export_benchmark -- <library-dir> <library.json> "<title part>" <output-dir> [chapters]
+//! Add `--fresh` to run once with zero cache reuse, measuring first-export
+//! conversion even if the chapters already have caches.
+//!
+//! cargo run --release -p pipeline --example export_benchmark -- <library-dir> <library.json> "<title part>" <output-dir> [chapters] [--fresh]
 
 use library::{JsonFile, LibraryDb, LibraryFiles};
 use pipeline::{CancelFlag, ExportJob, ExportTarget, JobEvent};
@@ -24,11 +27,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .ok_or("no such series")?;
     let take = args
         .get(4)
+        .filter(|arg| !arg.starts_with("--"))
         .map(|n| n.parse::<usize>())
         .transpose()?
         .unwrap_or(series.chapters.len());
     let output = PathBuf::from(&args[3]);
-    let job = ExportJob::new(
+    let mut job = ExportJob::new(
         series.clone(),
         series
             .chapters
@@ -42,6 +46,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
         output.join("work"),
     );
+    job.force_conversion = args.iter().any(|arg| arg == "--fresh");
     println!(
         "{}: {} selected chapters, {}x{}, {:?}",
         series.title,
@@ -54,7 +59,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .enable_all()
         .build()?;
     rt.block_on(async {
-        for run in 1..=2 {
+        for run in 1..=if job.force_conversion { 1 } else { 2 } {
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
             let progress = tokio::spawn(async move {
                 let mut completed = 0;

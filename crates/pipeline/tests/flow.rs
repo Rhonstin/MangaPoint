@@ -468,6 +468,10 @@ async fn repeated_exports_reuse_converted_chapters_across_groupings() {
         (subset.cached_chapters, subset.chapters, subset.pages),
         (1, 1, 3)
     );
+    let mut forced = job(&lib, &series, Grouping::Single);
+    forced.force_conversion = true;
+    let forced = export(&lib, &forced).await.unwrap();
+    assert_eq!((forced.cached_chapters, forced.pages), (0, first.pages));
     let _ = fs::remove_dir_all(lib.root);
 }
 

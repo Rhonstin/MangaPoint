@@ -21,7 +21,7 @@ use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::{mpsc::UnboundedSender, Semaphore};
 
 /// Pages decoded at the same time within one chapter: one for each core, but
 /// not so many that tall pages fill the memory.
@@ -31,7 +31,11 @@ fn page_concurrency() -> usize {
         .clamp(2, 12)
 }
 /// Chapters converted ahead of the one being written.
-const CHAPTER_LOOKAHEAD: usize = 2;
+fn chapter_concurrency() -> usize {
+    std::thread::available_parallelism()
+        .map_or(2, |n| n.get() / 4)
+        .clamp(2, 6)
+}
 /// Just under the format's limit of 65,535 pages per file.
 const DEFAULT_MAX_PAGES_PER_FILE: usize = 60_000;
 
@@ -61,6 +65,9 @@ pub struct ExportJob {
     pub work_dir: PathBuf,
     /// Start a new file rather than exceed this many pages.
     pub max_pages_per_file: usize,
+    /// Rebuild chapters even when cached pages exist, for diagnostics and
+    /// first-export benchmarks. Newly converted pages still refresh caches.
+    pub force_conversion: bool,
 }
 
 impl ExportJob {
@@ -80,6 +87,7 @@ impl ExportJob {
             target,
             work_dir,
             max_pages_per_file: DEFAULT_MAX_PAGES_PER_FILE,
+            force_conversion: false,
         }
     }
 }
@@ -168,6 +176,9 @@ pub async fn export_series(
     let mut total_pages = 0usize;
     let mut cached_chapters = 0usize;
     let total = chapters.len();
+    // More chapters can prepare/pack independently, while the total number
+    // of simultaneous decodes remains capped at the old two-chapter budget.
+    let decode_slots = Semaphore::new(page_concurrency() * 2);
 
     // Chapters are converted a little ahead of the one being written, so the
     // cores stay busy while a finished chapter is added to its book. They come
@@ -180,7 +191,8 @@ pub async fn export_series(
     let mut converted = stream::iter(order)
         .map(|(group, ci)| {
             let chapter = chapters[ci];
-            let (series_id, opts, events, settings) = (&job.series.id, &opts, &events, settings);
+            let (series_id, opts, events, settings, decode_slots) =
+                (&job.series.id, &opts, &events, settings, &decode_slots);
             async move {
                 if cancel.is_cancelled() {
                     return (group, ci, Err(PipelineError::Cancelled));
@@ -193,7 +205,16 @@ pub async fn export_series(
                     });
                 }
                 let images = convert_chapter(
-                    files, series_id, chapter, opts, settings, ci, events, cancel,
+                    files,
+                    series_id,
+                    chapter,
+                    opts,
+                    settings,
+                    job.force_conversion,
+                    decode_slots,
+                    ci,
+                    events,
+                    cancel,
                 )
                 .await;
                 if images.is_ok() {
@@ -204,7 +225,7 @@ pub async fn export_series(
                 (group, ci, images)
             }
         })
-        .buffered(CHAPTER_LOOKAHEAD);
+        .buffered(chapter_concurrency());
 
     let mut open: Option<(XtcBuilder, Volume)> = None;
     let mut open_group = usize::MAX;
@@ -364,6 +385,8 @@ async fn convert_chapter(
     chapter: &DownloadedChapter,
     opts: &ProcessOptions,
     settings: &library::ConversionSettings,
+    force_conversion: bool,
+    decode_slots: &Semaphore,
     chapter_index: usize,
     events: &Option<UnboundedSender<JobEvent>>,
     cancel: &CancelFlag,
@@ -386,19 +409,30 @@ async fn convert_chapter(
         cancel.clone(),
     );
     let (width, height, format) = (opts.width, opts.height, settings.format);
-    let cached = tokio::task::spawn_blocking(move || {
-        let fingerprint =
-            conversion_cache::fingerprint(&source_pages, &saved_settings, width, height, &flag)?;
-        Ok::<_, PipelineError>(conversion_cache::load(
-            &cache,
-            &fingerprint,
-            width,
-            height,
-            format,
-        ))
-    })
-    .await
-    .map_err(|e| PipelineError::Decode(e.to_string()))??;
+    // A first export has no cache to look up. Hash its decoded snapshot
+    // below instead of reading every source twice just to establish a miss.
+    let cached = if !force_conversion && cache_path.is_file() {
+        tokio::task::spawn_blocking(move || {
+            let fingerprint = conversion_cache::fingerprint(
+                &source_pages,
+                &saved_settings,
+                width,
+                height,
+                &flag,
+            )?;
+            Ok::<_, PipelineError>(conversion_cache::load(
+                &cache,
+                &fingerprint,
+                width,
+                height,
+                format,
+            ))
+        })
+        .await
+        .map_err(|e| PipelineError::Decode(e.to_string()))??
+    } else {
+        None
+    };
     if cancel.is_cancelled() {
         return Err(PipelineError::Cancelled);
     }
@@ -409,11 +443,13 @@ async fn convert_chapter(
     let done = &done;
     let name = chapter.name.as_str();
 
-    let decoded: Vec<Result<(GrayImage, Vec<u8>)>> = stream::iter(pages.into_iter().enumerate())
+    let decoded: Vec<Result<(usize, GrayImage, Vec<u8>)>> = stream::iter(pages.into_iter().enumerate())
         .map(|(index, path)| async move {
             if cancel.is_cancelled() {
                 return Err(PipelineError::Cancelled);
             }
+            let permit = decode_slots.acquire().await.expect("the export decode budget remains open");
+            if cancel.is_cancelled() { return Err(PipelineError::Cancelled); }
             let bytes = tokio::fs::read(&path)
                 .await
                 .map_err(|e| PipelineError::Io(path.clone(), e))?;
@@ -426,6 +462,7 @@ async fn convert_chapter(
                         index + 1
                     ))
                 })?;
+            drop(permit);
             let n = done.fetch_add(1, Ordering::SeqCst) + 1;
             if let Some(tx) = events {
                 let _ = tx.send(JobEvent::PageDone {
@@ -434,13 +471,16 @@ async fn convert_chapter(
                     total,
                 });
             }
-            Ok(gray)
+            Ok((index, gray.0, gray.1))
         })
-        .buffered(page_concurrency())
+        // A tall early image must not prevent later completed reads from
+        // releasing their slots and starting more work. Restore order below.
+        .buffer_unordered(page_concurrency())
         .collect()
         .await;
 
-    let decoded = decoded.into_iter().collect::<Result<Vec<_>>>()?;
+    let mut decoded = decoded.into_iter().collect::<Result<Vec<_>>>()?;
+    decoded.sort_unstable_by_key(|(index, _, _)| *index);
     if cancel.is_cancelled() {
         return Err(PipelineError::Cancelled);
     }
@@ -449,12 +489,12 @@ async fn convert_chapter(
     let settings = settings.clone();
     let packed = tokio::task::spawn_blocking(move || {
         let fingerprint = conversion_cache::fingerprint_bytes(
-            decoded.iter().map(|(_, bytes)| bytes.as_slice()),
+            decoded.iter().map(|(_, _, bytes)| bytes.as_slice()),
             &settings,
             opts.width,
             opts.height,
         );
-        let grays: Vec<_> = decoded.into_iter().map(|(gray, _)| gray).collect();
+        let grays: Vec<_> = decoded.into_iter().map(|(_, gray, _)| gray).collect();
         let images = converter::plan::convert_chapter(&grays, &opts);
         let mut packed = Vec::with_capacity(images.len());
         for image in images {

@@ -33,17 +33,50 @@ pub fn decode_to_gray(bytes: &[u8]) -> Result<GrayImage, DecodeError> {
         });
     }
     let img = image::load_from_memory(bytes)?;
+    let (width, height) = (img.width(), img.height());
+    let pixels = match img {
+        image::DynamicImage::ImageRgb8(rgb) => {
+            let lookup = opaque_luma_lookup();
+            rgb.as_raw()
+                .chunks_exact(3)
+                .map(|p| lookup[((p[0] as usize) << 16) | ((p[1] as usize) << 8) | p[2] as usize])
+                .collect()
+        }
+        image::DynamicImage::ImageLuma8(gray) => gray.into_raw(),
+        img => rgba_luma(img),
+    };
+    Ok(GrayImage::from_pixels(width, height, pixels).expect("sizes match"))
+}
+
+/// All opaque 8-bit colors share one 16 MiB table. Building it once avoids
+/// repeated float conversion on billions of downloaded RGB pixels, and
+/// avoids expanding opaque images into a second four-channel buffer.
+fn opaque_luma_lookup() -> &'static [u8] {
+    static LOOKUP: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+    LOOKUP.get_or_init(|| {
+        let mut table = Vec::with_capacity(1 << 24);
+        for r in 0..256 {
+            for g in 0..256 {
+                let rg = 0.299 * r as f32 + 0.587 * g as f32;
+                for b in 0..256 {
+                    table.push((rg + 0.114 * b as f32).round() as u8);
+                }
+            }
+        }
+        table
+    })
+}
+
+fn rgba_luma(img: image::DynamicImage) -> Vec<u8> {
     let rgba = img.to_rgba8();
-    let pixels = rgba
-        .pixels()
+    rgba.pixels()
         .map(|p| {
             let [r, g, b, a] = p.0;
             let luma = 0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32;
             let alpha = a as f32 / 255.0;
             (luma * alpha + 255.0 * (1.0 - alpha)).round() as u8
         })
-        .collect();
-    Ok(GrayImage::from_pixels(rgba.width(), rgba.height(), pixels).expect("sizes match"))
+        .collect()
 }
 
 /// Pixel size of an image, read from its header without decoding it.
@@ -118,6 +151,54 @@ mod tests {
             )
             .unwrap();
         out
+    }
+
+    #[test]
+    #[ignore = "manual throughput check on the export benchmark machine; run in release"]
+    fn opaque_rgb_decode_throughput() {
+        let rgb = image::RgbImage::from_pixel(2048, 2048, image::Rgb([20, 100, 180]));
+        let mut bytes = Vec::new();
+        image::codecs::png::PngEncoder::new(&mut bytes)
+            .write_image(rgb.as_raw(), 2048, 2048, image::ExtendedColorType::Rgb8)
+            .unwrap();
+        std::hint::black_box(decode_to_gray(&bytes).unwrap());
+        let started = std::time::Instant::now();
+        for _ in 0..5 {
+            std::hint::black_box(decode_to_gray(std::hint::black_box(&bytes)).unwrap());
+        }
+        let elapsed = started.elapsed();
+        eprintln!("Five 4-megapixel opaque RGB decodes: {elapsed:?}");
+        assert!(
+            elapsed < std::time::Duration::from_millis(60),
+            "first-export RGB throughput target missed: {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn opaque_rgb_and_partial_alpha_keep_the_original_luma_math() {
+        let values = [
+            [255, 0, 0],
+            [0, 255, 0],
+            [0, 0, 255],
+            [20, 100, 180],
+            [17, 18, 19],
+            [255, 255, 255],
+        ];
+        let rgb = image::RgbImage::from_fn(6, 1, |x, _| image::Rgb(values[x as usize]));
+        let mut bytes = Vec::new();
+        image::codecs::png::PngEncoder::new(&mut bytes)
+            .write_image(rgb.as_raw(), 6, 1, image::ExtendedColorType::Rgb8)
+            .unwrap();
+        assert_eq!(
+            decode_to_gray(&bytes).unwrap().pixels,
+            [76, 150, 29, 85, 18, 255]
+        );
+        let rgba = RgbaImage::from_fn(3, 1, |x, _| match x {
+            0 => Rgba([255, 0, 0, 128]),
+            1 => Rgba([0, 0, 0, 128]),
+            _ => Rgba([0, 0, 255, 0]),
+        });
+        assert_eq!(decode_to_gray(&png(&rgba)).unwrap().pixels, [165, 127, 255]);
     }
 
     #[test]
