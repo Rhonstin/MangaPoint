@@ -3,11 +3,11 @@
 
 use crate::logic::{self, plural};
 use crate::queue::QueuedChapter;
-use crate::state::{AppState, ChaptersState, Modal, ModalAction, Page, PendingDownload, SeriesTab};
+use crate::state::{AppState, ChaptersState, Modal, ModalAction, Page, PendingDownload};
 use crate::ui::chapter_table::{ChapterGrid, GridRow};
 use crate::ui::search::run_search;
 use crate::ui::widgets::{Chip, EmptyState, Icon, ProgressBar};
-use crate::ui::work::{ask_download, downloaded_keys, merged_key, prepare_preview, retry_batch};
+use crate::ui::work::{ask_download, downloaded_keys, merged_key, open_export, retry_batch};
 use dioxus::prelude::*;
 use pipeline::SourceChoice;
 use search::missing_numbers;
@@ -273,8 +273,12 @@ pub fn ChaptersTab() -> Element {
                 }
             }
             if saved_count > 0 {
-                button { class: "btn", onclick: move |_| { state.open_tab(SeriesTab::Preview); prepare_preview(state); },
-                    Icon { name: "eye", size: 16 } "Preview"
+                button { class: "btn primary",
+                    onclick: {
+                        let id = ws.series_id.clone();
+                        move |_| open_export(state, vec![id.clone()])
+                    },
+                    Icon { name: "file-down", size: 16 } "Export…"
                 }
             }
             if working || failed_count > 0 {
@@ -413,11 +417,12 @@ pub fn ChaptersTab() -> Element {
                         Icon { name: "download", size: 16 } "View downloads"
                     }
                 } else if to_download == 0 {
-                    button { class: "btn primary", onclick: move |_| {
-                        state.open_tab(SeriesTab::Preview);
-                        crate::ui::work::prepare_preview(state);
-                    },
-                        Icon { name: "eye", size: 16 } "Preview them"
+                    button { class: "btn primary",
+                        onclick: {
+                            let id = ws.series_id.clone();
+                            move |_| open_export(state, vec![id.clone()])
+                        },
+                        Icon { name: "file-down", size: 16 } "Export them"
                     }
                 } else {
                     button { class: "btn primary",

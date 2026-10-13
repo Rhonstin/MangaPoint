@@ -6,13 +6,13 @@ mod conversion;
 mod devices;
 mod download_dialog;
 mod downloads_page;
+mod export_page;
 mod hang;
 mod icons;
 mod library_page;
 mod ocean;
 mod plan_page;
 mod presets;
-mod presets_lab;
 mod scenes;
 mod search;
 mod settings;
@@ -141,6 +141,7 @@ fn Shell() -> Element {
                     Page::Library => rsx! { library_page::LibraryPage {} },
                     Page::Downloads => rsx! { downloads_page::DownloadsPage {} },
                     Page::Plan => rsx! { plan_page::PlanPage {} },
+                    Page::Export => rsx! { export_page::ExportPage {} },
                     Page::Sources => rsx! { sources_page::SourcesPage {} },
                     Page::Settings => rsx! { settings::SettingsPage {} },
                 }}
@@ -163,6 +164,7 @@ fn NavItem(page: Page, label: &'static str, icon: &'static str, badge: Option<St
     let active = current == page
         || (page == Page::Search && current == Page::Series && !opened_from_library)
         || (page == Page::Library && current == Page::Series && opened_from_library)
+        || (page == Page::Library && current == Page::Export)
         || (page == Page::Sources && current == Page::Setup);
     let class = if active {
         "nav-item active"
@@ -347,7 +349,6 @@ fn run_action(state: AppState, action: ModalAction) {
             ModalAction::DeleteChapters { series_id, keys } => {
                 work::delete_chapters(state, series_id, keys)
             }
-            ModalAction::ExportSeries { series_ids } => work::export_series_many(state, series_ids),
             ModalAction::DeleteDownloads { series_ids } => {
                 work::delete_downloads(state, series_ids)
             }

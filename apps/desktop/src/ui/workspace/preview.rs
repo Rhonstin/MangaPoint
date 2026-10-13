@@ -1,10 +1,7 @@
 //! The page editor: every page of a chapter in one continuous scroll, like a
 //! PDF viewer, with the original beside each converted page.
-use super::crop_editor::{CropInspector, SourceCanvas};
-use crate::state::{AppState, SeriesTab, Shot, Zoom};
-use crate::ui::conversion::ConversionControls;
-use crate::ui::devices::DeviceSelect;
-use crate::ui::presets::{apply_to_series, PresetPicker};
+use super::crop_editor::SourceCanvas;
+use crate::state::{AppState, Shot, Zoom};
 use crate::ui::widgets::{EmptyState, Icon};
 use crate::ui::work::{prepare_preview, schedule_preview, select_preview_page};
 use converter::plan::Source;
@@ -298,7 +295,7 @@ fn track_scroll(state: AppState, first: i64, last: i64, current: i64) {
 #[component]
 pub fn PreviewTab() -> Element {
     let mut state = use_context::<AppState>();
-    let mut draft = use_signal(CropRect::default);
+    let mut draft = state.crop_draft;
     let mut identity = use_signal(String::new);
     let mut seek = use_signal(|| None::<usize>);
     use_effect(move || prepare_preview(state));
@@ -342,32 +339,15 @@ pub fn PreviewTab() -> Element {
     let total = p.pages.len();
     let selected = p.selected.min(total.saturating_sub(1));
     let number = if total == 0 { 0 } else { selected + 1 };
-    let active = p.pages.get(selected).cloned();
-    let key = active
-        .as_ref()
-        .map(|p| p.crop_key.clone())
-        .unwrap_or_default();
-    let saved = series.crops.scope_for(&chapter, &key);
     let device = state.settings.read().device_profile();
     let frame_style = reader_style(view.zoom, device.width, device.height);
     let row_style = format!(
         "--row-h:{};",
         row_height(view.zoom, device.width, device.height)
     );
-    let id = series.id.clone();
-    let pick_id = id.clone();
-    let save_id = id.clone();
-    let mode_id = id.clone();
-    let mode_key = key.clone();
-    let mode_chapter = chapter.clone();
-    let preset_base = series
-        .preset_id
-        .as_ref()
-        .and_then(|id| state.presets.read().find(id))
-        .map(|e| e.preset.settings);
     let classes = format!(
         "page-editor{}{}",
-        if view.focus { " inspector-hidden" } else { "" },
+        "",
         if view.source_focus {
             " source-focused"
         } else {
@@ -464,12 +444,6 @@ pub fn PreviewTab() -> Element {
                             }
                             span { class: "muted", "%" }
                         }
-                    }
-                    button {
-                        class: if view.focus { "btn small" } else { "btn small on" },
-                        title: "Show or hide properties",
-                        onclick: move |_| { state.preview.write().view.focus = !view.focus; },
-                        Icon { name: "settings", size: 15 }
                     }
                 }
             }
@@ -614,58 +588,6 @@ pub fn PreviewTab() -> Element {
                                 Icon { name: "check", size: 13 }
                                 " Ready"
                             }
-                        }
-                    }
-                }
-                if !view.focus {
-                    aside { class: "editor-inspector",
-                        div { class: "editor-inspector-top",
-                            PresetPicker {
-                                value: series.settings.clone(), preset_id: series.preset_id.clone(),
-                                on_pick: move |(id, settings)| apply_to_series(state, &pick_id, Some(id), settings),
-                                on_saved: move |id| { state.library.write().set_preset(&save_id, Some(id)); state.save_library(); },
-                            }
-                            DeviceSelect {}
-                            p { class: "editor-caption",
-                                if preset_base.is_none() { "Custom settings for this series" }
-                                else if series.overridden.is_empty() { "Following preset settings" }
-                                else { "{series.overridden.len()} settings changed from preset" }
-                            }
-                        }
-                        CropInspector { key: "{chapter}/{key}", draft, crop_key: key.clone(), saved }
-                        div { class: "editor-settings-scope", "Layout and appearance apply to this series" }
-                        ConversionControls {
-                            value: series.settings.clone(),
-                            compact: true,
-                            shading_samples: p.shading_samples.clone(),
-                            manual_crop_active: series.crops.effective(&chapter, &key).unwrap_or_default() != CropRect::default() || view.editing_crop,
-                            on_manual_crop: move |_| {
-                                let mut pv = state.preview;
-                                let mut w = pv.write();
-                                w.view.editing_crop = true;
-                                w.view.show_original = true;
-                                w.view.source_focus = true;
-                            },
-                            on_crop_mode: move |_| {
-                                if let Some(series) = state.library.write().series.iter_mut().find(|s| s.id == mode_id) {
-                                    series.crops.set(library::CropScope::Page, &mode_chapter, &mode_key, Some(CropRect::default()));
-                                }
-                                let mut pv = state.preview;
-                                let mut w = pv.write();
-                                w.draft_crop = None;
-                                w.view.editing_crop = false;
-                                drop(w);
-                                state.save_library();
-                            },
-                            onchange: move |v| {
-                                state.library.write().set_settings(&id, v, preset_base.as_ref());
-                                state.save_library();
-                                schedule_preview(state, 180);
-                            },
-                        }
-                        button { class: "btn primary editor-export", onclick: move |_| state.open_tab(SeriesTab::Export),
-                            "Continue to export"
-                            span { class: "turn-arrow", Icon { name: "arrow-left", size: 15 } }
                         }
                     }
                 }

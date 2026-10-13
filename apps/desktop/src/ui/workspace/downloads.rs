@@ -5,7 +5,7 @@ use crate::logic::{self, plural, ChapterStatus};
 use crate::queue::{BatchStatus, QueuedChapter};
 use crate::state::{AppState, Modal, ModalAction, Page, SeriesTab};
 use crate::ui::widgets::{Chip, EmptyState, Icon, ProgressBar};
-use crate::ui::work::{prepare_preview, retry_batch};
+use crate::ui::work::{open_export, retry_batch};
 use dioxus::prelude::*;
 use std::collections::HashSet;
 
@@ -163,8 +163,8 @@ pub fn DownloadsTab() -> Element {
                 if on_the_way > 0 { Chip { text: format!("{on_the_way} on the way"), kind: Some("accent".to_string()) } }
             }
             if saved_count > 0 {
-                button { class: "btn", onclick: move |_| { state.open_tab(SeriesTab::Preview); prepare_preview(state); },
-                    Icon { name: "eye", size: 16 } "Preview"
+                button { class: "btn primary", onclick: { let id = ws.series_id.clone(); move |_| open_export(state, vec![id.clone()]) },
+                    Icon { name: "file-down", size: 16 } "Export…"
                 }
             }
             if working || failed_count > 0 {

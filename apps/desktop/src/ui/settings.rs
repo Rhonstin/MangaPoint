@@ -3,7 +3,6 @@
 use super::ask_enable_browser;
 
 use super::devices::DevicesEditor;
-use super::presets_lab::PresetsLab;
 use super::widgets::Icon;
 use crate::logic::{human_bytes, plural};
 use crate::state::{paths, AppState, BootState, Modal, ModalAction, Page, SettingsSection};
@@ -13,9 +12,8 @@ use dioxus::prelude::*;
 use library::{DownloadLimits, DownloadSpeed};
 
 /// The sections, in the order the sidebar lists them.
-const SECTIONS: [(SettingsSection, &str, &str); 6] = [
+const SECTIONS: [(SettingsSection, &str, &str); 5] = [
     (SettingsSection::Reader, "hard-drive", "Your reader"),
-    (SettingsSection::Presets, "layers", "Presets"),
     (SettingsSection::Downloads, "download", "Downloads"),
     (SettingsSection::Files, "folder-open", "Files"),
     (SettingsSection::Browser, "globe", "Browser support"),
@@ -82,7 +80,6 @@ pub fn SettingsPage() -> Element {
                             }
                         }
                     },
-                    SettingsSection::Presets => rsx! { PresetsLab {} },
                     SettingsSection::Downloads => rsx! {
                         h1 { class: "sx-title", "Downloads" }
                         Group { title: "Speed" }

@@ -3,11 +3,11 @@
 
 use super::widgets::{open_folder, Cover, EmptyState, Icon};
 use super::work::{
-    ensure_series_info, load_saved_cover, open_plan, open_series_from_library, saved_cover_key,
+    ensure_series_info, load_saved_cover, open_export, open_plan, open_series_from_library,
+    saved_cover_key,
 };
 use crate::logic::{human_bytes, library_order, plural, LibrarySort, LibraryView};
 use crate::state::{library_files, AppState, Modal, ModalAction, Page};
-use crate::state::{paths, SeriesTab};
 use dioxus::prelude::*;
 use std::collections::HashSet;
 
@@ -98,32 +98,6 @@ pub fn LibraryPage() -> Element {
             series_ids: chosen_ids.clone(),
         },
     };
-    let export_folder = state
-        .settings
-        .read()
-        .export
-        .output_dir
-        .clone()
-        .unwrap_or_else(|| paths().default_export_dir())
-        .display()
-        .to_string();
-    let export_modal = Modal {
-        title: format!(
-            "Export {}?",
-            plural(chosen_with_downloads.len(), "series")
-        ),
-        body: format!(
-            "All their downloaded chapters are exported, one file per series, to {export_folder}. They go one after another. To choose the folder, a reader or how chapters are split, export one series at a time from its Export tab."
-        ),
-        confirm: "Export".into(),
-        cancel: "Not now".into(),
-        danger: false,
-        action: ModalAction::ExportSeries {
-            series_ids: chosen_with_downloads.clone(),
-        },
-    };
-    let single_export =
-        (chosen_with_downloads.len() == 1).then(|| chosen_with_downloads[0].clone());
     let delete_modal = Modal {
         title: format!(
             "Delete the downloads of {}?",
@@ -288,16 +262,10 @@ pub fn LibraryPage() -> Element {
                     Icon { name: "download", size: 16 } "Download…"
                 }
                 if !chosen_with_downloads.is_empty() {
-                    button { class: "btn", title: "Make reader files from the downloaded chapters",
-                        onclick: move |_| {
-                            if let Some(id) = single_export.clone() {
-                                picked.write().clear();
-                                open_series_from_library(state, &id);
-                                state.open_tab(SeriesTab::Export);
-                            } else {
-                                state.ask(export_modal.clone());
-                                picked.write().clear();
-                            }
+                    button { class: "btn", title: "Edit and export the downloaded chapters of the series you ticked",
+                        onclick: {
+                            let ids = chosen_with_downloads.clone();
+                            move |_| { picked.write().clear(); open_export(state, ids.clone()); }
                         },
                         Icon { name: "file-down", size: 15 } "Export…"
                     }

@@ -1,15 +1,13 @@
-//! One series, worked through in steps: Chapters, Downloads, Preview, Export.
+//! One series: its overview, and its chapters (with what is downloaded).
 
 mod chapters;
-mod crop_editor;
+pub(super) mod crop_editor;
 mod downloads;
-mod export;
 mod overview;
-mod preview;
+pub(super) mod preview;
 
 use super::widgets::{cover_key, Chip, Cover, EmptyState, Icon};
-use super::work::{add_open_series_to_library, load_saved_cover, saved_cover_key};
-use crate::logic::{tab_blocked, Needs};
+use super::work::{add_open_series_to_library, load_saved_cover, open_export, saved_cover_key};
 use crate::state::{AppState, Modal, ModalAction, Page, SeriesTab};
 use dioxus::prelude::*;
 
@@ -39,7 +37,7 @@ pub fn WorkspacePage() -> Element {
     let in_library = state.library.read().find(&ws.series_id).is_some();
     let remove_body = if downloaded > 0 {
         format!(
-            "{} and its {} downloaded chapters ({}) will be deleted from this computer. Files you already exported are kept. To keep it in the library, delete just the chapters on the Chapters or Downloads tab.",
+            "{} and its {} downloaded chapters ({}) will be deleted from this computer. Files you already exported are kept. To keep it in the library, delete just the chapters on the Chapters tab.",
             ws.title,
             downloaded,
             crate::logic::human_bytes(library_bytes)
@@ -120,6 +118,15 @@ pub fn WorkspacePage() -> Element {
                     }
                 }
             }
+            if downloaded > 0 {
+                button { class: "btn primary small", title: "Edit and export the chapters you have downloaded",
+                    onclick: {
+                        let id = ws.series_id.clone();
+                        move |_| open_export(state, vec![id.clone()])
+                    },
+                    Icon { name: "file-down", size: 15 } "Export…"
+                }
+            }
             if in_library {
                 button { class: "btn small", title: "Remove it from your library",
                     onclick: move |_| state.ask(remove_modal.clone()),
@@ -137,19 +144,13 @@ pub fn WorkspacePage() -> Element {
             Tab { tab: SeriesTab::Overview, icon: "info", label: "Overview", active: ws.tab == SeriesTab::Overview,
                 blocked: if in_library { None } else { Some("Add this series to your library first") }, badge: None }
             Tab { tab: SeriesTab::Chapters, icon: "list-checks", label: "Chapters", active: ws.tab == SeriesTab::Chapters,
-                blocked: tab_blocked(Needs::Nothing, downloaded),
+                blocked: None,
                 badge: (selected > 0).then(|| selected.to_string()).or_else(|| (downloaded > 0).then(|| downloaded.to_string())) }
-            Tab { tab: SeriesTab::Preview, icon: "eye", label: "Preview", active: ws.tab == SeriesTab::Preview,
-                blocked: tab_blocked(Needs::Downloads, downloaded), badge: None }
-            Tab { tab: SeriesTab::Export, icon: "file-down", label: "Export", active: ws.tab == SeriesTab::Export,
-                blocked: tab_blocked(Needs::Downloads, downloaded), badge: None }
         }
 
         {match ws.tab {
             SeriesTab::Overview => rsx! { overview::OverviewTab {} },
             SeriesTab::Chapters => rsx! { chapters::ChaptersTab {} },
-            SeriesTab::Preview => rsx! { preview::PreviewTab {} },
-            SeriesTab::Export => rsx! { export::ExportTab {} },
         }}
     }
 }

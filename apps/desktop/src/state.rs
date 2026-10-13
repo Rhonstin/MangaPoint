@@ -5,8 +5,8 @@ use crate::queue::DownloadQueue;
 use catalog::SuwayomiClient;
 use dioxus::prelude::*;
 use library::{
-    AppPaths, ConversionSettings, ExportsDb, HealthDb, JsonFile, LibraryDb, LibraryFiles,
-    PresetsDb, Settings, SourceState, SpeedDb,
+    AppPaths, ExportsDb, HealthDb, JsonFile, LibraryDb, LibraryFiles, PresetsDb, Settings,
+    SourceState, SpeedDb,
 };
 use pipeline::{CancelFlag, SourceChoice};
 use search::{MergedChapter, RankedSeries};
@@ -62,6 +62,8 @@ pub enum Page {
     /// A series the user opened: chapters, downloads, preview, export.
     Series,
     Library,
+    /// Choosing, editing and exporting series, full window.
+    Export,
     /// The download queue and the exported files.
     Downloads,
     /// Choosing what to download from one or more library series.
@@ -75,33 +77,10 @@ pub enum Page {
 pub enum SettingsSection {
     #[default]
     Reader,
-    Presets,
     Downloads,
     Files,
     Browser,
     About,
-}
-
-/// The Presets page: the preset being edited, and the test page it is tried on.
-#[derive(Clone, Default)]
-pub struct PresetLab {
-    /// The preset being edited.
-    pub selected: Option<String>,
-    /// Its settings as they are now, saved or not.
-    pub draft: ConversionSettings,
-    /// The series whose pages supply the test page; `None` uses the built-in
-    /// sample page.
-    pub sample_series: Option<String>,
-    /// Which page of that series' first chapter (0-based).
-    pub page: usize,
-    pub total_pages: usize,
-    pub original: Option<Shot>,
-    pub kept: Option<[f32; 4]>,
-    pub converted: Vec<Shot>,
-    pub busy: bool,
-    pub error: Option<String>,
-    /// Bumped on every change so an older drawing never replaces a newer one.
-    pub generation: u64,
 }
 
 /// The steps within an open series.
@@ -109,8 +88,6 @@ pub struct PresetLab {
 pub enum SeriesTab {
     Overview,
     Chapters,
-    Preview,
-    Export,
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -155,10 +132,6 @@ pub enum ModalAction {
     DeleteChapters {
         series_id: String,
         keys: Vec<String>,
-    },
-    /// Export every downloaded chapter of these series, one file each.
-    ExportSeries {
-        series_ids: Vec<String>,
     },
     /// Delete every downloaded chapter of these series; they stay in the library.
     DeleteDownloads {
@@ -400,16 +373,13 @@ pub enum GroupingChoice {
     EveryN,
 }
 
-/// Choices on the Export tab, kept while the user moves between tabs.
+/// Choices on the Export screen that cover every series being exported.
 #[derive(Clone)]
 pub struct ExportOpts {
     pub target: TargetChoice,
     pub grouping: GroupingChoice,
     /// The "N" of "every N chapters", as typed.
     pub every_n: String,
-    pub advanced_open: bool,
-    /// Downloaded chapters left out of the export.
-    pub excluded: HashSet<String>,
 }
 
 impl Default for ExportOpts {
@@ -418,10 +388,25 @@ impl Default for ExportOpts {
             target: TargetChoice::Folder,
             grouping: GroupingChoice::Single,
             every_n: "10".into(),
-            advanced_open: false,
-            excluded: HashSet::new(),
         }
     }
+}
+
+/// One series in the Export screen's list.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ExportItem {
+    pub series_id: String,
+    /// Downloaded chapters left out of the export.
+    pub excluded: HashSet<String>,
+    /// Switched off, a series stays in the list but is not exported.
+    pub off: bool,
+}
+
+/// The series being edited and exported together, and the one on screen.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ExportPlan {
+    pub items: Vec<ExportItem>,
+    pub active: usize,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -451,7 +436,6 @@ pub struct AppState {
     /// How the search results are ordered.
     pub search_sort: Signal<SearchSort>,
     pub settings_section: Signal<SettingsSection>,
-    pub preset_lab: Signal<PresetLab>,
     /// Cover images as data URLs, keyed by `source:manga`.
     pub covers: Signal<HashMap<String, String>>,
     pub notice: Signal<Option<Notice>>,
@@ -481,6 +465,10 @@ pub struct AppState {
     pub table: Signal<TableView>,
     pub preview: Signal<PreviewState>,
     pub export_opts: Signal<ExportOpts>,
+    /// The series on the Export screen.
+    pub export_plan: Signal<ExportPlan>,
+    /// The manual crop being dragged, for the page on screen.
+    pub crop_draft: Signal<library::CropRect>,
     /// The running (or just finished) download or export.
     pub job: Signal<Option<JobView>>,
     /// Bumped when installed sources or test results change.
@@ -530,7 +518,6 @@ impl AppState {
             search: sig(SearchView::default()),
             search_sort: sig(SearchSort::default()),
             settings_section: sig(SettingsSection::default()),
-            preset_lab: sig(PresetLab::default()),
             covers: sig(HashMap::new()),
             notice: sig(None),
             modal: sig(None),
@@ -549,6 +536,8 @@ impl AppState {
             table: sig(TableView::default()),
             preview: sig(PreviewState::default()),
             export_opts: sig(ExportOpts::default()),
+            export_plan: sig(ExportPlan::default()),
+            crop_draft: sig(library::CropRect::default()),
             job: sig(None),
             sources_version: sig(0),
             testing: sig(HashSet::new()),

@@ -246,25 +246,6 @@ pub fn export_target(
     }
 }
 
-// ---- Steps within a series -------------------------------------------------
-
-/// What a tab needs before it can be opened.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Needs {
-    Nothing,
-    /// At least one downloaded chapter.
-    Downloads,
-}
-
-/// Why a tab cannot be opened yet, in words for a tooltip; `None` if it can.
-pub fn tab_blocked(needs: Needs, downloaded: usize) -> Option<&'static str> {
-    match needs {
-        Needs::Nothing => None,
-        Needs::Downloads if downloaded > 0 => None,
-        Needs::Downloads => Some("Download a chapter first"),
-    }
-}
-
 /// Where a chapter stands in the Downloads tab.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChapterStatus {
@@ -860,19 +841,6 @@ mod tests {
         assert_eq!(format_date(1_700_000_000_000), "2023-11-14");
         assert_eq!(format_date(951_782_400_000), "2000-02-29", "leap day");
         assert_eq!(format_date(1_000_000_000_000), "2001-09-09");
-    }
-
-    #[test]
-    fn tabs_open_only_when_their_step_can_work() {
-        // Chapters is always open.
-        assert_eq!(tab_blocked(Needs::Nothing, 0), None);
-        // Downloads needs something ticked, something downloaded, or a download running.
-        // Preview and Export need a downloaded chapter, however many are ticked.
-        assert_eq!(
-            tab_blocked(Needs::Downloads, 0),
-            Some("Download a chapter first")
-        );
-        assert_eq!(tab_blocked(Needs::Downloads, 1), None);
     }
 
     fn member(source: &str, manga_id: i64, score: f32) -> ScoredMember {

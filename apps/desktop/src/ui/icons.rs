@@ -126,6 +126,7 @@ pub fn body(name: &str) -> Option<&'static str> {
         "ellipsis" => Some(
             r#"<circle cx="12" cy="12" r="1" /> <circle cx="19" cy="12" r="1" /> <circle cx="5" cy="12" r="1" />"#,
         ),
+        "chevron-right" => Some(r#"<path d="m9 18 6-6-6-6" />"#),
         "clock-3" => Some(r#"<circle cx="12" cy="12" r="10" /> <path d="M12 6v6h4" />"#),
         _ => None,
     }
