@@ -261,7 +261,7 @@ fn PlanSection(series_id: String) -> Element {
                         }
                     }),
                     empty_message,
-                    max_height: Some("380px".to_string()),
+                    max_height: Some("max(280px, calc(100vh - 420px))".to_string()),
                 }
             }
         }

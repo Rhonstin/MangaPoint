@@ -1246,11 +1246,31 @@ fn shape_options(opts: &converter::ProcessOptions) -> converter::ProcessOptions 
     key
 }
 
+/// Most pages drawn full size at once while scrolling.
+const MAX_FULL_PAGES: usize = 10;
+
+/// The pages to draw full size: the selected one, then those on or near the
+/// screen, nearest first.
+pub fn full_size_pages(total: usize, selected: usize, window: (usize, usize)) -> Vec<usize> {
+    if total == 0 {
+        return Vec::new();
+    }
+    let selected = selected.min(total - 1);
+    let mut pages: Vec<usize> = (window.0.min(total - 1)..=window.1.min(total - 1)).collect();
+    pages.sort_by_key(|&i| i.abs_diff(selected));
+    pages.truncate(MAX_FULL_PAGES);
+    if !pages.contains(&selected) {
+        pages.insert(0, selected);
+    }
+    pages
+}
+
 pub fn preview_render_order(
     total: usize,
     selected: usize,
     thumb_start: usize,
     overview: bool,
+    window: (usize, usize),
 ) -> Vec<usize> {
     if total == 0 {
         return Vec::new();
@@ -1268,6 +1288,11 @@ pub fn preview_render_order(
         }
     }
     for i in selected.saturating_sub(1)..(selected + 2).min(total) {
+        if !order.contains(&i) {
+            order.push(i);
+        }
+    }
+    for i in full_size_pages(total, selected, window) {
         if !order.contains(&i) {
             order.push(i);
         }
@@ -1290,7 +1315,10 @@ pub fn select_preview_page(state: AppState, selected: usize) {
     drop(p);
     schedule_preview(state, 0);
     spawn(async move {
-        let js = format!("document.querySelector('[data-editor-page=\"{selected}\"]')?.scrollIntoView({{block:'nearest'}})");
+        let js = format!(
+            "document.querySelector('[data-editor-page=\"{next}\"]')?.scrollIntoView({{block:'nearest'}});\
+             document.querySelector('.editor-row[data-row=\"{next}\"]')?.scrollIntoView({{block:'start'}})"
+        );
         let _ = document::eval(&js).await;
     });
 }
@@ -1437,20 +1465,28 @@ pub fn schedule_preview(state: AppState, delay_ms: u64) {
             let old = std::mem::take(&mut w.pages);
             w.strip = chapter.plan.strip;
             w.images = image_count;
+            let near = (
+                w.window.0.saturating_sub(KEEP_DRAWN_AROUND),
+                w.window.1 + KEEP_DRAWN_AROUND,
+            );
             w.pages = chapter
                 .plan
                 .pages
                 .iter()
-                .map(|page| {
-                    // Keep the previous drawing of this page until it is redrawn.
+                .enumerate()
+                .map(|(position, page)| {
+                    // Keep the previous drawing of this page until it is
+                    // redrawn, but only near the screen: the full-size
+                    // drawings of a long chapter would fill the memory.
                     let (shot, thumbnail, original, kept) = old
                         .iter()
                         .find(|o| o.crop_key == pipeline::crop_page_key(page))
                         .map_or((None, None, None, None), |o| {
+                            let close = (near.0..=near.1).contains(&position);
                             (
-                                o.shot.clone(),
+                                o.shot.clone().filter(|_| close),
                                 o.thumbnail.clone(),
-                                o.original.clone(),
+                                o.original.clone().filter(|_| close),
                                 o.kept,
                             )
                         });
@@ -1474,15 +1510,31 @@ pub fn schedule_preview(state: AppState, delay_ms: u64) {
         }
 
         let prepared = chapter.prepared.clone();
-        let (selected, thumb_start, overview, draft) = {
+        let (selected, thumb_start, overview, draft, window, want_source) = {
             let p = state.preview.peek();
-            (p.selected, p.thumb_start, p.overview, p.draft_crop.clone())
+            (
+                p.selected,
+                p.thumb_start,
+                p.overview,
+                p.draft_crop.clone(),
+                p.window,
+                p.view.show_original,
+            )
         };
-        let jobs: Vec<_> =
-            preview_render_order(chapter.plan.pages.len(), selected, thumb_start, overview)
+        let full: std::collections::HashSet<usize> =
+            full_size_pages(chapter.plan.pages.len(), selected, window)
                 .into_iter()
-                .map(|i| (i, chapter.plan.pages[i].clone()))
                 .collect();
+        let jobs: Vec<_> = preview_render_order(
+            chapter.plan.pages.len(),
+            selected,
+            thumb_start,
+            overview,
+            window,
+        )
+        .into_iter()
+        .map(|i| (i, chapter.plan.pages[i].clone()))
+        .collect();
         let crops = series.crops.clone();
         let chapter_key = key.clone();
         let mut drawn = stream::iter(jobs)
@@ -1494,6 +1546,7 @@ pub fn schedule_preview(state: AppState, delay_ms: u64) {
                     chapter_key.clone(),
                     draft.clone(),
                 );
+                let (is_full, is_selected) = (full.contains(&index), index == selected);
                 async move {
                     let result = tokio::task::spawn_blocking(move || {
                         let key = pipeline::crop_page_key(&page);
@@ -1509,11 +1562,11 @@ pub fn schedule_preview(state: AppState, delay_ms: u64) {
                             crop.unwrap_or_default().as_array(),
                         );
                         let thumbnail = pipeline::levels_to_thumbnail(&levels);
-                        let converted = (index == selected)
-                            .then(|| pipeline::levels_to_previews(&[levels]).remove(0));
-                        let original = (index == selected)
+                        let converted =
+                            is_full.then(|| pipeline::levels_to_previews(&[levels]).remove(0));
+                        let original = (is_full && (want_source || is_selected))
                             .then(|| pipeline::render_source_preview(&prepared, &page, &opts));
-                        let samples = if index == selected {
+                        let samples = if is_selected {
                             let source = converter::plan::page_source(&prepared, &page, &opts);
                             [
                                 converter::Dither::FloydSteinberg,
@@ -1590,80 +1643,9 @@ pub fn schedule_preview(state: AppState, delay_ms: u64) {
 }
 
 /// Pages drawn at the same time while previewing.
-const PREVIEW_THREADS: usize = 3;
-
-#[cfg(test)]
-mod page_editor_tests {
-    use super::*;
-
-    #[test]
-    fn selected_page_precedes_visible_thumbnails_without_rendering_the_whole_chapter() {
-        let order = preview_render_order(148, 100, 90, false);
-        assert_eq!(order[0], 100);
-        for i in 90..98 {
-            assert!(order.contains(&i));
-        }
-        assert!(order.contains(&99));
-        assert!(order.contains(&101));
-        assert!(order.len() <= 11);
-        let mut unique = order.clone();
-        unique.sort_unstable();
-        unique.dedup();
-        assert_eq!(unique.len(), order.len());
-        assert_eq!(preview_render_order(0, 10, 0, false), Vec::<usize>::new());
-        assert_eq!(preview_render_order(3, 99, 0, true), [2, 0, 1]);
-    }
-
-    #[test]
-    fn appearance_changes_reuse_the_prepared_chapter_but_layout_changes_do_not() {
-        let opts = converter::ProcessOptions::manga_default(480, 800, converter::Depth::Two);
-        let mut changed = opts.clone();
-        changed.contrast = 90;
-        changed.auto_levels = !opts.auto_levels;
-        changed.dither = converter::Dither::Atkinson;
-        assert_eq!(shape_options(&opts), shape_options(&changed));
-        changed.layout = converter::process::Layout::Webtoon;
-        assert_ne!(shape_options(&opts), shape_options(&changed));
-    }
-
-    #[test]
-    fn preview_tokens_do_not_reset_between_workspaces() {
-        let first = next_preview_request();
-        let second = next_preview_request();
-        assert!(second > first);
-    }
-
-    #[tokio::test]
-    async fn preview_reloads_replaced_sources_with_the_same_page_count() {
-        let root = std::env::temp_dir().join(format!(
-            "mangapoint-preview-revision-{}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&root).unwrap();
-        let path = root.join("00001.img");
-        fn image(value: u8) -> Vec<u8> {
-            use image::ImageEncoder;
-            let mut bytes = Vec::new();
-            image::codecs::png::PngEncoder::new(&mut bytes)
-                .write_image(&[value; 16], 4, 4, image::ExtendedColorType::L8)
-                .unwrap();
-            bytes
-        }
-        std::fs::write(&path, image(0)).unwrap();
-        let (old, first) = decode_chapter("revision-test".into(), vec![path.clone()])
-            .await
-            .unwrap();
-        std::fs::write(&path, image(255)).unwrap();
-        let (new, second) = decode_chapter("revision-test".into(), vec![path.clone()])
-            .await
-            .unwrap();
-        assert_ne!(old, new);
-        assert_eq!(first[0].pixels, [0; 16]);
-        assert_eq!(second[0].pixels, [255; 16]);
-        let _ = std::fs::remove_file(path);
-        let _ = std::fs::remove_dir(root);
-    }
-}
+const PREVIEW_THREADS: usize = 4;
+/// Pages either side of the screen whose full-size drawings are kept.
+const KEEP_DRAWN_AROUND: usize = 12;
 
 /// Pages from the chosen one on that the Presets test page plans together.
 const LAB_WINDOW: usize = 6;
@@ -2125,4 +2107,93 @@ pub fn forget_exported_file(state: AppState, record_id: String, path: String) {
     let mut exports = state.exports;
     exports.write().forget_file(&record_id, &path);
     state.save_exports();
+}
+
+#[cfg(test)]
+mod page_editor_tests {
+    use super::*;
+
+    #[test]
+    fn selected_page_precedes_visible_thumbnails_without_rendering_the_whole_chapter() {
+        let order = preview_render_order(148, 100, 90, false, (99, 101));
+        assert_eq!(order[0], 100);
+        for i in 90..98 {
+            assert!(order.contains(&i));
+        }
+        assert!(order.contains(&99));
+        assert!(order.contains(&101));
+        assert!(order.len() <= 11, "{}", order.len());
+        let mut unique = order.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), order.len());
+        assert_eq!(
+            preview_render_order(0, 10, 0, false, (0, 0)),
+            Vec::<usize>::new()
+        );
+        assert_eq!(preview_render_order(3, 99, 0, true, (0, 0)), [2, 0, 1]);
+    }
+
+    #[test]
+    fn the_pages_on_screen_are_drawn_full_size_nearest_first_and_not_too_many() {
+        assert_eq!(full_size_pages(0, 0, (0, 5)), Vec::<usize>::new());
+        // The selected page is always drawn, even off screen.
+        assert_eq!(full_size_pages(50, 40, (3, 4))[0], 40);
+        // The window is drawn nearest the selected page first.
+        assert_eq!(full_size_pages(50, 4, (3, 5)), [4, 3, 5]);
+        // A tall window is capped.
+        assert_eq!(full_size_pages(50, 10, (0, 40)).len(), MAX_FULL_PAGES);
+        // A window past the end is clamped.
+        assert_eq!(full_size_pages(5, 4, (3, 99)), [4, 3]);
+    }
+
+    #[test]
+    fn appearance_changes_reuse_the_prepared_chapter_but_layout_changes_do_not() {
+        let opts = converter::ProcessOptions::manga_default(480, 800, converter::Depth::Two);
+        let mut changed = opts.clone();
+        changed.contrast = 90;
+        changed.auto_levels = !opts.auto_levels;
+        changed.dither = converter::Dither::Atkinson;
+        assert_eq!(shape_options(&opts), shape_options(&changed));
+        changed.layout = converter::process::Layout::Webtoon;
+        assert_ne!(shape_options(&opts), shape_options(&changed));
+    }
+
+    #[test]
+    fn preview_tokens_do_not_reset_between_workspaces() {
+        let first = next_preview_request();
+        let second = next_preview_request();
+        assert!(second > first);
+    }
+
+    #[tokio::test]
+    async fn preview_reloads_replaced_sources_with_the_same_page_count() {
+        let root = std::env::temp_dir().join(format!(
+            "mangapoint-preview-revision-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("00001.img");
+        fn image(value: u8) -> Vec<u8> {
+            use image::ImageEncoder;
+            let mut bytes = Vec::new();
+            image::codecs::png::PngEncoder::new(&mut bytes)
+                .write_image(&[value; 16], 4, 4, image::ExtendedColorType::L8)
+                .unwrap();
+            bytes
+        }
+        std::fs::write(&path, image(0)).unwrap();
+        let (old, first) = decode_chapter("revision-test".into(), vec![path.clone()])
+            .await
+            .unwrap();
+        std::fs::write(&path, image(255)).unwrap();
+        let (new, second) = decode_chapter("revision-test".into(), vec![path.clone()])
+            .await
+            .unwrap();
+        assert_ne!(old, new);
+        assert_eq!(first[0].pixels, [0; 16]);
+        assert_eq!(second[0].pixels, [255; 16]);
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_dir(root);
+    }
 }

@@ -341,6 +341,9 @@ pub struct PreviewState {
     pub generation: u64,
     pub selected: usize,
     pub thumb_start: usize,
+    /// The first and last page on or near the screen in the scrolling list;
+    /// those are drawn full size.
+    pub window: (usize, usize),
     pub overview: bool,
     /// An unsaved crop projected only on the selected source section.
     pub draft_crop: Option<(String, library::CropRect)>,
