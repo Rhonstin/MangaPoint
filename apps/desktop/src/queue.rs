@@ -27,6 +27,15 @@ impl BatchStatus {
     }
 }
 
+/// How a finished batch went.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BatchStats {
+    /// How long it took.
+    pub secs: u64,
+    /// Pages saved.
+    pub pages: usize,
+}
+
 /// Some chapters of one series, downloaded together.
 #[derive(Clone)]
 pub struct Batch {
@@ -45,6 +54,8 @@ pub struct Batch {
     pub cancel: CancelFlag,
     /// One line about how it went, once it has finished.
     pub summary: Option<String>,
+    /// How long it took and how much it saved, once it has finished.
+    pub stats: Option<BatchStats>,
     /// Chapters that could not be downloaded, in words.
     pub skipped: Vec<String>,
     /// The same chapters, by key.
@@ -77,6 +88,7 @@ impl Batch {
             progress: JobProgress::default(),
             cancel: CancelFlag::new(),
             summary: None,
+            stats: None,
             skipped: Vec::new(),
             failed: Vec::new(),
             added_at,
@@ -220,6 +232,12 @@ impl DownloadQueue {
             b.summary = Some(summary);
             b.skipped = skipped;
             b.failed = failed;
+        }
+    }
+
+    pub fn set_stats(&mut self, id: u64, stats: BatchStats) {
+        if let Some(b) = self.get_mut(id) {
+            b.stats = Some(stats);
         }
     }
 

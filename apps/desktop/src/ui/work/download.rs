@@ -469,7 +469,17 @@ pub(super) async fn run_batch(state: AppState, id: u64) {
                 .iter()
                 .filter_map(|s| batch.plan.get(s.index).cloned())
                 .collect();
-            state.edit_queue(|q| q.finish(id, BatchStatus::Done, summary.clone(), skipped, failed));
+            let pages: usize = outcome.chapters.iter().map(|c| c.pages).sum();
+            state.edit_queue(|q| {
+                q.finish(id, BatchStatus::Done, summary.clone(), skipped, failed);
+                q.set_stats(
+                    id,
+                    crate::queue::BatchStats {
+                        secs: started.elapsed().as_secs(),
+                        pages,
+                    },
+                );
+            });
             state.notify(format!("{}: {}", batch.title, summary.to_lowercase()));
         }
         Err(e) => {

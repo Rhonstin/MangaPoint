@@ -2,12 +2,12 @@
 //! Chapters are added from any series; they download in turn, so there is
 //! nothing to start by hand.
 
-use super::widgets::{show_in_folder, Chip, Cover, EmptyState, Icon, ProgressBar};
+use super::widgets::{show_in_folder, Chip, Cover, EmptyState, Icon, NoCover, ProgressBar};
 use super::work::{
-    cancel_all_downloads, cancel_batch, forget_exported_file, load_saved_cover,
+    cancel_all_downloads, cancel_batch, cancel_job, forget_exported_file, load_saved_cover,
     open_series_from_library, prioritize_batch, retry_batch, saved_cover_key, set_queue_paused,
 };
-use crate::logic::{ago, human_bytes, plural};
+use crate::logic::{ago, human_bytes, human_duration, plural};
 use crate::queue::BatchStatus;
 use crate::state::{now_secs, AppState, Modal, ModalAction, Page};
 use dioxus::prelude::*;
@@ -25,6 +25,16 @@ pub fn DownloadsPage() -> Element {
             .map(|b| b.series_id.clone())
             .collect();
         for id in ids {
+            load_saved_cover(state, &id);
+        }
+        let exported: Vec<String> = state
+            .exports
+            .read()
+            .records
+            .iter()
+            .map(|r| r.series_id.clone())
+            .collect();
+        for id in exported {
             load_saved_cover(state, &id);
         }
     });
@@ -48,6 +58,8 @@ pub fn DownloadsPage() -> Element {
     let (_, waiting_batches, chapters_left) = queue.counts();
     let paused = queue.paused;
     let busy = running.is_some() || !waiting.is_empty();
+    let job = state.job.read().clone();
+    let exporting = job.as_ref().is_some_and(|j| j.result.is_none());
 
     rsx! {
         div { class: "q-head",
@@ -78,7 +90,7 @@ pub fn DownloadsPage() -> Element {
             }
         }
 
-        if !busy {
+        if !busy && finished.is_empty() && job.is_none() {
             EmptyState {
                 title: "Nothing downloading",
                 message: "Pick chapters in any series and add them to the downloads. They go on in the background while you carry on.",
@@ -88,6 +100,10 @@ pub fn DownloadsPage() -> Element {
             }
         }
 
+        if job.is_some() {
+            h2 { class: "q-title", if exporting { "Exporting now" } else { "Exported" } }
+            ExportJobRow {}
+        }
         if let Some(id) = running {
             h2 { class: "q-title", "Downloading now" }
             BatchRow { id }
@@ -108,7 +124,85 @@ pub fn DownloadsPage() -> Element {
     }
 }
 
-/// Every file exported for a reader, newest first.
+/// The export in progress (or the one that just ended): how far it is, how
+/// fast, and how long it should still take.
+#[component]
+fn ExportJobRow() -> Element {
+    let state = use_context::<AppState>();
+    let Some(job) = state.job.read().clone() else {
+        return rsx! {};
+    };
+    let running = job.result.is_none();
+    let result_text = match &job.result {
+        Some(Ok(text)) | Some(Err(text)) => text.clone(),
+        None => String::new(),
+    };
+    let speed = job.progress.pages_per_second();
+    let left = job.progress.eta_secs();
+    let actives: Vec<String> = job
+        .progress
+        .active
+        .values()
+        .take(4)
+        .map(|a| {
+            if a.pages_total > 0 {
+                format!("{} · page {} of {}", a.name, a.pages_done, a.pages_total)
+            } else {
+                a.name.clone()
+            }
+        })
+        .collect();
+    rsx! {
+        div { class: if running { "q-row running" } else { "q-row" },
+            div { class: "q-cover",
+                div { class: "q-glyph", Icon { name: "file-down", size: 22 } }
+            }
+            div { class: "q-main",
+                div { class: "row wrap",
+                    strong { class: "q-name", "{job.title}" }
+                    match &job.result {
+                        None => rsx! { Chip { text: "exporting", kind: Some("accent".to_string()) } },
+                        Some(Ok(_)) => rsx! { Chip { text: "done", kind: Some("ok".to_string()) } },
+                        Some(Err(_)) => rsx! { Chip { text: "stopped", kind: Some("bad".to_string()) } },
+                    }
+                }
+                if running {
+                    div { class: "muted small", style: "margin: 2px 0 8px",
+                        "{job.progress.label()}"
+                        if let Some(v) = speed { " · about {v:.1} pages a second" }
+                        if let Some(s) = left { " · about {human_duration(s)} left" }
+                    }
+                    ProgressBar { fraction: Some(job.progress.fraction()) }
+                    for line in actives.iter() {
+                        div { class: "muted small q-line", key: "{line}", "{line}" }
+                    }
+                    if let Some(note) = &job.progress.note {
+                        div { class: "muted small q-line", "{note}" }
+                    }
+                } else if job.result.is_some() {
+                    div { class: "muted small",
+                        "{result_text}"
+                    }
+                }
+            }
+            div { class: "q-actions",
+                if running {
+                    button { class: "btn small", disabled: job.progress.stopping, onclick: move |_| cancel_job(state),
+                        Icon { name: "x", size: 14 }
+                        if job.progress.stopping { "Stopping…" } else { "Cancel" }
+                    }
+                } else {
+                    button { class: "btn small ghost", title: "Dismiss", onclick: move |_| { let mut j = state.job; j.set(None); },
+                        Icon { name: "x", size: 14 }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Every file exported for a reader, newest first. The title opens the file's
+/// folder.
 #[component]
 fn ExportedFiles() -> Element {
     let state = use_context::<AppState>();
@@ -123,45 +217,71 @@ fn ExportedFiles() -> Element {
             }
         }
         for r in records.iter() {
-            div { class: "exp-card", key: "{r.id}",
-                div { class: "exp-head",
-                    strong { "{r.title}" }
-                    Chip { text: r.format.to_uppercase() }
-                    span { class: "muted small", "{r.chapters} chapters · {ago(now, r.at)} · {r.target}" }
-                }
-                for f in r.files.iter() {
-                    {
-                        let path = f.path.clone();
-                        let is_url = path.starts_with("http");
-                        let missing = !is_url && !std::path::Path::new(&path).is_file();
-                        let size = human_bytes(f.bytes);
-                        let record_id = r.id.clone();
-                        let (p_show, p_delete, p_forget) = (path.clone(), path.clone(), path.clone());
-                        let (id_delete, id_forget) = (record_id.clone(), record_id.clone());
-                        rsx! {
-                            div { class: "exp-file",
-                                span { class: "exp-path", title: "{path}", "{path}" }
-                                if missing { Chip { text: "missing", kind: Some("warn".to_string()) } } else { span { class: "muted small", "{size}" } }
-                                div { class: "exp-actions",
-                                    if missing {
-                                        button { class: "btn ghost small", onclick: move |_| forget_exported_file(state, id_forget.clone(), p_forget.clone()),
-                                            Icon { name: "x", size: 14 } "Forget"
-                                        }
-                                    } else if !is_url {
-                                        button { class: "btn ghost small", onclick: move |_| show_in_folder(&p_show),
-                                            Icon { name: "folder-open", size: 14 } "Show in folder"
-                                        }
-                                        button {
-                                            class: "btn ghost small danger",
-                                            onclick: move |_| state.ask(Modal {
-                                                title: "Delete this file?".into(),
-                                                body: format!("{p_delete} will be deleted from your computer. Your downloaded chapters are not affected."),
-                                                confirm: "Delete file".into(),
-                                                cancel: "Keep".into(),
-                                                danger: true,
-                                                action: ModalAction::DeleteExportedFile { record_id: id_delete.clone(), path: p_delete.clone() },
-                                            }),
-                                            Icon { name: "trash", size: 14 } "Delete"
+            {
+                let has_cover = state
+                    .library
+                    .read()
+                    .find(&r.series_id)
+                    .and_then(|s| s.info.as_ref())
+                    .is_some_and(|i| i.has_cover);
+                let first = r.files.first().map(|f| f.path.clone()).unwrap_or_default();
+                let can_open = !first.is_empty() && !first.starts_with("http") && std::path::Path::new(&first).exists();
+                let total: u64 = r.files.iter().map(|f| f.bytes).sum();
+                rsx! {
+                    div { class: "q-row", key: "{r.id}",
+                        div { class: "q-cover",
+                            if has_cover { Cover { key_id: saved_cover_key(&r.series_id) } } else { NoCover {} }
+                        }
+                        div { class: "q-main",
+                            div { class: "row wrap",
+                                button { class: "link-title", disabled: !can_open,
+                                    title: if can_open { "Show the file in its folder" } else { "" },
+                                    onclick: move |_| show_in_folder(&first),
+                                    "{r.title}"
+                                }
+                                Chip { text: r.format.to_uppercase() }
+                            }
+                            div { class: "q-stats",
+                                span { "{plural(r.chapters, \"chapter\")} · {plural(r.pages, \"page\")}" }
+                                span { "{human_bytes(total)}" }
+                                span { "{ago(now, r.at)}" }
+                                span { "{r.target}" }
+                            }
+                            for f in r.files.iter() {
+                                {
+                                    let path = f.path.clone();
+                                    let is_url = path.starts_with("http");
+                                    let missing = !is_url && !std::path::Path::new(&path).is_file();
+                                    let name = std::path::Path::new(&path)
+                                        .file_name()
+                                        .map_or_else(|| path.clone(), |n| n.to_string_lossy().into_owned());
+                                    let size = human_bytes(f.bytes);
+                                    let record_id = r.id.clone();
+                                    let (p_delete, p_forget) = (path.clone(), path.clone());
+                                    let (id_delete, id_forget) = (record_id.clone(), record_id.clone());
+                                    rsx! {
+                                        div { class: "exp-file", key: "{path}",
+                                            span { class: "exp-path", title: "{path}", "{name}" }
+                                            if missing { Chip { text: "missing", kind: Some("warn".to_string()) } } else { span { class: "muted small", "{size}" } }
+                                            if missing {
+                                                button { class: "btn small ghost", title: "Take it off this list",
+                                                    onclick: move |_| forget_exported_file(state, id_forget.clone(), p_forget.clone()),
+                                                    Icon { name: "x", size: 14 }
+                                                }
+                                            } else if !is_url {
+                                                button {
+                                                    class: "btn small ghost danger", title: "Delete this file",
+                                                    onclick: move |_| state.ask(Modal {
+                                                        title: "Delete this file?".into(),
+                                                        body: format!("{p_delete} will be deleted from your computer. Your downloaded chapters are not affected."),
+                                                        confirm: "Delete file".into(),
+                                                        cancel: "Keep".into(),
+                                                        danger: true,
+                                                        action: ModalAction::DeleteExportedFile { record_id: id_delete.clone(), path: p_delete.clone() },
+                                                    }),
+                                                    Icon { name: "trash", size: 14 }
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -224,7 +344,7 @@ fn BatchRow(id: u64) -> Element {
     rsx! {
         div { class: if running { "q-row running" } else { "q-row" },
             div { class: "q-cover",
-                if has_cover { Cover { key_id: cover_key } } else { div { class: "cover empty", "📖" } }
+                if has_cover { Cover { key_id: cover_key } } else { NoCover {} }
             }
             div { class: "q-main",
                 div { class: "row wrap",
@@ -250,6 +370,15 @@ fn BatchRow(id: u64) -> Element {
                 } else {
                     div { class: "muted small",
                         if let Some(summary) = &batch.summary { "{summary}" }
+                    }
+                    if let Some(stats) = batch.stats {
+                        div { class: "q-stats",
+                            span { "took {human_duration(stats.secs)}" }
+                            span { "{plural(stats.pages, \"page\")}" }
+                            if stats.secs > 0 && stats.pages > 0 {
+                                span { "{stats.pages as f32 / stats.secs as f32:.1} pages a second" }
+                            }
+                        }
                     }
                     for line in skipped_lines.iter() {
                         div { class: "muted small q-line", key: "{line}", "{line}" }

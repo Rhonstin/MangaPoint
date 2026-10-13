@@ -340,6 +340,14 @@ impl JobProgress {
         (seconds >= 4.0 && self.pages_seen >= 6).then(|| self.pages_seen as f32 / seconds)
     }
 
+    /// Seconds left at the pace so far, once there is enough to say.
+    pub fn eta_secs(&self) -> Option<u64> {
+        let seconds = self.started?.elapsed().as_secs_f32();
+        let done = self.fraction();
+        (seconds >= 4.0 && (0.03..1.0).contains(&done))
+            .then(|| (seconds * (1.0 - done) / done).round() as u64)
+    }
+
     /// Overall progress, 0.0 to 1.0.
     pub fn fraction(&self) -> f32 {
         if self.chapter_total == 0 {
@@ -430,6 +438,15 @@ pub fn small_cover(bytes: &[u8]) -> Option<Vec<u8>> {
         .encode_image(&img.to_rgb8())
         .ok()?;
     Some(out)
+}
+
+/// A length of time in words: "45 s", "2 min 14 s", "1 h 05 min".
+pub fn human_duration(secs: u64) -> String {
+    match secs {
+        0..=59 => format!("{secs} s"),
+        60..=3599 => format!("{} min {:02} s", secs / 60, secs % 60),
+        _ => format!("{} h {:02} min", secs / 3600, secs % 3600 / 60),
+    }
 }
 
 pub fn human_bytes(n: u64) -> String {
@@ -1429,5 +1446,21 @@ mod library_view_tests {
             png.len()
         );
         assert!(small_cover(b"not an image").is_none());
+    }
+
+    #[test]
+    fn durations_read_in_words() {
+        assert_eq!(human_duration(7), "7 s");
+        assert_eq!(human_duration(134), "2 min 14 s");
+        assert_eq!(human_duration(3900), "1 h 05 min");
+    }
+
+    #[test]
+    fn no_time_left_is_guessed_before_there_is_a_pace() {
+        let mut p = JobProgress::default();
+        assert_eq!(p.eta_secs(), None);
+        p.chapter_total = 10;
+        p.finished = 5;
+        assert_eq!(p.eta_secs(), None, "nothing has started yet");
     }
 }
