@@ -407,3 +407,60 @@ fn ToastHost() -> Element {
         }
     }
 }
+
+#[cfg(test)]
+mod script_tests {
+    const SCRIPTS: [(&str, &str); 3] = [
+        ("crop-drag.js", include_str!("../js/crop-drag.js")),
+        ("export-split.js", include_str!("../js/export-split.js")),
+        ("preview-editor.js", include_str!("../js/preview-editor.js")),
+    ];
+
+    /// `cropBound` as it is written in HTML: `data-crop-bound`.
+    fn attribute(camel: &str) -> String {
+        let mut out = String::from("data-");
+        for c in camel.chars() {
+            if c.is_ascii_uppercase() {
+                out.push('-');
+            }
+            out.push(c.to_ascii_lowercase());
+        }
+        out
+    }
+
+    /// A script that marks an element with `dataset.x = ...` and also looks
+    /// elements up with `[data-x]` will find the marked element too. That once
+    /// made a whole screen swallow every click, so it must not come back.
+    #[test]
+    fn a_script_never_marks_what_it_also_selects() {
+        for (name, source) in SCRIPTS {
+            for line in source.lines() {
+                let Some(at) = line.find(".dataset.") else {
+                    continue;
+                };
+                let rest = &line[at + ".dataset.".len()..];
+                let field: String = rest
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric())
+                    .collect();
+                if !rest[field.len()..].trim_start().starts_with("= ")
+                    && !rest[field.len()..].trim_start().starts_with('=')
+                {
+                    continue;
+                }
+                let selector = format!("[{}", attribute(&field));
+                assert!(
+                    !source.contains(&selector),
+                    "{name} sets dataset.{field} and also selects {selector}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_scripts_are_not_empty() {
+        for (name, source) in SCRIPTS {
+            assert!(source.trim().len() > 100, "{name}");
+        }
+    }
+}
