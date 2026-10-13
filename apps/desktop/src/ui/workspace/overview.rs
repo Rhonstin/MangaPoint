@@ -126,21 +126,34 @@ pub fn OverviewTab() -> Element {
                     }
                 }
                 div { class: "facts",
-                    div { class: "summary-line", span { class: "muted", "Chapters" } span {
-                        "{series.chapters.len()} downloaded"
-                        if let Some(total) = total_chapters { " of {total}" }
-                    } }
-                    div { class: "summary-line", span { class: "muted", "Pages" } span { "{series.page_count()}" } }
-                    div { class: "summary-line", span { class: "muted", "On this computer" } span { "{human_bytes(series.bytes())}" } }
-                    if !sources_text.is_empty() {
-                        div { class: "summary-line", span { class: "muted", "From" } span { class: "right", "{sources_text}" } }
+                    Fact { label: "Downloaded",
+                        value: match total_chapters {
+                            Some(total) => format!("{} of {total} chapters", series.chapters.len()),
+                            None => format!("{} chapters", series.chapters.len()),
+                        },
                     }
-                    div { class: "summary-line", span { class: "muted", "Converted as" } span { class: "right", "{describe_settings(&series.settings)}" } }
+                    Fact { label: "Pages", value: series.page_count().to_string() }
+                    Fact { label: "On this computer", value: human_bytes(series.bytes()) }
                     if series.updated_at > 0 {
-                        div { class: "summary-line", span { class: "muted", "Last downloaded" } span { "{ago(now_secs(), series.updated_at)}" } }
+                        Fact { label: "Last downloaded", value: ago(now_secs(), series.updated_at) }
                     }
+                    if !sources_text.is_empty() {
+                        Fact { label: "From", value: sources_text.clone(), wide: true }
+                    }
+                    Fact { label: "Converted as", value: describe_settings(&series.settings), wide: true }
                 }
             }
+        }
+    }
+}
+
+/// One fact about the series: a small label over its value.
+#[component]
+fn Fact(label: String, value: String, #[props(default)] wide: bool) -> Element {
+    rsx! {
+        div { class: if wide { "fact wide" } else { "fact" },
+            span { class: "fact-label", "{label}" }
+            span { class: "fact-value", "{value}" }
         }
     }
 }

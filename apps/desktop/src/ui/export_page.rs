@@ -64,9 +64,7 @@ fn Panel(
                     div { class: "px-panel-actions", onclick: move |e| e.stop_propagation(), {actions} }
                 }
             }
-            if open() {
-                div { class: "px-panel-body", {children} }
-            }
+            div { class: "px-panel-body", {children} }
         }
     }
 }
@@ -760,6 +758,13 @@ fn AddSeries(on_close: EventHandler<()>) -> Element {
         .filter(|s| !s.chapters.is_empty() && !s.is_sample())
         .filter(|s| !plan.items.iter().any(|i| i.series_id == s.id))
         .collect();
+    // Their covers are on disk, small: read them as soon as the list opens.
+    let ids: Vec<String> = available.iter().map(|s| s.id.clone()).collect();
+    use_effect(move || {
+        for id in &ids {
+            load_saved_cover(state, id);
+        }
+    });
     rsx! {
         div { class: "modal-head",
             h2 { "Add a series to this export" }

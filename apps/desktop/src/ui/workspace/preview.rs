@@ -310,27 +310,35 @@ pub fn PreviewTab() -> Element {
                             " Ready"
                         }
                     }
-                    button {
-                        class: if compare { "btn small on" } else { "btn small" },
-                        title: "Show the downloaded artwork beside each reader page",
-                        onclick: move |_| {
-                            state.preview.write().view.show_original = !compare;
-                            schedule_preview(state, 0);
-                        },
-                        Icon { name: "eye", size: 14 } "Compare"
+                    label { class: "check-label", title: "Show the downloaded artwork beside each reader page",
+                        input {
+                            r#type: "checkbox", checked: compare,
+                            onchange: move |_| {
+                                state.preview.write().view.show_original = !compare;
+                                schedule_preview(state, 0);
+                            },
+                        }
+                        "Compare"
                     }
-                    select {
-                        class: "editor-zoom", "aria-label": "Preview zoom",
-                        onchange: move |e| {
-                            state.preview.write().view.zoom = match e.value().as_str() {
-                                "width" => Zoom::Width,
-                                "custom" => Zoom::Custom(match view.zoom { Zoom::Custom(p) => p, _ => 100 }),
-                                _ => Zoom::Fit,
-                            };
-                        },
-                        option { value: "fit", selected: view.zoom == Zoom::Fit, "Fit page" }
-                        option { value: "width", selected: view.zoom == Zoom::Width, "Fit width" }
-                        option { value: "custom", selected: matches!(view.zoom, Zoom::Custom(_)), "Custom zoom" }
+                    div { class: "seg zoom-seg", role: "group", "aria-label": "Preview zoom",
+                        button {
+                            class: if view.zoom == Zoom::Fit { "on" } else { "" },
+                            onclick: move |_| state.preview.write().view.zoom = Zoom::Fit,
+                            "Fit page"
+                        }
+                        button {
+                            class: if view.zoom == Zoom::Width { "on" } else { "" },
+                            onclick: move |_| state.preview.write().view.zoom = Zoom::Width,
+                            "Fit width"
+                        }
+                        button {
+                            class: if matches!(view.zoom, Zoom::Custom(_)) { "on" } else { "" },
+                            onclick: move |_| {
+                                let percent = match view.zoom { Zoom::Custom(p) => p, _ => 100 };
+                                state.preview.write().view.zoom = Zoom::Custom(percent);
+                            },
+                            "Custom zoom"
+                        }
                     }
                     if let Zoom::Custom(percent) = view.zoom {
                         div { class: "editor-custom-zoom",

@@ -120,8 +120,8 @@ fn Shell() -> Element {
                 cat::Cat {}
                 span { "MangaPoint" }
             }
-            NavItem { page: Page::Library, label: "Library", icon: "book-open" }
             NavItem { page: Page::Search, label: "Search", icon: "search" }
+            NavItem { page: Page::Library, label: "Library", icon: "book-open" }
             NavItem {
                 page: Page::Downloads, label: "Downloads", icon: "download",
                 badge: (in_queue > 0).then(|| in_queue.to_string()),

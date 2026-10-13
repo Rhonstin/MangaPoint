@@ -34,11 +34,11 @@ try {
         Wait-Until "document.querySelectorAll('.px-panel-head').length >= 3" 30 'the panels'
     }
     Check 'a panel folds when its header is clicked' {
-        $before = Eval "document.querySelectorAll('.px-panel-body').length"
+        $before = Eval "document.querySelectorAll('.px-panel.collapsed').length"
         Mouse-Click '.px-panel-head' 'presets'
-        Start-Sleep -Milliseconds 400
-        $after = Eval "document.querySelectorAll('.px-panel-body').length"
-        if ($after -eq $before) { throw "still $before panel bodies" }
+        Start-Sleep -Milliseconds 600
+        $after = Eval "document.querySelectorAll('.px-panel.collapsed').length"
+        if ($after -le $before) { throw "still $before collapsed panels" }
     }
     Check 'a column bar can be dragged' {
         $w0 = Eval "document.querySelector('.export-side.left').getBoundingClientRect().width"
