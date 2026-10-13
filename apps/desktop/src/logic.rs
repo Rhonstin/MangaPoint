@@ -406,10 +406,11 @@ pub fn verdict_label(v: Verdict) -> &'static str {
 }
 
 /// The biggest a saved cover is kept: posters are shown at most 200 px wide, so
-/// this is sharp even on a high-density screen and takes a few kilobytes.
-const COVER_MAX: (u32, u32) = (360, 540);
+/// this is sharp on a high-density screen, fills an e-reader screen when it is
+/// the cover page of an export, and still takes only tens of kilobytes.
+const COVER_MAX: (u32, u32) = (540, 810);
 /// Covers larger than this are shrunk when they are next read.
-pub const COVER_KEEP_BYTES: usize = 48 * 1024;
+pub const COVER_KEEP_BYTES: usize = 160 * 1024;
 
 /// A cover as a small JPEG, to keep on disk instead of what the source sent.
 /// `None` if the bytes are not an image.
@@ -425,7 +426,7 @@ pub fn small_cover(bytes: &[u8]) -> Option<Vec<u8>> {
         img
     };
     let mut out = Vec::new();
-    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 72)
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 80)
         .encode_image(&img.to_rgb8())
         .ok()?;
     Some(out)
@@ -1419,7 +1420,7 @@ mod library_view_tests {
             .unwrap();
         let small = small_cover(&png).expect("an image shrinks");
         let decoded = image::load_from_memory(&small).unwrap();
-        assert!(decoded.width() <= 360 && decoded.height() <= 540);
+        assert!(decoded.width() <= 540 && decoded.height() <= 810);
         assert_eq!(decoded.width() * 3, decoded.height() * 2, "shape kept");
         assert!(
             small.len() < png.len() / 5,
