@@ -65,7 +65,7 @@ const start = () => {
   const bar = root.querySelector('.editor-bottom');
   const below = (bar ? bar.offsetHeight : 0) + (parseFloat(getComputedStyle(page).paddingBottom) || 0) + 8;
   set('--canvas-height', Math.max(240, Math.round(page.clientHeight - top - below)) + 'px');
-  set('--bottom-height', (bar ? bar.offsetHeight : 52) + 'px');
+  set('--bottom-height', (bar ? bar.offsetHeight : 0) + 'px');
   const style = getComputedStyle(scroller);
   const room = scroller.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom) - 96;
   set('--reader-page-height', Math.max(120, Math.round(room)) + 'px');
@@ -98,7 +98,7 @@ const start = () => {
  const timer = setInterval(() => { if (!root.isConnected) clearInterval(timer); else later(); }, 400);
  root.addEventListener('keydown', e => {
   if (e.target.closest('input,select,textarea,[contenteditable=true]')) return;
-  const ids = { ArrowRight: 'editor-next', ArrowLeft: 'editor-previous', Escape: 'editor-close-overview' };
+  const ids = { Escape: 'editor-close-overview' };
   const id = ids[e.key];
   if (id) { const b = document.getElementById(id); if (b && !b.disabled) { e.preventDefault(); b.click(); } }
  });
@@ -226,16 +226,8 @@ fn EditorRow(
     }
 }
 
-/// The key of the chapter whose number is closest to `wanted`.
-fn nearest_chapter(numbered: &[(f64, String)], wanted: f64) -> Option<String> {
-    numbered
-        .iter()
-        .min_by(|a, b| (a.0 - wanted).abs().total_cmp(&(b.0 - wanted).abs()))
-        .map(|(_, key)| key.clone())
-}
-
 /// Preview another downloaded chapter, from its first page.
-fn switch_chapter(state: AppState, key: String) {
+pub(crate) fn switch_chapter(state: AppState, key: String) {
     let mut pv = state.preview;
     let mut w = pv.write();
     if w.chapter_key.as_deref() == Some(key.as_str()) {
@@ -297,7 +289,6 @@ pub fn PreviewTab() -> Element {
     let mut state = use_context::<AppState>();
     let mut draft = state.crop_draft;
     let mut identity = use_signal(String::new);
-    let mut seek = use_signal(|| None::<usize>);
     use_effect(move || prepare_preview(state));
     use_future(move || async move {
         let mut eval = document::eval(EDITOR_SCRIPT);
@@ -330,9 +321,9 @@ pub fn PreviewTab() -> Element {
     let Some(ws) = state.workspace.read().clone() else {
         return rsx! {};
     };
-    let Some(series) = state.library.read().find(&ws.series_id).cloned() else {
+    if state.library.read().find(&ws.series_id).is_none() {
         return rsx! {EmptyState{title:"Nothing to edit yet",message:"Download a chapter to open it in the editor."}};
-    };
+    }
     let p = state.preview.read().clone();
     let view = p.view;
     let chapter = p.chapter_key.clone().unwrap_or_default();
@@ -356,47 +347,31 @@ pub fn PreviewTab() -> Element {
     );
     let compare = view.show_original;
     let seams = seams(&p.pages, device.height);
-    let chapter_keys: Vec<String> = series.chapters.iter().map(|c| c.key.clone()).collect();
-    let (keys_prev, keys_slide, keys_next) = (
-        chapter_keys.clone(),
-        chapter_keys.clone(),
-        chapter_keys.clone(),
-    );
-    let chapter_position = chapter_keys.iter().position(|k| *k == chapter).unwrap_or(0);
-    let shown_position = seek().unwrap_or(chapter_position);
-    let label_of = |i: usize| {
-        series.chapters.get(i).map_or(String::new(), |c| {
-            format!("{} of {}", c.name, series.chapters.len())
-        })
-    };
-    let shown_label = label_of(shown_position);
-    let current_number = series
-        .chapters
-        .get(chapter_position)
-        .and_then(|c| c.number)
-        .map(crate::logic::format_number)
-        .unwrap_or_default();
-    let numbered: Vec<(f64, String)> = series
-        .chapters
-        .iter()
-        .filter_map(|c| c.number.map(|n| (n, c.key.clone())))
-        .collect();
     rsx! {
         div { id: "page-editor", class: "{classes}", tabindex: "0",
             div { class: "editor-toolbar",
-                div { class: "editor-page-nav",
-                    button {
-                        id: "editor-previous", class: "btn small",
-                        disabled: selected == 0 || total == 0, title: "Previous page · Left arrow",
-                        onclick: move |_| select_preview_page(state, selected.saturating_sub(1)),
-                        Icon { name: "arrow-left", size: 15 }
+                label { class: "editor-page-jump",
+                    span { "Page" }
+                    input {
+                        r#type: "number", min: "1", max: "{total}", step: "1",
+                        value: "{number}", disabled: total == 0, "aria-label": "Go to page",
+                        onchange: move |e| {
+                            if let Ok(n) = e.value().trim().parse::<usize>() {
+                                if (1..=total).contains(&n) { select_preview_page(state, n - 1); }
+                            }
+                        },
                     }
-                    span { class: "editor-page-count", "Page " strong { "{number}" } " / {total}" }
-                    button {
-                        id: "editor-next", class: "btn small",
-                        disabled: selected + 1 >= total, title: "Next page · Right arrow",
-                        onclick: move |_| select_preview_page(state, selected + 1),
-                        span { class: "turn-arrow", Icon { name: "arrow-left", size: 15 } }
+                    span { class: "muted", "/ {total}" }
+                }
+                div { class: "editor-toolbar-actions",
+                    span { class: "editor-status",
+                        if p.busy {
+                            span { class: "spin", Icon { name: "loader-circle", size: 13 } }
+                            " Updating…"
+                        } else {
+                            Icon { name: "check", size: 13 }
+                            " Ready"
+                        }
                     }
                     button {
                         class: if compare { "btn small on" } else { "btn small" },
@@ -407,8 +382,6 @@ pub fn PreviewTab() -> Element {
                         },
                         Icon { name: "eye", size: 14 } "Compare"
                     }
-                }
-                div { class: "editor-toolbar-actions",
                     select {
                         class: "editor-zoom", "aria-label": "Preview zoom",
                         onchange: move |e| {
@@ -535,58 +508,6 @@ pub fn PreviewTab() -> Element {
                                 chapter: chapter.clone(),
                                 crop_key: page.crop_key.clone(),
                                 draft,
-                            }
-                        }
-                    }
-                    div { class: "editor-bottom",
-                        button {
-                            class: "btn small", title: "Previous chapter",
-                            disabled: chapter_position == 0,
-                            onclick: move |_| {
-                                if let Some(c) = keys_prev.get(chapter_position.saturating_sub(1)) { switch_chapter(state, c.clone()); }
-                            },
-                            Icon { name: "arrow-left", size: 15 }
-                        }
-                        div { class: "editor-chapter-slider",
-                            input {
-                                r#type: "range", min: "0", max: "{chapter_keys.len().saturating_sub(1)}", step: "1",
-                                value: "{shown_position}", "aria-label": "Seek through the chapters",
-                                disabled: chapter_keys.len() < 2,
-                                oninput: move |e| { if let Ok(v) = e.value().parse::<usize>() { seek.set(Some(v)); } },
-                                onchange: move |e| {
-                                    seek.set(None);
-                                    if let Some(c) = e.value().parse::<usize>().ok().and_then(|v| keys_slide.get(v)) { switch_chapter(state, c.clone()); }
-                                },
-                            }
-                            span { class: "editor-chapter-label", "{shown_label}" }
-                        }
-                        button {
-                            class: "btn small", title: "Next chapter",
-                            disabled: chapter_position + 1 >= chapter_keys.len(),
-                            onclick: move |_| {
-                                if let Some(c) = keys_next.get(chapter_position + 1) { switch_chapter(state, c.clone()); }
-                            },
-                            span { class: "turn-arrow", Icon { name: "arrow-left", size: 15 } }
-                        }
-                        label { class: "editor-chapter-jump",
-                            span { "Chapter" }
-                            input {
-                                r#type: "number", step: "any", placeholder: "No.",
-                                value: "{current_number}", "aria-label": "Go to chapter number",
-                                onchange: move |e| {
-                                    if let Some(c) = e.value().trim().parse::<f64>().ok().and_then(|n| nearest_chapter(&numbered, n)) {
-                                        switch_chapter(state, c);
-                                    }
-                                },
-                            }
-                        }
-                        span { class: "editor-status",
-                            if p.busy {
-                                span { class: "spin", Icon { name: "loader-circle", size: 13 } }
-                                " Updating…"
-                            } else {
-                                Icon { name: "check", size: 13 }
-                                " Ready"
                             }
                         }
                     }

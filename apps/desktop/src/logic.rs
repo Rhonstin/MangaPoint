@@ -505,14 +505,6 @@ pub fn plural(n: usize, noun: &str) -> String {
     }
 }
 
-/// The first and last chapter numbers of a list, if any are numbered.
-pub fn number_range(numbers: impl Iterator<Item = Option<f64>>) -> Option<(f64, f64)> {
-    numbers.flatten().fold(None, |range, n| match range {
-        None => Some((n, n)),
-        Some((lo, hi)) => Some((lo.min(n), hi.max(n))),
-    })
-}
-
 /// How search results are ordered.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SearchSort {
@@ -1182,14 +1174,6 @@ mod info_tests {
         assert_eq!(plural(0, "chapter"), "0 chapters");
         assert_eq!(plural(1, "chapter"), "1 chapter");
         assert_eq!(plural(235, "page"), "235 pages");
-    }
-
-    #[test]
-    fn the_chapter_range_ignores_unnumbered_chapters() {
-        let nums = [Some(3.0), None, Some(1.5), Some(10.0)];
-        assert_eq!(number_range(nums.into_iter()), Some((1.5, 10.0)));
-        assert_eq!(number_range([None, None].into_iter()), None);
-        assert_eq!(number_range(std::iter::empty()), None);
     }
 }
 

@@ -47,7 +47,8 @@ pub fn LibraryPage() -> Element {
             }
         }
     });
-    let library = state.library.read().clone();
+    let mut library = state.library.read().clone();
+    library.series.retain(|s| !s.is_sample());
     let total = library.total_bytes();
     let order = library_order(&library.series, view(), sort(), &filter.read());
     let downloaded_count = library

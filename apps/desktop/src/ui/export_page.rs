@@ -7,13 +7,13 @@
 use super::conversion::ConversionControls;
 use super::devices::DeviceSelect;
 use super::presets::{apply_to_series, delete_preset};
-use super::widgets::{pick_folder, Chip, Cover, EmptyState, Icon};
+use super::widgets::{pick_folder, Chip, Cover, Icon};
 use super::work::{
-    activate_export_series, add_export_series, load_saved_cover, remove_export_series,
+    activate_export_series, add_export_series, load_saved_cover, open_sample, remove_export_series,
     saved_cover_key, schedule_preview, start_export_plan,
 };
 use super::workspace::crop_editor::CropInspector;
-use super::workspace::preview::PreviewTab;
+use super::workspace::preview::{switch_chapter, PreviewTab};
 use crate::logic::{self, plural, TargetChoice};
 use crate::state::{AppState, GroupingChoice, JobKind, Modal, ModalAction, Page};
 use dioxus::prelude::*;
@@ -34,23 +34,28 @@ fn active_series(state: AppState) -> Option<DownloadedSeries> {
 fn Panel(
     title: String,
     icon: &'static str,
+    /// What the splitters call this panel.
+    id: &'static str,
+    /// A starting height in pixels. Without one the panel takes what is left.
+    height: Option<u32>,
     /// Buttons for the title bar, which do not fold the panel.
     actions: Option<Element>,
     children: Element,
 ) -> Element {
     let mut open = use_signal(|| true);
-    let class = if open() {
-        "px-panel open"
-    } else {
-        "px-panel collapsed"
+    let class = match (open(), height.is_some()) {
+        (true, true) => "px-panel open fixed",
+        (true, false) => "px-panel open",
+        _ => "px-panel collapsed",
     };
+    let style = height.map(|h| format!("--h: {h}px;")).unwrap_or_default();
     let chevron = if open() {
         "chevron-down"
     } else {
         "chevron-right"
     };
     rsx! {
-        section { class: "{class}",
+        section { class: "{class}", style: "{style}", "data-panel": "{id}",
             header { class: "px-panel-head", onclick: move |_| open.set(!open()),
                 Icon { name: chevron, size: 15 }
                 Icon { name: icon, size: 15 }
@@ -73,6 +78,42 @@ pub fn ExportPage() -> Element {
     let mut closing = use_signal(|| false);
     let plan = state.export_plan.read().clone();
 
+    // Nothing chosen to export: show the sample pages.
+    use_effect(move || {
+        if state.export_plan.peek().items.is_empty() {
+            open_sample(state);
+        }
+    });
+    // Opened again after other pages were visited: they changed what the
+    // preview shows, so put the series of the list back.
+    use_effect(move || {
+        let plan = state.export_plan.peek().clone();
+        let wanted = plan.items.get(plan.active).map(|i| i.series_id.clone());
+        let shown = state.workspace.peek().as_ref().map(|w| w.series_id.clone());
+        if wanted.is_some() && wanted != shown {
+            activate_export_series(state, plan.active);
+        }
+    });
+    // Remember the chapter being previewed.
+    use_effect(move || {
+        let key = state.preview.read().chapter_key.clone();
+        let Some(key) = key else { return };
+        let mut plan = state.export_plan;
+        let differs = {
+            let p = plan.peek();
+            p.items
+                .get(p.active)
+                .is_some_and(|i| i.chapter.as_deref() != Some(key.as_str()))
+        };
+        if differs {
+            let mut guard = plan.write();
+            let active = guard.active;
+            if let Some(item) = guard.items.get_mut(active) {
+                item.chapter = Some(key);
+            }
+        }
+    });
+
     // The covers of the series in the list.
     {
         let ids: Vec<String> = plan.items.iter().map(|i| i.series_id.clone()).collect();
@@ -84,17 +125,9 @@ pub fn ExportPage() -> Element {
     }
 
     if plan.items.is_empty() {
-        return rsx! {
-            EmptyState {
-                title: "Nothing to export",
-                message: "Select downloaded series in your library and choose Export.",
-                shelf: true,
-            }
-            div { style: "text-align: center",
-                button { class: "btn", onclick: move |_| state.go(Page::Library), "Back to the library" }
-            }
-        };
+        return rsx! { p { class: "muted", style: "padding: 24px", "Opening the sample pages…" } };
     }
+    let sample = active_series(state).is_some_and(|s| s.is_sample());
 
     let mut close = move || {
         if closing() {
@@ -110,23 +143,38 @@ pub fn ExportPage() -> Element {
 
     rsx! {
         div { class: "export-screen",
+            onmounted: move |_| { spawn(async move { let _ = document::eval(SPLIT_SCRIPT).await; }); },
             div { class: "export-top",
                 button { class: "btn ghost small", onclick: move |_| state.go(Page::Library),
                     Icon { name: "arrow-left", size: 15 }
                     "Library"
                 }
                 h1 { "Export" }
-                span { class: "muted", "{plural(plan.items.len(), \"series\")}" }
+                if sample {
+                    Chip { text: "Sample pages", kind: Some("accent".to_string()) }
+                    span { class: "muted small", "Try the controls and presets here. To export your own series, pick them in the Library and choose Export…" }
+                    span { class: "grow" }
+                    button { class: "btn small", onclick: move |_| state.go(Page::Library),
+                        Icon { name: "book-open", size: 15 } "Choose series"
+                    }
+                } else {
+                    span { class: "muted", "{plural(plan.items.len(), \"series\")}" }
+                }
             }
             div { class: "export-body",
                 aside { class: "export-side left",
                     PresetsPanel {}
+                    Split { target: "presets", dir: 1 }
                     EditPanel {}
+                    Split { target: "series", dir: -1 }
                     SeriesPanel { on_add: move |_| adding.set(true) }
+                    div { class: "px-split-v", "data-split": "left", title: "Drag to make this column wider or narrower" }
                 }
                 main { class: "export-center", PreviewTab {} }
                 aside { class: "export-side right",
+                    div { class: "px-split-v", "data-split": "right", title: "Drag to make this column wider or narrower" }
                     ChaptersPanel {}
+                    Split { target: "send", dir: -1 }
                     SendPanel {}
                     ExportFooter {}
                 }
@@ -141,6 +189,73 @@ pub fn ExportPage() -> Element {
         }
     }
 }
+
+/// The bar between two panels, which can be dragged to resize them. `target`
+/// is the panel that changes size; `dir` is -1 when dragging down shrinks it.
+#[component]
+fn Split(target: &'static str, dir: i32) -> Element {
+    rsx! {
+        div { class: "px-split", "data-split": "panel", "data-target": "{target}", "data-dir": "{dir}",
+            title: "Drag to resize the panels" }
+    }
+}
+
+/// Dragging the bars between the panels and the edges of the side columns.
+/// The sizes are remembered between visits.
+const SPLIT_SCRIPT: &str = r#"
+const root = document.querySelector('.export-screen');
+if (root && !root.dataset.split) {
+ root.dataset.split = '1';
+ const KEY = 'mp-export-layout';
+ let saved = {};
+ try { saved = JSON.parse(localStorage.getItem(KEY) || '{}'); } catch (e) {}
+ const body = root.querySelector('.export-body');
+ if (saved.left) body.style.setProperty('--left-w', saved.left + 'px');
+ if (saved.right) body.style.setProperty('--right-w', saved.right + 'px');
+ for (const [id, h] of Object.entries(saved.panels || {})) {
+  const el = root.querySelector('[data-panel="' + id + '"]');
+  if (el) el.style.setProperty('--h', h + 'px');
+ }
+ let drag = null;
+ root.addEventListener('pointerdown', e => {
+  const bar = e.target.closest('[data-split]');
+  if (!bar) return;
+  e.preventDefault();
+  try { bar.setPointerCapture(e.pointerId); } catch (err) {}
+  const kind = bar.dataset.split;
+  if (kind === 'panel') {
+   const el = root.querySelector('[data-panel="' + bar.dataset.target + '"]');
+   if (!el) return;
+   drag = { kind, bar, el, id: bar.dataset.target, from: e.clientY, start: el.getBoundingClientRect().height, dir: Number(bar.dataset.dir) };
+  } else {
+   const side = root.querySelector('.export-side.' + kind);
+   drag = { kind, bar, from: e.clientX, start: side.getBoundingClientRect().width };
+  }
+  bar.classList.add('active');
+ });
+ root.addEventListener('pointermove', e => {
+  if (!drag) return;
+  if (drag.kind === 'panel') {
+   const h = Math.max(60, Math.round(drag.start + drag.dir * (e.clientY - drag.from)));
+   drag.el.style.setProperty('--h', h + 'px');
+   saved.panels = Object.assign({}, saved.panels, { [drag.id]: h });
+  } else {
+   const dx = e.clientX - drag.from;
+   const w = Math.max(220, Math.min(620, Math.round(drag.start + (drag.kind === 'left' ? dx : -dx))));
+   body.style.setProperty(drag.kind === 'left' ? '--left-w' : '--right-w', w + 'px');
+   saved[drag.kind] = w;
+  }
+ });
+ const stop = () => {
+  if (!drag) return;
+  drag.bar.classList.remove('active');
+  drag = null;
+  try { localStorage.setItem(KEY, JSON.stringify(saved)); } catch (e) {}
+ };
+ root.addEventListener('pointerup', stop);
+ root.addEventListener('pointercancel', stop);
+}
+"#;
 
 // ---- left: presets -------------------------------------------------------
 
@@ -183,7 +298,7 @@ fn PresetsPanel() -> Element {
     };
 
     rsx! {
-        Panel { title: "Presets", icon: "layers",
+        Panel { title: "Presets", icon: "layers", id: "presets", height: 190,
             div { class: "px-list",
                 for e in entries.iter() {
                     {
@@ -338,7 +453,7 @@ fn EditPanel() -> Element {
     let overridden = series.overridden.len();
 
     rsx! {
-        Panel { title: "Edit", icon: "sliders-horizontal",
+        Panel { title: "Edit", icon: "sliders-horizontal", id: "edit",
             DeviceSelect {}
             p { class: "px-note",
                 if preset_base.is_none() { "Custom settings for this series." }
@@ -393,6 +508,8 @@ fn SeriesPanel(on_add: EventHandler<()>) -> Element {
         Panel {
             title: "Series",
             icon: "book-open",
+            id: "series",
+            height: 150,
             actions: rsx! {
                 button { class: "btn ghost small", title: "Add another series to this export", onclick: move |_| on_add.call(()),
                     Icon { name: "plus", size: 14 } "Add"
@@ -465,11 +582,13 @@ fn ChaptersPanel() -> Element {
         .count();
     let all_on = included == series.chapters.len();
     let all_keys: Vec<String> = series.chapters.iter().map(|c| c.key.clone()).collect();
+    let shown = state.preview.read().chapter_key.clone();
 
     rsx! {
         Panel {
             title: "Chapters",
             icon: "list-checks",
+            id: "chapters",
             actions: rsx! { span { class: "muted small", "{included} of {series.chapters.len()}" } },
             label { class: "px-all",
                 input {
@@ -488,11 +607,13 @@ fn ChaptersPanel() -> Element {
                 for c in series.chapters.iter() {
                     {
                         let key = c.key.clone();
+                        let show_key = c.key.clone();
                         let on = !excluded.contains(&c.key);
+                        let showing = shown.as_deref() == Some(c.key.as_str());
                         rsx! {
-                            label { key: "{c.key}", class: if on { "px-chapter on" } else { "px-chapter" },
+                            div { key: "{c.key}", class: match (on, showing) { (true, true) => "px-chapter on showing", (true, false) => "px-chapter on", (false, true) => "px-chapter showing", _ => "px-chapter" },
                                 input {
-                                    r#type: "checkbox", checked: on,
+                                    r#type: "checkbox", checked: on, title: "Include this chapter in the export",
                                     onchange: move |_| {
                                         let mut plan = state.export_plan;
                                         let mut guard = plan.write();
@@ -501,8 +622,12 @@ fn ChaptersPanel() -> Element {
                                         }
                                     },
                                 }
-                                span { class: "px-chapter-no", { c.number.map(logic::format_number).unwrap_or_else(|| "–".into()) } }
-                                span { class: "grow px-chapter-name", title: "{c.name}", "{c.name}" }
+                                button {
+                                    class: "px-chapter-open", title: "Show this chapter in the preview",
+                                    onclick: move |_| switch_chapter(state, show_key.clone()),
+                                    span { class: "px-chapter-no", { c.number.map(logic::format_number).unwrap_or_else(|| "–".into()) } }
+                                    span { class: "grow px-chapter-name", title: "{c.name}", "{c.name}" }
+                                }
                                 span { class: "muted small", "{logic::human_bytes(c.bytes)}" }
                             }
                         }
@@ -531,7 +656,7 @@ fn SendPanel() -> Element {
     let every_n_valid = opts.every_n.trim().parse::<usize>().is_ok_and(|n| n >= 1);
 
     rsx! {
-        Panel { title: "Send to", icon: "file-down",
+        Panel { title: "Send to", icon: "file-down", id: "send", height: 330,
             div { class: "seg stack",
                 button {
                     class: if matches!(opts.target, TargetChoice::Folder) { "on" } else { "" },
@@ -635,7 +760,7 @@ fn ExportFooter() -> Element {
 
     let (mut series_count, mut chapters, mut pages, mut bytes) = (0usize, 0usize, 0usize, 0u64);
     for item in plan.items.iter().filter(|i| !i.off) {
-        let Some(series) = library.find(&item.series_id) else {
+        let Some(series) = library.find(&item.series_id).filter(|s| !s.is_sample()) else {
             continue;
         };
         let included: Vec<_> = series
@@ -666,7 +791,7 @@ fn ExportFooter() -> Element {
                 onclick: move |_| start_export_plan(state),
                 if exporting { Icon { name: "loader-circle", size: 18 } "Exporting…" }
                 else if busy { "Something else is running…" }
-                else if chapters == 0 { "Choose a chapter" }
+                else if chapters == 0 { "Nothing to export yet" }
                 else { Icon { name: "file-down", size: 18 } "Export {plural(series_count, \"series\")}" }
             }
         }
@@ -683,7 +808,7 @@ fn AddSeries(on_close: EventHandler<()>) -> Element {
     let available: Vec<&DownloadedSeries> = library
         .series
         .iter()
-        .filter(|s| !s.chapters.is_empty())
+        .filter(|s| !s.chapters.is_empty() && !s.is_sample())
         .filter(|s| !plan.items.iter().any(|i| i.series_id == s.id))
         .collect();
     rsx! {

@@ -1,6 +1,6 @@
 //! Tab 0: what the series is, and what you have of it.
 
-use crate::logic::{self, ago, describe_settings, human_bytes};
+use crate::logic::{ago, describe_settings, human_bytes};
 use crate::state::{now_secs, AppState};
 use crate::ui::widgets::{Chip, Cover, EmptyState, Icon};
 use crate::ui::work::{ensure_series_info, load_saved_cover, saved_cover_key};
@@ -31,18 +31,6 @@ pub fn OverviewTab() -> Element {
         };
     };
 
-    let range = logic::number_range(series.chapters.iter().map(|c| c.number));
-    let range_text = match range {
-        Some((lo, hi)) if lo != hi => {
-            format!(
-                "{} to {}",
-                logic::format_number(lo),
-                logic::format_number(hi)
-            )
-        }
-        Some((lo, _)) => logic::format_number(lo),
-        None => String::new(),
-    };
     // Chapters per source, most first.
     let mut per_source: Vec<(String, usize)> = Vec::new();
     for chapter in &series.chapters {
@@ -64,6 +52,11 @@ pub fn OverviewTab() -> Element {
         .collect::<Vec<_>>()
         .join(" · ");
 
+    // How many chapters the sources list, once their lists have loaded.
+    let total_chapters = match &*state.chapters.read() {
+        crate::state::ChaptersState::Ready(loaded) => Some(loaded.merged.len()),
+        _ => None,
+    };
     let info = series.info.clone();
     let loading = state.info_busy.read().contains(&ws.series_id);
     let cover_key = saved_cover_key(&series.id);
@@ -90,6 +83,10 @@ pub fn OverviewTab() -> Element {
                 if has_cover { Cover { key_id: cover_key } } else { div { class: "cover empty", "📖" } }
             }
             div { class: "overview-body",
+                div { class: "overview-title",
+                    h1 { "{series.title}" }
+                    super::SeriesActions { series_id: series.id.clone(), title: series.title.clone() }
+                }
                 div { class: "row wrap",
                     if let Some(i) = &info {
                         if !i.status.is_empty() { Chip { text: i.status.clone(), kind: Some("accent".to_string()) } }
@@ -125,11 +122,14 @@ pub fn OverviewTab() -> Element {
 
                 if series.chapters.is_empty() {
                     p { class: "muted", style: "margin: 14px 0 0",
-                        "Not downloaded yet. Use the Chapters tab to choose what to download."
+                        "Not downloaded yet. Tick chapters below to download them."
                     }
                 }
                 div { class: "facts",
-                    div { class: "summary-line", span { class: "muted", "Chapters" } span { "{series.chapters.len()}" if series.chapters.len() > 1 && !range_text.is_empty() { " (numbered {range_text})" } } }
+                    div { class: "summary-line", span { class: "muted", "Chapters" } span {
+                        "{series.chapters.len()} downloaded"
+                        if let Some(total) = total_chapters { " of {total}" }
+                    } }
                     div { class: "summary-line", span { class: "muted", "Pages" } span { "{series.page_count()}" } }
                     div { class: "summary-line", span { class: "muted", "On this computer" } span { "{human_bytes(series.bytes())}" } }
                     if !sources_text.is_empty() {

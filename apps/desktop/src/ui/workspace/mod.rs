@@ -8,7 +8,7 @@ pub(super) mod preview;
 
 use super::widgets::{cover_key, Chip, Cover, EmptyState, Icon};
 use super::work::{add_open_series_to_library, load_saved_cover, open_export, saved_cover_key};
-use crate::state::{AppState, Modal, ModalAction, Page, SeriesTab};
+use crate::state::{AppState, Modal, ModalAction, Page};
 use dioxus::prelude::*;
 
 #[component]
@@ -27,37 +27,17 @@ pub fn WorkspacePage() -> Element {
         };
     };
 
-    let (downloaded, library_bytes) = state
+    let downloaded = state
         .library
         .read()
         .find(&ws.series_id)
-        .map(|s| (s.chapters.len(), s.bytes()))
-        .unwrap_or((0, 0));
-    let selected = state.selected.read().len();
+        .map_or(0, |s| s.chapters.len());
+    let library_bytes = state
+        .library
+        .read()
+        .find(&ws.series_id)
+        .map_or(0, |s| s.bytes());
     let in_library = state.library.read().find(&ws.series_id).is_some();
-    let remove_body = if downloaded > 0 {
-        format!(
-            "{} and its {} downloaded chapters ({}) will be deleted from this computer. Files you already exported are kept. To keep it in the library, delete just the chapters on the Chapters tab.",
-            ws.title,
-            downloaded,
-            crate::logic::human_bytes(library_bytes)
-        )
-    } else {
-        format!(
-            "{} will be taken off your list. Nothing is stored on this computer for it.",
-            ws.title
-        )
-    };
-    let remove_modal = Modal {
-        title: format!("Remove {} from your library?", ws.title),
-        body: remove_body,
-        confirm: "Remove".into(),
-        cancel: "Keep".into(),
-        danger: true,
-        action: ModalAction::RemoveSeries {
-            series_ids: vec![ws.series_id.clone()],
-        },
-    };
 
     let back_label = if ws.origin == Page::Library {
         "Library"
@@ -98,9 +78,8 @@ pub fn WorkspacePage() -> Element {
             "{back_label}"
         }
         div { class: "spacer" }
-        div { class: "page-head",
-            // The Overview tab shows the cover large, so it is not repeated here.
-            if let Some(key) = cover.filter(|_| ws.tab != SeriesTab::Overview) {
+        if !in_library { div { class: "page-head",
+            if let Some(key) = cover {
                 div { style: "width: 72px; flex: none; border-radius: 8px; overflow: hidden", Cover { key_id: key } }
             }
             div { class: "grow",
@@ -118,66 +97,65 @@ pub fn WorkspacePage() -> Element {
                     }
                 }
             }
-            if downloaded > 0 {
-                button { class: "btn primary small", title: "Edit and export the chapters you have downloaded",
-                    onclick: {
-                        let id = ws.series_id.clone();
-                        move |_| open_export(state, vec![id.clone()])
-                    },
-                    Icon { name: "file-down", size: 15 } "Export…"
-                }
-            }
-            if in_library {
-                button { class: "btn small", title: "Remove it from your library",
-                    onclick: move |_| state.ask(remove_modal.clone()),
-                    Icon { name: "bookmark-check", size: 15 } "In your library"
-                }
-            } else {
-                button { class: "btn primary small", title: "Keep it in your library without downloading anything",
-                    onclick: move |_| add_open_series_to_library(state),
-                    Icon { name: "bookmark-plus", size: 15 } "Add to library"
-                }
-            }
-        }
+            SeriesActions { series_id: ws.series_id.clone(), title: ws.title.clone() }
+        } }
 
-        div { class: "tabs",
-            Tab { tab: SeriesTab::Overview, icon: "info", label: "Overview", active: ws.tab == SeriesTab::Overview,
-                blocked: if in_library { None } else { Some("Add this series to your library first") }, badge: None }
-            Tab { tab: SeriesTab::Chapters, icon: "list-checks", label: "Chapters", active: ws.tab == SeriesTab::Chapters,
-                blocked: None,
-                badge: (selected > 0).then(|| selected.to_string()).or_else(|| (downloaded > 0).then(|| downloaded.to_string())) }
-        }
-
-        {match ws.tab {
-            SeriesTab::Overview => rsx! { overview::OverviewTab {} },
-            SeriesTab::Chapters => rsx! { chapters::ChaptersTab {} },
-        }}
+        // The overview of a series in your library, and below it every chapter.
+        if in_library { overview::OverviewTab {} }
+        chapters::ChaptersTab {}
     }
 }
 
-/// One tab. A tab whose step cannot work yet is greyed out and says why.
+/// Add to the library, take out of it, and export: the buttons of a series.
 #[component]
-fn Tab(
-    tab: SeriesTab,
-    icon: &'static str,
-    label: &'static str,
-    active: bool,
-    blocked: Option<&'static str>,
-    badge: Option<String>,
-) -> Element {
+fn SeriesActions(series_id: String, title: String) -> Element {
     let state = use_context::<AppState>();
-    let class = if active { "tab on" } else { "tab" };
-    let hint = blocked.unwrap_or("");
+    let (downloaded, bytes) = state
+        .library
+        .read()
+        .find(&series_id)
+        .map_or((0, 0), |s| (s.chapters.len(), s.bytes()));
+    let in_library = state.library.read().find(&series_id).is_some();
+    let body = if downloaded > 0 {
+        format!(
+            "{title} and its {downloaded} downloaded chapters ({}) will be deleted from this computer. Files you already exported are kept. To keep it in the library, delete just the chapters from the list.",
+            crate::logic::human_bytes(bytes)
+        )
+    } else {
+        format!("{title} will be taken off your list. Nothing is stored on this computer for it.")
+    };
+    let remove_modal = Modal {
+        title: format!("Remove {title} from your library?"),
+        body,
+        confirm: "Remove".into(),
+        cancel: "Keep".into(),
+        danger: true,
+        action: ModalAction::RemoveSeries {
+            series_ids: vec![series_id.clone()],
+        },
+    };
     rsx! {
-        button {
-            class: "{class}",
-            disabled: blocked.is_some(),
-            title: "{hint}",
-            // The Preview tab prepares itself when it opens.
-            onclick: move |_| state.open_tab(tab),
-            Icon { name: icon, size: 16 }
-            span { "{label}" }
-            if let Some(b) = badge { span { class: "badge", "{b}" } }
+        div { class: "row wrap series-actions",
+            if downloaded > 0 {
+                button { class: "btn primary", title: "Edit and export the chapters you have downloaded",
+                    onclick: {
+                        let id = series_id.clone();
+                        move |_| open_export(state, vec![id.clone()])
+                    },
+                    Icon { name: "file-down", size: 16 } "Export…"
+                }
+            }
+            if in_library {
+                button { class: "btn", title: "Remove it from your library",
+                    onclick: move |_| state.ask(remove_modal.clone()),
+                    Icon { name: "bookmark-check", size: 16 } "In your library"
+                }
+            } else {
+                button { class: "btn primary", title: "Keep it in your library without downloading anything",
+                    onclick: move |_| add_open_series_to_library(state),
+                    Icon { name: "bookmark-plus", size: 16 } "Add to library"
+                }
+            }
         }
     }
 }

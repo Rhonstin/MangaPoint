@@ -84,12 +84,6 @@ pub enum SettingsSection {
 }
 
 /// The steps within an open series.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum SeriesTab {
-    Overview,
-    Chapters,
-}
-
 #[derive(Clone, PartialEq, Debug)]
 pub enum BootState {
     Starting {
@@ -183,7 +177,6 @@ pub struct Workspace {
     pub title: String,
     /// Present when opened from a search; needed to find more chapters.
     pub ranked: Option<RankedSeries>,
-    pub tab: SeriesTab,
     /// Where the back button goes.
     pub origin: Page,
 }
@@ -400,6 +393,8 @@ pub struct ExportItem {
     pub excluded: HashSet<String>,
     /// Switched off, a series stays in the list but is not exported.
     pub off: bool,
+    /// The chapter being previewed, kept for when the screen is opened again.
+    pub chapter: Option<String>,
 }
 
 /// The series being edited and exported together, and the one on screen.
@@ -555,13 +550,6 @@ impl AppState {
     }
 
     /// Switch tab within the open series.
-    pub fn open_tab(&self, tab: SeriesTab) {
-        let mut ws = self.workspace;
-        if let Some(w) = ws.write().as_mut() {
-            w.tab = tab;
-        };
-    }
-
     pub fn notify(&self, text: impl Into<String>) {
         let text = text.into();
         tracing::info!("{text}");

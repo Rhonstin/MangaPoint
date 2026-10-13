@@ -126,6 +126,7 @@ fn Shell() -> Element {
                 page: Page::Downloads, label: "Downloads", icon: "download",
                 badge: (in_queue > 0).then(|| in_queue.to_string()),
             }
+            NavItem { page: Page::Export, label: "Export", icon: "file-down" }
             div { class: "nav-spacer" }
             NavItem { page: Page::Sources, label: "Sources", icon: "layers" }
             NavItem { page: Page::Settings, label: "Settings", icon: "settings" }
@@ -164,7 +165,6 @@ fn NavItem(page: Page, label: &'static str, icon: &'static str, badge: Option<St
     let active = current == page
         || (page == Page::Search && current == Page::Series && !opened_from_library)
         || (page == Page::Library && current == Page::Series && opened_from_library)
-        || (page == Page::Library && current == Page::Export)
         || (page == Page::Sources && current == Page::Setup);
     let class = if active {
         "nav-item active"

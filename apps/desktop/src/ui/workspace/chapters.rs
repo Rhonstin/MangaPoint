@@ -272,15 +272,6 @@ pub fn ChaptersTab() -> Element {
                     span { class: "muted", "Nothing downloaded yet. Tick chapters and add them to the downloads." }
                 }
             }
-            if saved_count > 0 {
-                button { class: "btn primary",
-                    onclick: {
-                        let id = ws.series_id.clone();
-                        move |_| open_export(state, vec![id.clone()])
-                    },
-                    Icon { name: "file-down", size: 16 } "Export…"
-                }
-            }
             if working || failed_count > 0 {
                 button { class: "btn", onclick: move |_| state.go(Page::Downloads),
                     Icon { name: "download", size: 16 } "All downloads"

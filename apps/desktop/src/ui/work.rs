@@ -8,7 +8,7 @@ use crate::state::{
     apply_library_dirs, library_files, now_secs, paths, spawn_forever, AppState, ChaptersState,
     DownloadDialog, ExportItem, ExportOpts, ExportPlan, GroupingChoice, JobKind, JobView,
     LoadedChapters, Page, PendingDownload, PlanChapters, PlanEntry, PreviewPage, PreviewState,
-    SeriesTab, Shot, TableView, Workspace,
+    Shot, TableView, Workspace,
 };
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
@@ -55,7 +55,6 @@ pub fn open_series_from_search(state: AppState, ranked: RankedSeries) {
         series_id: series_id.clone(),
         title,
         ranked: Some(ranked.clone()),
-        tab: SeriesTab::Chapters,
         origin: Page::Search,
     }));
     let mut chapters = state.chapters;
@@ -97,7 +96,6 @@ pub fn open_series_from_library(state: AppState, series_id: &str) {
         series_id: series_id.to_string(),
         title,
         ranked: None,
-        tab: SeriesTab::Overview,
         origin: Page::Library,
     }));
     let mut chapters = state.chapters;
@@ -1593,6 +1591,22 @@ pub fn open_export(state: AppState, series_ids: Vec<String>) {
     state.go(Page::Export);
 }
 
+/// Open the Export screen on the sample pages, to look around and try presets,
+/// when nothing has been chosen to export.
+pub fn open_sample(state: AppState) {
+    let id = crate::sample::ensure_sample(state);
+    let mut plan = state.export_plan;
+    plan.set(ExportPlan {
+        items: vec![ExportItem {
+            series_id: id,
+            ..Default::default()
+        }],
+        active: 0,
+    });
+    activate_export_series(state, 0);
+    state.go(Page::Export);
+}
+
 /// Edit and preview this series of the Export screen's list.
 pub fn activate_export_series(state: AppState, index: usize) {
     let id = state
@@ -1602,6 +1616,7 @@ pub fn activate_export_series(state: AppState, index: usize) {
         .get(index)
         .map(|i| i.series_id.clone());
     let Some(id) = id else { return };
+    let series_id = id.clone();
     let title = ws_title(state, &id);
     let mut plan = state.export_plan;
     plan.write().active = index;
@@ -1611,7 +1626,6 @@ pub fn activate_export_series(state: AppState, index: usize) {
         series_id: id,
         title,
         ranked: None,
-        tab: SeriesTab::Chapters,
         origin: Page::Library,
     }));
     {
@@ -1625,6 +1639,21 @@ pub fn activate_export_series(state: AppState, index: usize) {
         p.window = (0, 0);
         p.draft_crop = None;
         p.shading_samples.clear();
+        // Back where it was, if the screen was left and opened again.
+        let remembered = state
+            .export_plan
+            .peek()
+            .items
+            .get(index)
+            .and_then(|i| i.chapter.clone());
+        let valid = remembered.filter(|key| {
+            state
+                .library
+                .peek()
+                .find(&series_id)
+                .is_some_and(|s| s.chapters.iter().any(|c| &c.key == key))
+        });
+        p.chapter_key = valid;
     }
     let mut draft = state.crop_draft;
     draft.set(library::CropRect::default());
@@ -1691,6 +1720,9 @@ pub fn start_export_plan(state: AppState) {
         .filter(|i| !i.off)
         .filter_map(|i| {
             let series = state.library.peek().find(&i.series_id).cloned()?;
+            if series.is_sample() {
+                return None;
+            }
             let keys: Vec<String> = series
                 .chapters
                 .iter()

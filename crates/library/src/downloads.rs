@@ -163,7 +163,16 @@ pub struct DownloadedSeries {
     pub updated_at: u64,
 }
 
+/// The title of the made-up series the Export screen shows when nothing has
+/// been chosen to export. It is kept out of the library's lists.
+pub const SAMPLE_TITLE: &str = "Sample pages";
+
 impl DownloadedSeries {
+    /// The made-up series of sample pages.
+    pub fn is_sample(&self) -> bool {
+        self.title == SAMPLE_TITLE
+    }
+
     pub fn bytes(&self) -> u64 {
         self.chapters.iter().map(|c| c.bytes).sum()
     }

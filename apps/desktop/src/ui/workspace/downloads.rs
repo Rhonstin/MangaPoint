@@ -3,7 +3,7 @@
 
 use crate::logic::{self, plural, ChapterStatus};
 use crate::queue::{BatchStatus, QueuedChapter};
-use crate::state::{AppState, Modal, ModalAction, Page, SeriesTab};
+use crate::state::{AppState, Modal, ModalAction, Page};
 use crate::ui::widgets::{Chip, EmptyState, Icon, ProgressBar};
 use crate::ui::work::{open_export, retry_batch};
 use dioxus::prelude::*;
@@ -111,10 +111,7 @@ pub fn DownloadsTab() -> Element {
         return rsx! {
             EmptyState {
                 title: "Nothing downloaded yet",
-                message: "Tick some chapters on the Chapters tab and add them to the downloads.",
-            }
-            div { style: "text-align: center",
-                button { class: "btn", onclick: move |_| state.open_tab(SeriesTab::Chapters), Icon { name: "list-checks", size: 16 } "Pick chapters" }
+                message: "Tick some chapters in the list and add them to the downloads.",
             }
         };
     }

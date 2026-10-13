@@ -4,6 +4,7 @@ mod assets;
 mod backend;
 mod logic;
 mod queue;
+mod sample;
 mod state;
 mod ui;
 
