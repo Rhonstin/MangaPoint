@@ -1,0 +1,22 @@
+.mp-download-section { margin: 24px 0; padding: 18px; background: #141a22; border: 1px solid #303945; border-radius: 12px; }
+.mp-download-section-title { font-size: 1rem; letter-spacing: -.01em; margin: 0 0 14px; }
+.mp-download-empty { color: #aab6c5; font-size: .88rem; margin: 0; line-height: 1.5; }
+.mp-download-row { min-height: 86px; padding: 15px 14px; border: 1px solid #313c4b; border-radius: 9px; background: #1b232e; margin: 8px 0; }
+.mp-download-row.running { background: #1c293b; border-color: #49658a; }
+.mp-download-row .q-name { line-height: 1.4; }.mp-download-row .muted { color: #b1bdcd; }.mp-download-row .q-actions { align-self: center; }
+.mp-saved-download { display: flex; align-items: center; gap: 14px; }
+.mp-download-symbol { width: 42px; height: 52px; display: grid; place-items: center; flex: none; border: 1px solid #45566d; border-radius: 6px; background: #253349; color: #a5c8fa; }
+.mp-download-meta { color: #adb9ca; font-size: .83rem; margin-top: 5px; }.mp-download-size { color: #bdc8d7; width: 82px; text-align: right; flex: none; font-variant-numeric: tabular-nums; }
+.mp-export-record { padding: 15px; margin: 8px 0; background: #1b232e; border: 1px solid #313c4b; border-radius: 9px; min-height: 86px; }
+.mp-export-record .muted { color: #aebbcf; }.mp-export-file { display: flex; align-items: center; gap: 10px; font-size: .82rem; padding-top: 11px; margin-top: 10px; border-top: 1px solid #354152; }
+.mp-download-history summary { cursor: pointer; color: #b6c5d9; font-size: .9rem; }.mp-download-history[open] summary { margin-bottom: 12px; }
+.mp-download-tab-head { padding: 14px; background: #18212e; border: 1px solid #354152; border-radius: 9px; }
+.mp-chapter-downloads { background: #19212c; border-color: #354152; }.mp-chapter-downloads table.chapters td { height: 57px; padding-top: 12px; padding-bottom: 12px; vertical-align: middle; }
+.mp-chapter-downloads .date { color: #bec9da; font-variant-numeric: tabular-nums; }.mp-chapter-downloads .status { min-width: 138px; }
+@media (max-width: 850px) { .mp-saved-download { flex-wrap: wrap; }.mp-saved-download .grow { min-width: 150px; }.mp-saved-download .btn { margin-left: auto; }.mp-download-section { padding: 13px; }.mp-download-size { width: auto; }.mp-export-file { flex-wrap: wrap; }.mp-export-file .grow { flex-basis: 100%; } }
+.mp-download-section .mp-download-row { border: 1px solid #313c4b; padding: 15px 14px; }
+.mp-download-section .mp-download-row.running { border-color: #49658a; }
+.mp-download-row .q-cover, .mp-download-row.running .q-cover { width: 42px; }
+.mp-download-section .q-title { margin: 13px 0 7px; font-size: .82rem; color: #b6c5d9; }
+.mp-download-row .q-actions { flex-wrap: wrap; justify-content: flex-end; max-width: 230px; }
+@media (max-width: 750px) { .mp-download-row.q-row { flex-wrap: wrap; }.mp-download-row .q-actions { width: 100%; max-width: none; }.mp-download-row .q-main { min-width: 150px; } }

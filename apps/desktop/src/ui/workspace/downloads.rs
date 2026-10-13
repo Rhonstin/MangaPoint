@@ -156,7 +156,7 @@ pub fn DownloadsTab() -> Element {
         .collect();
 
     rsx! {
-        div { class: "row wrap",
+        div { class: "row wrap mp-download-tab-head",
             div { class: "grow",
                 strong { "{saved_count} downloaded" }
                 span { class: "muted", " · {logic::human_bytes(saved_bytes)} on this computer" }
@@ -164,7 +164,7 @@ pub fn DownloadsTab() -> Element {
             }
             if saved_count > 0 {
                 button { class: "btn", onclick: move |_| { state.open_tab(SeriesTab::Preview); prepare_preview(state); },
-                    Icon { name: "eye", size: 16 } "Preview"
+                    Icon { name: "eye", size: 16 } "Open in editor"
                 }
             }
             if working || failed_count > 0 {
@@ -197,7 +197,7 @@ pub fn DownloadsTab() -> Element {
                 }
             }
         }
-        div { class: "table-wrap", style: "margin-top: 14px",
+        div { class: "table-wrap mp-chapter-downloads", style: "margin-top: 14px",
             div { class: "table-scroll",
                 table { class: "chapters",
                     thead { tr {
@@ -240,17 +240,17 @@ fn DownloadRow(
 ) -> Element {
     let state = use_context::<AppState>();
     let chip = match status {
-        ChapterStatus::Saved => rsx! { Chip { text: "downloaded", kind: Some("ok".to_string()) } },
+        ChapterStatus::Saved => rsx! { Chip { text: "Downloaded", kind: Some("ok".to_string()) } },
         ChapterStatus::Downloading => {
             let text = match progress {
-                Some((done, total)) if total > 0 => format!("{done} / {total} pages"),
-                _ => "starting…".to_string(),
+                Some((done, total)) if total > 0 => format!("Downloading · {done} / {total}"),
+                _ => "Downloading…".to_string(),
             };
             rsx! { Chip { text, kind: Some("accent".to_string()) } }
         }
-        ChapterStatus::Waiting => rsx! { Chip { text: "waiting" } },
+        ChapterStatus::Waiting => rsx! { Chip { text: "Queued" } },
         ChapterStatus::Failed => {
-            rsx! { Chip { text: "couldn't download", kind: Some("bad".to_string()) } }
+            rsx! { Chip { text: "Failed", kind: Some("bad".to_string()) } }
         }
     };
     let delete_name = name.clone();

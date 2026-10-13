@@ -75,6 +75,18 @@ pub(crate) fn fingerprint(
     Ok(hash.finalize().into())
 }
 
+/// Empty crop configuration retains existing uncropped cache compatibility.
+pub(crate) fn with_crops(source: [u8; 32], configuration: &[u8]) -> [u8; 32] {
+    if configuration.is_empty() {
+        return source;
+    }
+    let mut hash = Sha256::new();
+    hash.update(b"manual-crop-v1");
+    hash.update(source);
+    hash.update(configuration);
+    hash.finalize().into()
+}
+
 pub(crate) fn load(
     path: &Path,
     fingerprint: &[u8; 32],

@@ -32,6 +32,9 @@ pub use plan::{
     apply_choice, coverage, rank_sources, top_tier, Chosen, RankedSource, SourceChoice,
 };
 pub use preview::{
+    crop_page_key, levels_to_thumbnail, render_planned_with_crop, render_source_preview,
+};
+pub use preview::{
     decode_page, levels_to_previews, prepare_chapter, render_gray, render_levels, render_original,
     render_page, render_planned, render_strip_original, sample_page, ChapterPreview,
     OriginalPreview, PreviewImage, RenderedPage,

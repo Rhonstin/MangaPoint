@@ -36,7 +36,7 @@ pub enum Part {
     Whole,
     /// Turned a quarter turn clockwise to use the screen's full height.
     Rotated,
-    /// One half of a spread: 0 is the half read first.
+    /// A physical spread half: 0 is left, 1 is right, independent of reading direction.
     Half(u8),
 }
 
@@ -264,6 +264,9 @@ fn plan_paged(images: &[GrayImage], opts: &ProcessOptions) -> ChapterPlan {
             match opts.spread {
                 SpreadMode::Fit => &[Part::Whole],
                 SpreadMode::Rotate => &[Part::Rotated],
+                SpreadMode::Split if opts.direction == ReadDirection::RightToLeft => {
+                    &[Part::Half(1), Part::Half(0)]
+                }
                 SpreadMode::Split => &[Part::Half(0), Part::Half(1)],
             }
         };
@@ -375,11 +378,7 @@ fn paged_screen(img: &GrayImage, part: Part, opts: &ProcessOptions) -> GrayImage
             let mid = spine(img);
             let left = crop_rect(img, 0, 0, mid, img.height);
             let right = crop_rect(img, mid, 0, img.width - mid, img.height);
-            let first_is_right = opts.direction == ReadDirection::RightToLeft;
-            let half = match (n, first_is_right) {
-                (0, true) | (1, false) => right,
-                _ => left,
-            };
+            let half = if n == 1 { right } else { left };
             fit(&half, opts.width, opts.height)
         }
     }
@@ -453,17 +452,18 @@ pub fn original_rows(prepared: &Prepared, page: &PlannedPage) -> Option<GrayImag
 pub fn convert_chapter(images: &[GrayImage], opts: &ProcessOptions) -> Vec<LevelImage> {
     let prepared = prepare(images, opts);
     let plan = plan(&prepared, opts);
-    render_all(&prepared, &plan.pages, opts)
+    render_all_cropped(&prepared, &plan.pages, opts, &[])
 }
 
 /// Render pages, using every core of the machine: each page is independent,
 /// and resizing, contrast and dithering are most of an export's time. The
 /// pages come back in order.
 #[cfg(not(target_arch = "wasm32"))]
-fn render_all(
+pub fn render_all_cropped(
     prepared: &Prepared,
     pages: &[PlannedPage],
     opts: &ProcessOptions,
+    crops: &[[f32; 4]],
 ) -> Vec<LevelImage> {
     use std::sync::atomic::{AtomicUsize, Ordering};
     let workers = std::thread::available_parallelism()
@@ -472,7 +472,15 @@ fn render_all(
     if workers <= 1 {
         return pages
             .iter()
-            .map(|page| render_page(prepared, page, opts))
+            .enumerate()
+            .map(|(i, page)| {
+                render_page_cropped(
+                    prepared,
+                    page,
+                    opts,
+                    crops.get(i).copied().unwrap_or([0.0; 4]),
+                )
+            })
             .collect();
     }
     let next = AtomicUsize::new(0);
@@ -485,7 +493,15 @@ fn render_all(
                     loop {
                         let i = next.fetch_add(1, Ordering::Relaxed);
                         let Some(page) = pages.get(i) else { break };
-                        done.push((i, render_page(prepared, page, opts)));
+                        done.push((
+                            i,
+                            render_page_cropped(
+                                prepared,
+                                page,
+                                opts,
+                                crops.get(i).copied().unwrap_or([0.0; 4]),
+                            ),
+                        ));
                     }
                     done
                 })
@@ -505,14 +521,23 @@ fn render_all(
 
 /// The website runs on one thread.
 #[cfg(target_arch = "wasm32")]
-fn render_all(
+pub fn render_all_cropped(
     prepared: &Prepared,
     pages: &[PlannedPage],
     opts: &ProcessOptions,
+    crops: &[[f32; 4]],
 ) -> Vec<LevelImage> {
     pages
         .iter()
-        .map(|page| render_page(prepared, page, opts))
+        .enumerate()
+        .map(|(i, page)| {
+            render_page_cropped(
+                prepared,
+                page,
+                opts,
+                crops.get(i).copied().unwrap_or([0.0; 4]),
+            )
+        })
         .collect()
 }
 
@@ -684,4 +709,156 @@ mod tests {
         .unwrap();
         assert_eq!(spine(&solid), 500, "no gap: the middle");
     }
+}
+
+#[cfg(test)]
+mod manual_crop_tests {
+    use super::*;
+    use crate::{Depth, Dither};
+    #[test]
+    fn manual_crop_uses_source_before_fit_and_zero_preserves_pixels() {
+        for layout in [Layout::Manga, Layout::Webtoon] {
+            let mut o = ProcessOptions::manga_default(40, 60, Depth::Two);
+            o.layout = layout;
+            o.crop = CropMode::Full;
+            o.auto_levels = false;
+            o.contrast = 50;
+            o.dither = Dither::Threshold;
+            let source = GrayImage::from_fn(40, 100, |x, _| if x < 20 { 0 } else { 170 }).unwrap();
+            let prepared = prepare(&[source], &o);
+            let p = plan(&prepared, &o);
+            let page = &p.pages[0];
+            assert_eq!(
+                render_page_cropped(&prepared, page, &o, [0.0; 4]),
+                render_page(&prepared, page, &o)
+            );
+            let section = page_source(&prepared, page, &o);
+            let expected = crop_rect(&section, 20, section.height / 2, 20, section.height / 2);
+            let screen = if layout == Layout::Webtoon {
+                let scale = (40.0 / expected.width as f64).min(60.0 / expected.height as f64);
+                let fitted = resize(
+                    &expected,
+                    (expected.width as f64 * scale).round() as u32,
+                    (expected.height as f64 * scale).round() as u32,
+                );
+                letterbox_top(&fitted, 40, 60)
+            } else {
+                fit(&expected, 40, 60)
+            };
+            assert_eq!(
+                render_page_cropped(&prepared, page, &o, [0.5, 0.5, 0.0, 0.0]),
+                finish(screen, &o)
+            );
+        }
+    }
+    #[test]
+    fn spread_source_sections_and_rotation_match_displayed_parts() {
+        let mut o = ProcessOptions::manga_default(40, 60, Depth::Two);
+        o.layout = Layout::Manga;
+        o.crop = CropMode::Full;
+        let source = GrayImage::from_fn(80, 40, |x, _| if x < 40 { 0 } else { 255 }).unwrap();
+        let prepared = prepare(&[source], &o);
+        let p = plan(&prepared, &o);
+        assert_eq!(page_source(&prepared, &p.pages[0], &o).get(10, 10), 255);
+        assert_eq!(page_source(&prepared, &p.pages[1], &o).get(10, 10), 0);
+        let right = p.pages[0].clone();
+        o.direction = ReadDirection::LeftToRight;
+        let reversed = plan(&prepared, &o);
+        assert_eq!(
+            right.source, reversed.pages[1].source,
+            "source identity follows artwork when direction changes"
+        );
+        assert_eq!(page_source(&prepared, &right, &o).get(10, 10), 255);
+        o.spread = SpreadMode::Rotate;
+        let p = plan(&prepared, &o);
+        let rotated = page_source(&prepared, &p.pages[0], &o);
+        assert_eq!((rotated.width, rotated.height), (40, 80));
+        assert_eq!(rotated.get(10, 10), 0);
+        for mode in [SpreadMode::Split, SpreadMode::Rotate, SpreadMode::Fit] {
+            o.spread = mode;
+            let pages = plan(&prepared, &o);
+            for page in &pages.pages {
+                let source = page_source(&prepared, page, &o);
+                let x = source.width / 4;
+                let y = source.height / 4;
+                let cut = crop_rect(&source, x, y, source.width - x, source.height - y);
+                assert_eq!(
+                    render_page_cropped(&prepared, page, &o, [0.25, 0.25, 0.0, 0.0]),
+                    finish(fit(&cut, o.width, o.height), &o)
+                );
+            }
+        }
+    }
+}
+
+/// Prepared section before fitting or tone adjustment, including the selected spread part.
+pub fn page_source(prepared: &Prepared, page: &PlannedPage, _opts: &ProcessOptions) -> GrayImage {
+    match (&prepared.kind, page.source) {
+        (Kind::Strip(strip), Source::Strip { top, height }) => strip_rows(strip, top, height),
+        (Kind::Paged(images), Source::Image { index, part }) => {
+            let img = &images[index];
+            match part {
+                Part::Whole => img.clone(),
+                Part::Rotated => rotate_cw(img),
+                Part::Half(n) => {
+                    let mid = spine(img);
+                    let right = n == 1;
+                    if right {
+                        crop_rect(img, mid, 0, img.width - mid, img.height)
+                    } else {
+                        crop_rect(img, 0, 0, mid, img.height)
+                    }
+                }
+            }
+        }
+        _ => unreachable!("a plan belongs to its prepared chapter"),
+    }
+}
+
+/// Remove source-edge fractions before fitting and finishing. Zero retains the fast original path.
+pub fn render_page_cropped(
+    prepared: &Prepared,
+    page: &PlannedPage,
+    opts: &ProcessOptions,
+    crop: [f32; 4],
+) -> LevelImage {
+    let mut c = crop.map(|v| {
+        if v.is_finite() {
+            v.clamp(0.0, 0.99)
+        } else {
+            0.0
+        }
+    });
+    for (a, b) in [(0, 2), (1, 3)] {
+        let sum = c[a] + c[b];
+        if sum > 0.99 {
+            c[a] *= 0.99 / sum;
+            c[b] *= 0.99 / sum;
+        }
+    }
+    if c == [0.0; 4] {
+        return render_page(prepared, page, opts);
+    }
+    let source = page_source(prepared, page, opts);
+    let x = ((source.width as f32 * c[0]).floor() as u32).min(source.width - 1);
+    let y = ((source.height as f32 * c[1]).floor() as u32).min(source.height - 1);
+    let w = source
+        .width
+        .saturating_sub(x + (source.width as f32 * c[2]).floor() as u32)
+        .max(1);
+    let h = source
+        .height
+        .saturating_sub(y + (source.height as f32 * c[3]).floor() as u32)
+        .max(1);
+    let cut = crop_rect(&source, x, y, w, h);
+    let screen = if matches!(page.source, Source::Strip { .. }) {
+        let scale =
+            (opts.width as f64 / cut.width as f64).min(opts.height as f64 / cut.height as f64);
+        let w = (cut.width as f64 * scale).round().max(1.0) as u32;
+        let h = (cut.height as f64 * scale).round().max(1.0) as u32;
+        letterbox_top(&resize(&cut, w, h), opts.width, opts.height)
+    } else {
+        fit(&cut, opts.width, opts.height)
+    };
+    finish(screen, opts)
 }

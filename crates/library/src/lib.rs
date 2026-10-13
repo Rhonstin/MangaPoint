@@ -34,3 +34,5 @@ pub use settings::{
 };
 pub use sources::{Choice, SourceState};
 pub use speeds::{SourceSpeed, SpeedDb};
+pub mod crops;
+pub use crops::{CropOverrides, CropRect, CropScope};

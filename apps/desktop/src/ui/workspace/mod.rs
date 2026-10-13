@@ -1,6 +1,7 @@
 //! One series, worked through in steps: Chapters, Downloads, Preview, Export.
 
 mod chapters;
+mod crop_editor;
 mod downloads;
 mod export;
 mod overview;

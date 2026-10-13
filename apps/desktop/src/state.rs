@@ -284,6 +284,8 @@ pub struct PreviewView {
     pub show_original: bool,
     /// Draw the cropped-away area on the original.
     pub show_crop: bool,
+    pub editing_crop: bool,
+    pub source_focus: bool,
 }
 
 impl Default for PreviewView {
@@ -293,18 +295,19 @@ impl Default for PreviewView {
             focus: false,
             show_original: true,
             show_crop: true,
+            editing_crop: false,
+            source_focus: false,
         }
     }
 }
 
 /// One page of the chapter's plan, as the Preview tab shows it.
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Default, PartialEq)]
 pub struct PreviewPage {
     /// The page as it will appear on the reader; `None` until it is drawn.
     pub shot: Option<Shot>,
-    /// The downloaded picture this page comes from: the whole image for a
-    /// paged chapter, the rows of the joined strip for a webtoon. Only the
-    /// first page of a split double page carries it.
+    pub thumbnail: Option<Shot>,
+    /// The exact source section: whole image, physical spread half, or joined strip rows.
     pub original: Option<Shot>,
     /// The part of the original the conversion keeps (left, top, width,
     /// height as fractions); paged chapters only.
@@ -312,6 +315,9 @@ pub struct PreviewPage {
     /// The page's image, for a paged chapter. A split double page is two pages
     /// from one image.
     pub image: Option<usize>,
+    pub crop_key: String,
+    pub source: Option<converter::PlannedPage>,
+    pub generation: u64,
 }
 
 /// What the Preview tab is showing: every page of one chapter.
@@ -333,6 +339,12 @@ pub struct PreviewState {
     pub error: Option<String>,
     /// Bumped on every change so an older render never overwrites a newer one.
     pub generation: u64,
+    pub selected: usize,
+    pub thumb_start: usize,
+    pub overview: bool,
+    /// An unsaved crop projected only on the selected source section.
+    pub draft_crop: Option<(String, library::CropRect)>,
+    pub shading_samples: Vec<String>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

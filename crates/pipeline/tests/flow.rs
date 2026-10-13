@@ -1363,3 +1363,61 @@ async fn chapters_start_only_when_their_sources_line_has_room() {
     assert!(position("start 2") < position("done 1"), "{order:?}");
     let _ = fs::remove_dir_all(lib.root);
 }
+
+#[tokio::test]
+async fn manual_crop_persists_matches_export_and_invalidates_only_affected_cache() {
+    use library::{CropRect, CropScope};
+    let (lib, series) = three_chapters("manual-crop-export").await;
+    let mut j = job(&lib, &series, Grouping::Single);
+    export(&lib, &j).await.unwrap();
+    let path = lib.files.page_path(&lib.id, "c2", 0);
+    let original = fs::read(&path).unwrap();
+    let opts = process_options_for(&j.device, &j.series.settings);
+    let chapter = pipeline::prepare_chapter(&[decode_to_gray(&original).unwrap()], &opts);
+    let page = &chapter.plan.pages[0];
+    let crop = CropRect {
+        left: 0.2,
+        top: 0.1,
+        ..Default::default()
+    };
+    j.series.crops.set(
+        CropScope::Page,
+        "c2",
+        &pipeline::crop_page_key(page),
+        Some(crop),
+    );
+    j.series = serde_json::from_str(&serde_json::to_string(&j.series).unwrap()).unwrap();
+    let out = export(&lib, &j).await.unwrap();
+    assert_eq!(out.cached_chapters, 2);
+    let bytes = fs::read(&out.files[0].location).unwrap();
+    let file = XtcFile::parse(&bytes).unwrap();
+    let actual = file.decode_page(3).unwrap().image;
+    let expected =
+        converter::plan::render_page_cropped(&chapter.prepared, page, &opts, crop.as_array());
+    assert_eq!(actual, expected);
+    let preview = pipeline::render_planned_with_crop(&chapter.prepared, page, &opts, Some(crop));
+    assert_eq!(preview, pipeline::levels_to_previews(&[actual])[0]);
+    assert_eq!(fs::read(&path).unwrap(), original);
+    assert_eq!(export(&lib, &j).await.unwrap().cached_chapters, 3);
+    j.series
+        .crops
+        .set(CropScope::Page, "c2", &pipeline::crop_page_key(page), None);
+    assert_eq!(export(&lib, &j).await.unwrap().cached_chapters, 2);
+    j.series.crops.set(CropScope::Chapter, "c2", "", Some(crop));
+    assert_eq!(export(&lib, &j).await.unwrap().cached_chapters, 2);
+    j.series.crops.set(
+        CropScope::Series,
+        "",
+        "",
+        Some(CropRect {
+            right: 0.1,
+            ..Default::default()
+        }),
+    );
+    assert_eq!(
+        export(&lib, &j).await.unwrap().cached_chapters,
+        1,
+        "chapter override masks series changes"
+    );
+    let _ = fs::remove_dir_all(lib.root);
+}

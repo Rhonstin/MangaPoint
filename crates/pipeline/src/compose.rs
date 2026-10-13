@@ -210,6 +210,7 @@ pub async fn export_series(
                     chapter,
                     opts,
                     settings,
+                    &job.series.crops,
                     job.force_conversion,
                     decode_slots,
                     ci,
@@ -385,6 +386,7 @@ async fn convert_chapter(
     chapter: &DownloadedChapter,
     opts: &ProcessOptions,
     settings: &library::ConversionSettings,
+    crops: &library::CropOverrides,
     force_conversion: bool,
     decode_slots: &Semaphore,
     chapter_index: usize,
@@ -409,6 +411,8 @@ async fn convert_chapter(
         cancel.clone(),
     );
     let (width, height, format) = (opts.width, opts.height, settings.format);
+    let crop_configuration = crops.chapter_configuration(&chapter.key);
+    let lookup_crops = crop_configuration.clone();
     // A first export has no cache to look up. Hash its decoded snapshot
     // below instead of reading every source twice just to establish a miss.
     let cached = if !force_conversion && cache_path.is_file() {
@@ -420,6 +424,7 @@ async fn convert_chapter(
                 height,
                 &flag,
             )?;
+            let fingerprint = conversion_cache::with_crops(fingerprint, &lookup_crops);
             Ok::<_, PipelineError>(conversion_cache::load(
                 &cache,
                 &fingerprint,
@@ -487,6 +492,8 @@ async fn convert_chapter(
     let opts = opts.clone();
     let cancel = cancel.clone();
     let settings = settings.clone();
+    let crops = crops.clone();
+    let chapter_key = chapter.key.clone();
     let packed = tokio::task::spawn_blocking(move || {
         let fingerprint = conversion_cache::fingerprint_bytes(
             decoded.iter().map(|(_, _, bytes)| bytes.as_slice()),
@@ -494,8 +501,25 @@ async fn convert_chapter(
             opts.width,
             opts.height,
         );
+        let fingerprint = conversion_cache::with_crops(fingerprint, &crop_configuration);
         let grays: Vec<_> = decoded.into_iter().map(|(_, gray, _)| gray).collect();
-        let images = converter::plan::convert_chapter(&grays, &opts);
+        let images = if crop_configuration.is_empty() {
+            converter::plan::convert_chapter(&grays, &opts)
+        } else {
+            let prepared = converter::plan::prepare(&grays, &opts);
+            let plan = converter::plan::plan(&prepared, &opts);
+            let cuts: Vec<_> = plan
+                .pages
+                .iter()
+                .map(|page| {
+                    crops
+                        .effective(&chapter_key, &crate::preview::crop_page_key(page))
+                        .unwrap_or_default()
+                        .as_array()
+                })
+                .collect();
+            converter::plan::render_all_cropped(&prepared, &plan.pages, &opts, &cuts)
+        };
         let mut packed = Vec::with_capacity(images.len());
         for image in images {
             if cancel.is_cancelled() {

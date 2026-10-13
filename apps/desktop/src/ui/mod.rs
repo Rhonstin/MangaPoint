@@ -57,6 +57,9 @@ pub fn App() -> Element {
     let boot = state.boot.read().clone();
     rsx! {
         style { "{CSS}" }
+        style { {include_str!("../page-editor.css")} }
+        style { {include_str!("../editor-controls.css")} }
+        style { {include_str!("../download-ui.css")} }
         div { class: "app",
             {match boot {
                 BootState::Starting { message, percent } => rsx! { Splash { message, percent } },

@@ -28,6 +28,10 @@ pub fn ConversionControls(
     value: ConversionSettings,
     onchange: EventHandler<ConversionSettings>,
     compact: Option<bool>,
+    shading_samples: Option<Vec<String>>,
+    on_manual_crop: Option<EventHandler<()>>,
+    manual_crop_active: Option<bool>,
+    on_crop_mode: Option<EventHandler<CropMode>>,
 ) -> Element {
     let compact = compact.unwrap_or(false);
     let state = use_context::<AppState>();
@@ -49,13 +53,6 @@ pub fn ConversionControls(
         move |e: Event<FormData>| ch(edit, e.checked().to_string())
     };
 
-    let on_layout = on(|s, v| {
-        s.layout = match v.as_str() {
-            "pages" => Layout::Manga,
-            "strip" => Layout::Webtoon,
-            _ => Layout::Auto,
-        }
-    });
     let on_format = on(|s, v| {
         s.format = if v == "xtc" {
             Format::Xtc
@@ -63,38 +60,9 @@ pub fn ConversionControls(
             Format::Xtch
         }
     });
-    let on_direction = on(|s, v| {
-        s.direction = if v == "ltr" {
-            ReadDirection::LeftToRight
-        } else {
-            ReadDirection::RightToLeft
-        }
-    });
-    let on_spread = on(|s, v| {
-        s.spread = match v.as_str() {
-            "fit" => SpreadMode::Fit,
-            "rotate" => SpreadMode::Rotate,
-            _ => SpreadMode::Split,
-        }
-    });
     let on_overlap = on(|s, v| s.overlap_percent = number(&v, 8, 30));
     let on_contrast = on(|s, v| s.contrast = number(&v, 55, 100));
-    let on_dither = on(|s, v| {
-        s.dither = match v.as_str() {
-            "atkinson" => Dither::Atkinson,
-            "ordered" => Dither::Ordered,
-            "none" => Dither::Threshold,
-            _ => Dither::FloydSteinberg,
-        }
-    });
     let on_levels = on_check(|s, v| s.auto_levels = v == "true");
-    let on_trim = on_check(|s, v| {
-        s.crop = if v == "true" {
-            CropMode::Margins
-        } else {
-            CropMode::Full
-        }
-    });
     let on_sensitivity = on(|s, v| s.trim_sensitivity = number(&v, 50, 100));
     let on_padding = on(|s, v| s.trim_padding = number(&v, 4, 40));
     let on_top = on(|s, v| s.margins.top = percent(&v));
@@ -111,74 +79,190 @@ pub fn ConversionControls(
     };
     let trimming = c.crop == CropMode::Margins;
     let strips = c.layout != Layout::Manga;
-    let layout_value = match c.layout {
-        Layout::Auto => "auto",
-        Layout::Manga => "pages",
-        Layout::Webtoon => "strip",
+    let mut manual_local = use_signal(|| false);
+    let manual = manual_crop_active.unwrap_or(*manual_local.read()) || !c.margins.is_none();
+    let choices = |items: Vec<(&str, &str, &str, bool)>,
+                   edit: Edit,
+                   samples: Option<Vec<String>>| {
+        items.into_iter().enumerate().map(|(i,(label,hint,diagram,selected))| {
+            let ch = change.clone();
+            let raw = diagram.to_string();
+            let sample = samples.as_ref().and_then(|s| s.get(i)).cloned();
+            rsx! { VisualChoice { label, hint, diagram, selected, sample, onclick: move |_| ch(edit, raw.clone()) } }
+        }).collect::<Vec<Element>>()
     };
+    let layout_tiles = choices(
+        vec![
+            (
+                "Automatic",
+                "Detect each image",
+                "auto",
+                c.layout == Layout::Auto,
+            ),
+            (
+                "Manga pages",
+                "One image per page",
+                "pages",
+                c.layout == Layout::Manga,
+            ),
+            (
+                "Long strip",
+                "Screen-sized slices",
+                "strip",
+                c.layout == Layout::Webtoon,
+            ),
+        ],
+        |s, v| {
+            s.layout = match v.as_str() {
+                "pages" => Layout::Manga,
+                "strip" => Layout::Webtoon,
+                _ => Layout::Auto,
+            }
+        },
+        None,
+    );
+    let spread_tiles = choices(
+        vec![
+            (
+                "Split",
+                "Two reader pages",
+                "split",
+                c.spread == SpreadMode::Split,
+            ),
+            (
+                "Rotate",
+                "Turn sideways",
+                "rotate",
+                c.spread == SpreadMode::Rotate,
+            ),
+            (
+                "Fit",
+                "Keep spread together",
+                "fit",
+                c.spread == SpreadMode::Fit,
+            ),
+        ],
+        |s, v| {
+            s.spread = match v.as_str() {
+                "rotate" => SpreadMode::Rotate,
+                "fit" => SpreadMode::Fit,
+                _ => SpreadMode::Split,
+            }
+        },
+        None,
+    );
+    let direction_tiles = choices(
+        vec![
+            (
+                "Right to left",
+                "Manga",
+                "rtl",
+                c.direction == ReadDirection::RightToLeft,
+            ),
+            (
+                "Left to right",
+                "Comics / manhwa",
+                "ltr",
+                c.direction == ReadDirection::LeftToRight,
+            ),
+        ],
+        |s, v| {
+            s.direction = if v == "ltr" {
+                ReadDirection::LeftToRight
+            } else {
+                ReadDirection::RightToLeft
+            }
+        },
+        None,
+    );
+    let shade_tiles = choices(
+        vec![
+            (
+                "Smooth",
+                "Floyd-Steinberg",
+                "smooth",
+                c.dither == Dither::FloydSteinberg,
+            ),
+            (
+                "High contrast",
+                "Atkinson",
+                "atkinson",
+                c.dither == Dither::Atkinson,
+            ),
+            (
+                "Patterned",
+                "Ordered",
+                "ordered",
+                c.dither == Dither::Ordered,
+            ),
+            (
+                "None",
+                "Crisp line art",
+                "none",
+                c.dither == Dither::Threshold,
+            ),
+        ],
+        |s, v| {
+            s.dither = match v.as_str() {
+                "atkinson" => Dither::Atkinson,
+                "ordered" => Dither::Ordered,
+                "none" => Dither::Threshold,
+                _ => Dither::FloydSteinberg,
+            }
+        },
+        shading_samples,
+    );
+    let keep = change.clone();
+    let trim = change.clone();
+    let reset = change.clone();
 
     rsx! {
-        div { class: "{class}",
+        div { class: "{class} mp-conversion",
             h3 { class: "group", "Layout" }
-            div { class: "field",
-                label { "Page layout" }
-                select { value: "{layout_value}", onchange: on_layout,
-                    option { value: "auto", selected: c.layout == Layout::Auto, "Automatic" }
-                    option { value: "pages", selected: c.layout == Layout::Manga, "Pages" }
-                    option { value: "strip", selected: c.layout == Layout::Webtoon, "Long strips (webtoon)" }
-                }
-                span { class: "hint muted small",
-                    match c.layout {
-                        Layout::Auto => "Very tall images become strips, everything else stays a page.",
-                        Layout::Manga => "Every image is shown as one page.",
-                        Layout::Webtoon => "Tall images are cut into screen-sized slices.",
-                    }
-                }
-            }
-            div { class: "field",
-                label { "Reading direction" }
-                select { onchange: on_direction,
-                    option { value: "rtl", selected: c.direction == ReadDirection::RightToLeft, "Right to left (manga)" }
-                    option { value: "ltr", selected: c.direction == ReadDirection::LeftToRight, "Left to right (comics, manhwa)" }
-                }
-            }
-            div { class: "field",
-                label { "Double-page spreads" }
-                select { onchange: on_spread,
-                    option { value: "split", selected: c.spread == SpreadMode::Split, "Split into two pages" }
-                    option { value: "rotate", selected: c.spread == SpreadMode::Rotate, "Turn sideways" }
-                    option { value: "fit", selected: c.spread == SpreadMode::Fit, "Shrink to fit" }
-                }
-            }
+            div { class: "mp-choice-grid", role: "group", aria_label: "Page layout", {layout_tiles.into_iter()} }
+            h4 { class: "mp-control-heading", "Reading direction" }
+            div { class: "mp-choice-grid two", role: "group", aria_label: "Reading direction", {direction_tiles.into_iter()} }
+            h4 { class: "mp-control-heading", "Double-page spreads" }
+            div { class: "mp-choice-grid", role: "group", aria_label: "Double-page spreads", {spread_tiles.into_iter()} }
             if advanced && strips {
+                details { class: "mp-tuning",
+                summary { "Strip tuning" }
                 div { class: "field",
                     label { "Strip overlap ({c.overlap_percent}%)" }
-                    input { r#type: "range", min: "0", max: "30", value: "{c.overlap_percent}", oninput: on_overlap }
+                    input { aria_label: "Strip overlap", r#type: "range", min: "0", max: "30", value: "{c.overlap_percent}", oninput: on_overlap }
                     span { class: "hint muted small", "How much of the last screen repeats at the top of the next, so you don't lose your place." }
                 }
             }
 
-            h3 { class: "group", "Cropping" }
-            div { class: "field",
-                label { "Trim blank margins" }
-                label { class: "check-line",
-                    input { r#type: "checkbox", checked: trimming, onchange: on_trim }
-                    span { class: "muted", if trimming { "Automatically" } else { "Off, keep the whole image" } }
-                }
             }
+            h3 { class: "group", "Cropping" }
+            div { class: "mp-choice-grid", role: "group", aria_label: "Cropping",
+                VisualChoice { label: "Keep whole", hint: "All original artwork", diagram: "whole", selected: !trimming && !manual,
+                    onclick: move |_| { manual_local.set(false); if let Some(on_mode) = on_crop_mode { on_mode.call(CropMode::Full); } keep(|s,_| { s.crop = CropMode::Full; s.margins = Margins::default(); }, String::new()); } }
+                VisualChoice { label: "Trim margins", hint: "Find blank borders", diagram: "trim", selected: trimming && !manual,
+                    onclick: move |_| { manual_local.set(false); if let Some(on_mode) = on_crop_mode { on_mode.call(CropMode::Margins); } trim(|s,_| { s.crop = CropMode::Margins; s.margins = Margins::default(); }, String::new()); } }
+                VisualChoice { label: "Manual", hint: if on_manual_crop.is_some() { "Edit on the canvas" } else { "Set edge percentages" }, diagram: "manual", selected: manual,
+                    onclick: move |_| { manual_local.set(true); if let Some(open) = on_manual_crop { open.call(()); } } }
+            }
+            if manual && on_manual_crop.is_none() { p { class: "mp-control-note", "Set the edge cuts below. The page editor also provides draggable crop handles and a choice of page, chapter or series scope." } }
             if advanced && trimming {
+                details { class: "mp-tuning",
+                summary { "Automatic trim tuning" }
                 div { class: "field",
                     label { "Sensitivity ({c.trim_sensitivity})" }
-                    input { r#type: "range", min: "0", max: "100", value: "{c.trim_sensitivity}", oninput: on_sensitivity }
+                    input { aria_label: "Trim sensitivity", r#type: "range", min: "0", max: "100", value: "{c.trim_sensitivity}", oninput: on_sensitivity }
                     span { class: "hint muted small", "Higher notices fainter marks, so it trims less. Lower trims harder." }
                 }
                 div { class: "field",
                     label { "Border kept ({c.trim_padding} px)" }
-                    input { r#type: "range", min: "0", max: "40", value: "{c.trim_padding}", oninput: on_padding }
+                    input { aria_label: "Border kept", r#type: "range", min: "0", max: "40", value: "{c.trim_padding}", oninput: on_padding }
                     span { class: "hint muted small", "Space left around the art after trimming." }
                 }
             }
-            if advanced {
+            }
+            if advanced || (manual && on_manual_crop.is_none()) {
+            details { class: "mp-tuning", open: manual,
+            summary { "Edge cuts - all pages" }
             div { class: "field",
                 label { "Cut from the edges (%)" }
                 div { class: "margins",
@@ -195,32 +279,29 @@ pub fn ConversionControls(
                     }
                 }
             }
-
+            }
             }
 
-            h3 { class: "group", "Look" }
+            h3 { class: "group", "Appearance" }
             div { class: "field",
                 label { "Quality" }
-                select { onchange: on_format,
+                select { aria_label: "Reader file quality", onchange: on_format,
                     option { value: "xtch", selected: c.format == Format::Xtch, "4 grays (XTCH), best for manga" }
                     option { value: "xtc", selected: c.format == Format::Xtc, "Black & white (XTC), smaller files" }
                 }
             }
             div { class: "field",
                 label { "Contrast ({c.contrast})" }
-                input { r#type: "range", min: "0", max: "100", value: "{c.contrast}", oninput: on_contrast }
+                div { class: "mp-contrast-track", input { aria_label: "Contrast", r#type: "range", min: "0", max: "100", value: "{c.contrast}", oninput: on_contrast } span { class: "mp-neutral-marker", title: "Neutral: 50" } }
+                div { class: "mp-contrast-labels", span { "Softer" } span { "50 neutral" } span { "Stronger" } }
+                button { class: "btn ghost small", disabled: c.contrast == 50, onclick: move |_| reset(|s,_| s.contrast = 50, String::new()), "Reset to neutral" }
                 span { class: "hint muted small", "50 leaves the page as it is. A little higher (55) usually looks better on e-paper." }
             }
+            h4 { class: "mp-control-heading", "Shading style" }
+            div { class: "mp-choice-grid two", role: "group", aria_label: "Shading style", {shade_tiles.into_iter()} }
             if advanced {
-            div { class: "field",
-                label { "Shading style" }
-                select { onchange: on_dither,
-                    option { value: "fs", selected: c.dither == Dither::FloydSteinberg, "Smooth (recommended)" }
-                    option { value: "atkinson", selected: c.dither == Dither::Atkinson, "High contrast" }
-                    option { value: "ordered", selected: c.dither == Dither::Ordered, "Patterned" }
-                    option { value: "none", selected: c.dither == Dither::Threshold, "None (crisp line art)" }
-                }
-            }
+            details { class: "mp-tuning",
+            summary { "Tone tuning" }
             div { class: "field",
                 label { "Adjust tones" }
                 label { class: "check-line",
@@ -230,6 +311,7 @@ pub fn ConversionControls(
             }
             }
 
+            }
             button { class: "btn ghost small advanced-toggle",
                 onclick: move |_| {
                     let mut settings = state.settings;
@@ -239,6 +321,25 @@ pub fn ConversionControls(
                 },
                 if advanced { "Hide advanced settings" } else { "Show advanced settings" }
             }
+        }
+    }
+}
+
+#[component]
+fn VisualChoice(
+    label: String,
+    hint: String,
+    diagram: String,
+    selected: bool,
+    onclick: EventHandler<MouseEvent>,
+    sample: Option<String>,
+) -> Element {
+    rsx! {
+        button { r#type: "button", class: if selected { "mp-choice selected" } else { "mp-choice" }, aria_pressed: selected, onclick,
+            if let Some(src) = sample { img { class: "mp-shading-sample", src, alt: "" } }
+            else { span { class: "mp-diagram {diagram}", aria_hidden: "true", i {} i {} i {} } }
+            strong { "{label}" }
+            span { class: "mp-choice-hint", "{hint}" }
         }
     }
 }

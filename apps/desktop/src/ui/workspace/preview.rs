@@ -1,438 +1,198 @@
-//! Tab 3: scroll through the chapter as it will look on the reader, and tune
-//! the settings. Every page is drawn in one long column, the original beside
-//! the converted page, so you read it like a normal screen.
-
-use crate::state::{AppState, PreviewPage, SeriesTab, Zoom};
+//! Focused page editing with independent source and reader viewports.
+use super::crop_editor::{CropInspector, SourceCanvas};
+use crate::state::{AppState, SeriesTab, Zoom};
 use crate::ui::conversion::ConversionControls;
 use crate::ui::devices::DeviceSelect;
 use crate::ui::presets::{apply_to_series, PresetPicker};
 use crate::ui::widgets::{EmptyState, Icon};
-use crate::ui::work::{prepare_preview, schedule_preview};
+use crate::ui::work::{prepare_preview, schedule_preview, select_preview_page};
 use dioxus::prelude::*;
-use std::rc::Rc;
+use library::CropRect;
 
-/// The tallest a page is drawn when it is sized to "fit", in screen pixels.
-const FIT_MAX_HEIGHT: u32 = 1100;
-/// Space between the pictures in a row, in screen pixels.
-const GAP: u32 = 16;
-
-/// One picture to draw.
-struct Figure {
-    key: String,
-    caption: String,
-    url: String,
-    width: u32,
-    height: u32,
-    /// The kept area to outline on the original: left, top, width, height.
-    kept: Option<[f32; 4]>,
+const EDITOR_SCRIPT: &str = r#"
+const root=document.getElementById('page-editor');
+if(root&&!root.dataset.bound){
+ root.dataset.bound='1';const canvas=root.querySelector('.editor-canvas');
+ const fit=()=>{if(!root.isConnected){window.removeEventListener('resize',fit);observer.disconnect();return;}
+ root.style.setProperty('--canvas-height',Math.max(220,window.innerHeight-canvas.getBoundingClientRect().top-40)+'px');
+ const viewport=root.querySelector('.editor-result-scroll');const style=getComputedStyle(viewport);
+ if(viewport.clientHeight>0){root.style.setProperty('--reader-page-height',Math.max(80,viewport.clientHeight-parseFloat(style.paddingTop)-parseFloat(style.paddingBottom)-2)+'px');root.style.setProperty('--reader-page-width',Math.max(40,viewport.clientWidth-parseFloat(style.paddingLeft)-parseFloat(style.paddingRight)-2)+'px');}};
+ const observer=new ResizeObserver(()=>requestAnimationFrame(fit));observer.observe(root.querySelector('.editor-toolbar'));observer.observe(root.querySelector('.editor-result-scroll'));
+ window.addEventListener('resize',fit);requestAnimationFrame(fit);
+ root.addEventListener('keydown',e=>{
+  if(e.target.closest('input,select,textarea,[contenteditable=true]'))return;
+  const ids={ArrowRight:'editor-next',ArrowDown:'editor-next',ArrowLeft:'editor-previous',ArrowUp:'editor-previous',c:'editor-crop-toggle',Escape:'editor-close-overview'};
+  const id=ids[e.key];if(id){const b=document.getElementById(id);if(b&&!b.disabled){e.preventDefault();b.click();}}
+ });
 }
+"#;
 
-/// How big to draw a picture. In "fit" the pictures of a row share one height:
-/// the largest that lets them sit side by side across the width.
-fn image_style(zoom: Zoom, width: u32, height: u32, total_aspect: f32, count: usize) -> String {
-    let gaps = GAP * count.saturating_sub(1) as u32;
-    let ratio = format!("aspect-ratio: {width} / {height};");
-    // Every size property is always set: the web view only updates the
-    // properties present in a style, so one left out would keep its old value
-    // (a 200% width surviving a switch back to "fit").
-    match zoom {
-        Zoom::Fit => format!(
-            "width: auto; height: min(calc((100cqw - {gaps}px) / {total_aspect:.4}), {FIT_MAX_HEIGHT}px); {ratio}"
-        ),
-        Zoom::Width => format!(
-            "width: auto; height: calc((100cqw - {gaps}px) / {total_aspect:.4}); {ratio}"
-        ),
-        Zoom::Actual => format!("width: {width}px; height: {height}px; {ratio}"),
-        Zoom::Double => format!(
-            "width: {}px; height: {}px; {ratio}",
-            width * 2,
-            height * 2
-        ),
-    }
-}
-
-fn skeleton(index: usize, view: crate::state::PreviewView) -> Element {
-    // A guess at the row's shape, so the page does not jump as pages arrive.
-    let aspect = if view.show_original { 1.25 } else { 0.6 };
-    let style = image_style(view.zoom, 480, 800, aspect, 1);
-    rsx! {
-        div { class: "page-row", key: "{index}",
-            div { class: "page-label", "Page {index + 1}" }
-            div { class: "skeleton", style: "{style}" }
-        }
-    }
-}
-
-/// The pages that come from one picture: one, or two for a split double page.
-/// Each page of a joined webtoon is its own group.
-struct Group {
-    first: usize,
-    pages: Vec<Rc<PreviewPage>>,
-}
-
-fn groups(pages: &[Rc<PreviewPage>]) -> Vec<Group> {
-    let mut out: Vec<Group> = Vec::new();
-    for (i, page) in pages.iter().enumerate() {
-        match out.last_mut() {
-            Some(last) if page.image.is_some() && last.pages[0].image == page.image => {
-                last.pages.push(page.clone());
-            }
-            _ => out.push(Group {
-                first: i,
-                pages: vec![page.clone()],
-            }),
-        }
-    }
-    out
-}
-
-fn page_row(group: &Group, view: crate::state::PreviewView, device_name: &str) -> Element {
-    let first = &group.pages[0];
-    let label = if group.pages.len() > 1 {
-        format!(
-            "Pages {}\u{2013}{}",
-            group.first + 1,
-            group.first + group.pages.len()
-        )
-    } else {
-        format!("Page {}", group.first + 1)
+fn reader_style(zoom: Zoom, width: u32, height: u32) -> String {
+    let size=match zoom {
+        Zoom::Fit=>format!("height:min(var(--reader-page-height),calc(var(--reader-page-width) * {height} / {width}));width:auto;"),
+        Zoom::Width=>"height:auto;width:100%;".to_string(),
+        Zoom::Actual=>format!("height:{height}px;width:{width}px;"),
+        Zoom::Double=>format!("height:{}px;width:{}px;",height*2,width*2),
     };
-    if group.pages.iter().any(|p| p.shot.is_none()) {
-        return skeleton(group.first, view);
-    }
-    let original = if view.show_original {
-        first.original.as_ref().map(|shot| Figure {
-            key: "original".into(),
-            caption: "Original".into(),
-            url: shot.url.clone(),
-            width: shot.width,
-            height: shot.height,
-            kept: if view.show_crop { first.kept } else { None },
-        })
-    } else {
-        None
-    };
-    let converted: Vec<Figure> = group
-        .pages
-        .iter()
-        .enumerate()
-        .filter_map(|(i, p)| {
-            p.shot.as_ref().map(|shot| Figure {
-                key: format!("page-{i}"),
-                caption: if group.pages.len() > 1 {
-                    format!(
-                        "On your {device_name} \u{b7} part {} of {}",
-                        i + 1,
-                        group.pages.len()
-                    )
-                } else {
-                    format!("On your {device_name}")
-                },
-                url: shot.url.clone(),
-                width: shot.width,
-                height: shot.height,
-                kept: None,
-            })
-        })
-        .collect();
-
-    let mut figures: Vec<&Figure> = Vec::new();
-    if let Some(o) = &original {
-        figures.push(o);
-    }
-    figures.extend(converted.iter());
-    let total_aspect: f32 = figures
-        .iter()
-        .map(|f| f.width as f32 / f.height.max(1) as f32)
-        .sum::<f32>()
-        .max(0.1);
-    let count = figures.len();
-    rsx! {
-        div { class: "page-row", key: "{group.first}",
-            div { class: "page-label", "{label}" }
-            div { class: "page-pair",
-                for f in figures.iter() {
-                    figure { class: "device", key: "{f.key}",
-                        figcaption { "{f.caption}" }
-                        div { class: "shot",
-                            img {
-                                src: "{f.url}",
-                                style: "{image_style(view.zoom, f.width, f.height, total_aspect, count)}",
-                                alt: "{f.caption}",
-                            }
-                            if let Some([x, y, w, h]) = f.kept {
-                                if w < 0.999 || h < 0.999 {
-                                    div { class: "kept", style: "left: {x * 100.0:.3}%; top: {y * 100.0:.3}%; width: {w * 100.0:.3}%; height: {h * 100.0:.3}%;" }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
+    format!("{size}aspect-ratio:{width}/{height};")
 }
 
 #[component]
 pub fn PreviewTab() -> Element {
-    let state = use_context::<AppState>();
-    // Make sure there is something to show when the tab opens.
+    let mut state = use_context::<AppState>();
+    let mut draft = use_signal(CropRect::default);
+    let mut identity = use_signal(String::new);
     use_effect(move || prepare_preview(state));
-
+    use_effect(move || {
+        let p = state.preview.read();
+        let ws = state.workspace.read();
+        let lib = state.library.read();
+        if let (Some(ws), Some(chapter), Some(page)) =
+            (ws.as_ref(), p.chapter_key.as_ref(), p.pages.get(p.selected))
+        {
+            if let Some(series) = lib.find(&ws.series_id) {
+                let crop = series
+                    .crops
+                    .effective(chapter, &page.crop_key)
+                    .unwrap_or_default();
+                let next = format!("{}/{}/{}:{crop:?}", ws.series_id, chapter, page.crop_key);
+                if *identity.peek() != next {
+                    identity.set(next);
+                    draft.set(crop);
+                }
+            }
+        }
+    });
     let Some(ws) = state.workspace.read().clone() else {
         return rsx! {};
     };
     let Some(series) = state.library.read().find(&ws.series_id).cloned() else {
-        return rsx! {
-            EmptyState {
-                title: "Nothing to preview yet",
-                message: "Download a chapter first and the cat will lay it out for you.",
-            }
-        };
+        return rsx! {EmptyState{title:"Nothing to edit yet",message:"Download a chapter to open it in the editor."}};
     };
     let p = state.preview.read().clone();
     let view = p.view;
-    let current = p.chapter_key.clone().unwrap_or_default();
+    let chapter = p.chapter_key.clone().unwrap_or_default();
     let total = p.pages.len();
-    let device_name = state.settings.read().device_profile().name;
-    let advanced = state.settings.read().advanced_conversion;
-
-    let rows: Vec<Element> = groups(&p.pages)
-        .iter()
-        .map(|g| page_row(g, view, &device_name))
-        .collect();
-
-    let series_id = series.id.clone();
-    let pick_id = series.id.clone();
-    let saved_id = series.id.clone();
-    let reset_id = series.id.clone();
+    let selected = p.selected.min(total.saturating_sub(1));
+    let number = if total == 0 { 0 } else { selected + 1 };
+    let active = p.pages.get(selected).cloned();
+    let key = active
+        .as_ref()
+        .map(|p| p.crop_key.clone())
+        .unwrap_or_default();
+    let saved = series.crops.scope_for(&chapter, &key);
+    let device = state.settings.read().device_profile();
+    let reader_size = reader_style(view.zoom, device.width, device.height);
+    let id = series.id.clone();
+    let pick_id = id.clone();
+    let save_id = id.clone();
+    let mode_id = id.clone();
+    let mode_key = key.clone();
+    let mode_chapter = chapter.clone();
     let preset_base = series
         .preset_id
         .as_ref()
         .and_then(|id| state.presets.read().find(id))
         .map(|e| e.preset.settings);
-    let copy_settings = series.settings.clone();
-    let copy_preset = series.preset_id.clone();
-    let overridden = series.overridden.len();
-    let layout_class = if view.focus {
-        "preview-layout focus"
-    } else {
-        "preview-layout"
-    };
-
+    let classes = format!(
+        "page-editor{}{}",
+        if view.focus { " inspector-hidden" } else { "" },
+        if view.source_focus {
+            " source-focused"
+        } else {
+            ""
+        }
+    );
     rsx! {
-        div { class: "{layout_class}",
-            // ---- the pages ----
-            div { class: "preview-main",
-                div { class: "toolbar sticky",
-                    select {
-                        style: "min-width: 200px; max-width: 320px",
-                        onchange: move |e| {
-                            let mut pv = state.preview;
-                            {
-                                let mut w = pv.write();
-                                w.chapter_key = Some(e.value());
-                                w.pages.clear();
-                                w.fresh = 0;
+        div{id:"page-editor",class:"{classes}",tabindex:"0",onmounted:move |_|{spawn(async move{let _=document::eval(EDITOR_SCRIPT).await;});},
+            div{class:"editor-toolbar",
+                div{class:"editor-chapter-picker",label{r#for:"editor-chapter","Chapter"}
+                    select{id:"editor-chapter",value:"{chapter}",onchange:move |e|{
+                        let mut pv=state.preview;let mut w=pv.write();w.chapter_key=Some(e.value());w.selected=0;w.thumb_start=0;w.pages.clear();w.draft_crop=None;w.shading_samples.clear();drop(w);schedule_preview(state,0);
+                    },for c in &series.chapters{option{key:"{c.key}",value:"{c.key}",selected:c.key==chapter,"{c.name}"}}}
+                }
+                div{class:"editor-page-nav",
+                    button{id:"editor-previous",class:"btn small",disabled:selected==0||total==0,title:"Previous page · Left arrow",onclick:move |_|select_preview_page(state,selected.saturating_sub(1)),Icon{name:"arrow-left",size:15}}
+                    span{class:"editor-page-count","Page {number} / {total}"}
+                    button{id:"editor-next",class:"btn small",disabled:selected+1>=total,title:"Next page · Right arrow",onclick:move |_|select_preview_page(state,selected+1),span{class:"turn-arrow",Icon{name:"arrow-left",size:15}}}
+                }
+                div{class:"editor-toolbar-actions",
+                    button{class:if view.show_original{"btn small on"}else{"btn small"},title:"Compare source artwork with the reader result",onclick:move |_|{state.preview.write().view.show_original=!view.show_original;},Icon{name:"eye",size:14}"Compare"}
+                    button{id:"editor-crop-toggle",class:if view.editing_crop{"btn small on"}else{"btn small"},disabled:active.as_ref().and_then(|p|p.original.as_ref()).is_none(),title:"Drag crop handles · C",onclick:move |_|{let mut pv=state.preview;let mut w=pv.write();w.view.editing_crop=!view.editing_crop;w.view.show_original=true;w.view.source_focus=!view.editing_crop;},Icon{name:"crop",size:14}"Crop"}
+                    button{class:if view.show_crop{"btn small on"}else{"btn small"},title:"Show excluded artwork without editing",onclick:move |_|{state.preview.write().view.show_crop=!view.show_crop;},"Guide"}
+                    select{class:"editor-zoom","aria-label":"Preview zoom",onchange:move |e|{state.preview.write().view.zoom=match e.value().as_str(){"width"=>Zoom::Width,"actual"=>Zoom::Actual,"double"=>Zoom::Double,_=>Zoom::Fit};},
+                        option{value:"fit",selected:view.zoom==Zoom::Fit,"Fit page"}option{value:"width",selected:view.zoom==Zoom::Width,"Fit width"}option{value:"actual",selected:view.zoom==Zoom::Actual,"100%"}option{value:"double",selected:view.zoom==Zoom::Double,"200%"}
+                    }
+                    button{class:"btn small",onclick:move |_|{state.preview.write().overview=true;schedule_preview(state,0);},"Overview"}
+                    button{class:if view.focus{"btn small"}else{"btn small on"},title:"Show or hide properties",onclick:move |_|{state.preview.write().view.focus=!view.focus;},Icon{name:"settings",size:15}}
+                }
+            }
+            if let Some(error)=&p.error{div{class:"banner bad small","{error}"}}
+            div{class:"editor-body",
+                nav{class:"editor-thumbnails","aria-label":"Reader pages",onscroll:move |e|{
+                    let start=(e.data.scroll_top()/132.0).floor().max(0.0)as usize;
+                    let needs={let mut pv=state.preview;let mut w=pv.write();if w.thumb_start!=start{w.thumb_start=start;true}else{false}};
+                    if needs&&!state.preview.peek().overview{schedule_preview(state,80);}
+                },
+                    for(i,page)in p.pages.iter().enumerate(){button{key:"{i}",class:if i==selected{"editor-thumb selected"}else{"editor-thumb"},"data-editor-page":"{i}","aria-label":"Open page {i+1}","aria-current":if i==selected{"page"}else{"false"},onclick:move |_|select_preview_page(state,i),
+                        div{class:"editor-thumb-art",if let Some(shot)=page.thumbnail.as_ref().or(page.shot.as_ref()){img{src:"{shot.url}",alt:"Reader page {i+1}"}}else{Icon{name:"file-image",size:23}}}span{"{i+1}"}
+                    }}
+                }
+                main{class:"editor-main",
+                    div{class:"editor-mobile-switch",
+                        button{class:if !view.source_focus{"selected"}else{""},onclick:move |_|{state.preview.write().view.source_focus=false;},"Reader result"}
+                        button{class:if view.source_focus{"selected"}else{""},onclick:move |_|{let mut p=state.preview;let mut w=p.write();w.view.source_focus=true;w.view.show_original=true;},"Source"}
+                    }
+                    div{class:if view.show_original{"editor-canvas comparing"}else{"editor-canvas"},
+                        if view.show_original{section{class:"editor-pane source-pane",
+                            div{class:"editor-pane-heading",strong{if p.strip{"Source section"}else{"Source artwork"}}span{if view.editing_crop{"Drag edges to crop"}else{"Before reader shading"}}}
+                            if let Some(source)=active.as_ref().and_then(|page|page.original.as_ref()){
+                                SourceCanvas{key:"{chapter}/{key}",source:source.clone(),draft,crop_key:key.clone(),editing:view.editing_crop,guide:view.show_crop}
+                            }else{div{class:"editor-image-loading","Preparing source…"}}
+                            if p.strip&&total>0{div{class:"editor-strip-overview",title:"Position in the continuous strip",
+                                div{class:"editor-strip-track",for i in 0..total{button{key:"{i}",class:if i==selected{"current"}else{""},"aria-label":"Jump to strip section {i+1}",onclick:move |_|select_preview_page(state,i)}}}
+                                span{"Section {number} of {total} · joined strip"}
+                            }}
+                        }}
+                        section{class:"editor-pane result-pane",
+                            div{class:"editor-pane-heading",strong{"Reader result"}span{"{device.name} · {device.width} × {device.height}"}}
+                            div{class:"editor-result-scroll",div{class:"editor-reader-frame",style:"{reader_size}",
+                                if let Some(shot)=active.as_ref().and_then(|page|page.shot.as_ref()){img{src:"{shot.url}",alt:"Page {number} exactly as exported to the reader",draggable:"false"}}else{div{class:"editor-image-loading","Drawing page…"}}
+                            }}
+                        }
+                    }
+                    div{class:"editor-status",
+                        span{if p.busy{span{class:"spin",Icon{name:"loader-circle",size:13}}" Updating visible pages…"}else{Icon{name:"check",size:13}" Preview ready"}}
+                        span{if p.draft_crop.is_some(){"Unsaved crop · Apply to include it in the export"}else{"Preview and export use the same saved settings"}}
+                    }
+                }
+                if !view.focus{aside{class:"editor-inspector",
+                    div{class:"editor-inspector-top",
+                        PresetPicker{value:series.settings.clone(),preset_id:series.preset_id.clone(),on_pick:move |(id,settings)|apply_to_series(state,&pick_id,Some(id),settings),on_saved:move |id|{state.library.write().set_preset(&save_id,Some(id));state.save_library();}}
+                        DeviceSelect{}
+                        p{class:"editor-caption",if preset_base.is_none(){"Custom settings for this series"}else if series.overridden.is_empty(){"Following preset settings"}else{"{series.overridden.len()} settings changed from preset"}}
+                    }
+                    CropInspector{key:"{chapter}/{key}",draft,crop_key:key.clone(),saved}
+                    div{class:"editor-settings-scope","Layout and appearance apply to this series"}
+                    ConversionControls{value:series.settings.clone(),compact:true,shading_samples:p.shading_samples.clone(),manual_crop_active:series.crops.effective(&chapter,&key).unwrap_or_default()!=CropRect::default()||view.editing_crop,
+                        on_manual_crop:move |_|{let mut pv=state.preview;let mut w=pv.write();w.view.editing_crop=true;w.view.show_original=true;w.view.source_focus=true;},
+                        on_crop_mode:move |_|{
+                            if let Some(series)=state.library.write().series.iter_mut().find(|s|s.id==mode_id){
+                                series.crops.set(library::CropScope::Page,&mode_chapter,&mode_key,Some(CropRect::default()));
                             }
-                            schedule_preview(state, 0);
+                            let mut pv=state.preview;let mut w=pv.write();w.draft_crop=None;w.view.editing_crop=false;drop(w);state.save_library();
                         },
-                        for c in series.chapters.iter() {
-                            option { key: "{c.key}", value: "{c.key}", selected: c.key == current, "{c.name} ({c.pages} pages)" }
-                        }
+                        onchange:move |v|{state.library.write().set_settings(&id,v,preset_base.as_ref());state.save_library();schedule_preview(state,180);}
                     }
-                    if p.busy && total > 0 {
-                        span { class: "muted small", span { class: "spin", Icon { name: "loader-circle", size: 14 } } " Drawing {p.fresh} of {total}" }
-                    } else if total > 0 {
-                        span { class: "muted small", "{total} pages" }
-                    } else if p.busy {
-                        span { class: "spin muted", Icon { name: "loader-circle", size: 16 } }
-                    }
-                    span { class: "grow" }
-                    div { class: "seg", title: "How big the pages are drawn",
-                        for (zoom, label) in [(Zoom::Fit, "Fit"), (Zoom::Width, "Wide"), (Zoom::Actual, "100%"), (Zoom::Double, "200%")] {
-                            button {
-                                key: "{label}",
-                                class: if view.zoom == zoom { "on" } else { "" },
-                                onclick: move |_| { let mut pv = state.preview; pv.write().view.zoom = zoom; },
-                                "{label}"
-                            }
-                        }
-                    }
-                    button {
-                        class: if view.show_original { "btn small on" } else { "btn small" },
-                        title: "Show the downloaded page next to the converted one",
-                        onclick: move |_| { let mut pv = state.preview; let mut w = pv.write(); w.view.show_original = !w.view.show_original; },
-                        Icon { name: "eye", size: 14 } "Original"
-                    }
-                    button {
-                        class: if view.show_crop { "btn small on" } else { "btn small" },
-                        title: "Outline what the cropping keeps, and dim what it cuts",
-                        disabled: !view.show_original,
-                        onclick: move |_| { let mut pv = state.preview; let mut w = pv.write(); w.view.show_crop = !w.view.show_crop; },
-                        Icon { name: "crop", size: 14 } "Crop"
-                    }
-                }
-                if let Some(message) = &p.error {
-                    div { class: "banner bad small", Icon { name: "circle-x", size: 16 } "{message}" }
-                }
-                if p.strip && total > 0 {
-                    p { class: "muted small", style: "margin: 0 0 8px",
-                        "This chapter is a long strip. Its {p.images} images are joined and cut into pages at the gaps between scenes, so no panel is split at an image edge."
-                    }
-                }
-                div { class: if p.busy { "preview-stage busy" } else { "preview-stage" },
-                    {rows.into_iter()}
-                }
-                p { class: "muted small", style: "margin: 14px 0 0",
-                    "The converted pages are the exact images that go into the file. The real screen's gray shades can look a little different; the first time you test on your reader, compare it with this."
-                }
+                    button{class:"btn primary editor-export",onclick:move |_|state.open_tab(SeriesTab::Export),"Continue to export" span{class:"turn-arrow",Icon{name:"arrow-left",size:15}}}
+                }}
             }
-
-            // ---- this series' settings ----
-            button {
-                class: if view.focus { "panel-toggle collapsed" } else { "panel-toggle" },
-                title: if view.focus { "Show the settings" } else { "Hide the settings" },
-                onclick: move |_| { let mut pv = state.preview; let mut w = pv.write(); w.view.focus = !w.view.focus; },
-                span { class: "panel-toggle-arrow", Icon { name: "arrow-left", size: 16 } }
-            }
-            if !view.focus {
-                div { class: "side settings-panel",
-                    PresetPicker {
-                        value: series.settings.clone(),
-                        preset_id: series.preset_id.clone(),
-                        on_pick: move |(id, settings)| apply_to_series(state, &pick_id, Some(id), settings),
-                        on_saved: move |id| {
-                            let mut library = state.library;
-                            library.write().set_preset(&saved_id, Some(id));
-                            state.save_library();
-                        },
-                    }
-                    DeviceSelect {}
-                    div { class: "panel-section",
-                        label { class: "panel-label", "Settings" }
-                        p { class: "muted small panel-note",
-                            "These apply to every chapter of {ws.title}."
-                            if overridden > 0 {
-                                " {overridden} differ from the preset and stay as you set them if the preset changes."
-                            }
-                        }
-                        ConversionControls {
-                            value: series.settings.clone(),
-                            compact: true,
-                            onchange: move |v| {
-                                let mut lib = state.library;
-                                lib.write().set_settings(&series_id, v, preset_base.as_ref());
-                                state.save_library();
-                                schedule_preview(state, 250);
-                            },
-                        }
-                        if advanced {
-                            div { class: "row wrap", style: "margin-top: 8px",
-                                button { class: "btn ghost small",
-                                    onclick: move |_| {
-                                        let (defaults, preset) = {
-                                            let s = state.settings.peek();
-                                            (s.conversion.clone(), s.default_preset_id.clone())
-                                        };
-                                        apply_to_series(state, &reset_id, preset, defaults);
-                                    },
-                                    Icon { name: "rotate-ccw", size: 14 } "Back to my defaults"
-                                }
-                                button { class: "btn ghost small",
-                                    onclick: move |_| {
-                                        let linked = copy_preset.clone().filter(|id| {
-                                            state.presets.peek().find(id).is_some_and(|e| e.preset.settings == copy_settings)
-                                        });
-                                        let mut settings = state.settings;
-                                        {
-                                            let mut s = settings.write();
-                                            s.conversion = copy_settings.clone();
-                                            s.default_preset_id = linked;
-                                        }
-                                        state.save_settings();
-                                        state.notify("Saved as your starting point for new series.");
-                                    },
-                                    Icon { name: "check", size: 14 } "Use for new series"
-                                }
-                            }
-                        }
-                    }
-                    button { class: "btn primary big", onclick: move |_| state.open_tab(SeriesTab::Export),
-                        "Next: Export"
-                        span { style: "display: inline-flex; transform: rotate(180deg)", Icon { name: "arrow-left", size: 16 } }
-                    }
-                }
-            }
+            if p.overview{div{class:"editor-overview-backdrop",section{class:"editor-overview",role:"dialog","aria-modal":"true","aria-label":"Chapter page overview",
+                header{strong{"Chapter overview · {total} reader pages"}button{id:"editor-close-overview",class:"btn small",onclick:move |_|{state.preview.write().overview=false;},Icon{name:"x",size:16}}}
+                div{class:"editor-overview-grid",for(i,page)in p.pages.iter().enumerate(){button{key:"{i}",class:if i==selected{"selected"}else{""},onclick:move |_|select_preview_page(state,i),
+                    div{class:"editor-overview-art",if let Some(shot)=page.thumbnail.as_ref().or(page.shot.as_ref()){img{src:"{shot.url}",alt:"Reader page {i+1}"}}else{Icon{name:"file-image",size:24}}}span{"Page {i+1}"}
+                }}}
+            }}}
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn page(image: Option<usize>) -> Rc<PreviewPage> {
-        Rc::new(PreviewPage {
-            shot: None,
-            original: None,
-            kept: None,
-            image,
-        })
-    }
-
-    #[test]
-    fn fit_shares_one_height_and_caps_it_while_wide_does_not() {
-        let fit = image_style(Zoom::Fit, 480, 800, 1.25, 2);
-        assert!(
-            fit.contains("min(calc((100cqw - 16px) / 1.2500), 1100px)"),
-            "{fit}"
-        );
-        assert!(fit.contains("aspect-ratio: 480 / 800"));
-        let wide = image_style(Zoom::Width, 480, 800, 1.25, 2);
-        assert!(
-            wide.contains("calc((100cqw - 16px) / 1.2500)") && !wide.contains("min("),
-            "{wide}"
-        );
-    }
-
-    #[test]
-    fn fixed_zooms_use_exact_sizes_and_nothing_left_over_from_fit() {
-        let actual = image_style(Zoom::Actual, 480, 800, 1.0, 1);
-        assert_eq!(
-            actual,
-            "width: 480px; height: 800px; aspect-ratio: 480 / 800;"
-        );
-        let double = image_style(Zoom::Double, 480, 800, 1.0, 1);
-        assert_eq!(
-            double,
-            "width: 960px; height: 1600px; aspect-ratio: 480 / 800;"
-        );
-    }
-
-    #[test]
-    fn every_zoom_sets_both_size_properties_so_none_is_left_over_from_the_last() {
-        for zoom in [Zoom::Fit, Zoom::Width, Zoom::Actual, Zoom::Double] {
-            let style = image_style(zoom, 480, 800, 1.0, 1);
-            assert!(style.contains("width:"), "{zoom:?}: {style}");
-            assert!(style.contains("height:"), "{zoom:?}: {style}");
-        }
-        assert!(image_style(Zoom::Fit, 480, 800, 1.0, 1).contains("width: auto"));
-    }
-
-    #[test]
-    fn a_split_double_page_shares_a_row_and_strip_pages_do_not() {
-        // Image 0 gives one page, image 1 is split in two, image 2 gives one.
-        let paged = [page(Some(0)), page(Some(1)), page(Some(1)), page(Some(2))];
-        let g = groups(&paged);
-        assert_eq!(
-            g.iter()
-                .map(|g| (g.first, g.pages.len()))
-                .collect::<Vec<_>>(),
-            vec![(0, 1), (1, 2), (3, 1)]
-        );
-        // Pages cut from a joined strip have no single image: one row each.
-        let strip = [page(None), page(None), page(None)];
-        assert_eq!(groups(&strip).len(), 3);
     }
 }

@@ -139,6 +139,8 @@ pub fn status_label(raw: &str) -> String {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DownloadedSeries {
+    #[serde(default)]
+    pub crops: crate::CropOverrides,
     pub id: String,
     pub title: String,
     pub chapters: Vec<DownloadedChapter>,
@@ -201,6 +203,7 @@ impl LibraryDb {
             Some(i) => i,
             None => {
                 self.series.push(DownloadedSeries {
+                    crops: Default::default(),
                     id: id.clone(),
                     title: title.to_string(),
                     chapters: Vec::new(),
@@ -253,6 +256,7 @@ impl LibraryDb {
         match self.series.iter_mut().find(|s| s.id == id) {
             Some(existing) => merge_sources(&mut existing.sources, sources),
             None => self.series.push(DownloadedSeries {
+                crops: Default::default(),
                 id: id.clone(),
                 title: title.to_string(),
                 chapters: Vec::new(),

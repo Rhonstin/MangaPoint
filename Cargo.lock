@@ -2659,6 +2659,7 @@ dependencies = [
  "library",
  "pipeline",
  "search",
+ "sha2",
  "sources",
  "sysinfo",
  "tokio",

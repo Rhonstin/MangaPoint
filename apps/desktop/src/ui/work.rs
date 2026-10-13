@@ -20,6 +20,7 @@ use pipeline::{
     Grouping, JobEvent, PipelineError, PreviewImage, RetryPolicy, SourceChoice,
 };
 use search::{merge_chapters, RankedSeries, ScoredMember};
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
@@ -1227,22 +1228,102 @@ pub fn prepare_preview(state: AppState) {
 /// not read and decode every page again.
 type DecodedChapter = (String, Arc<Vec<converter::GrayImage>>);
 static DECODED: Mutex<Option<DecodedChapter>> = Mutex::new(None);
+static PREPARED_PREVIEW: Mutex<
+    Option<(String, converter::ProcessOptions, pipeline::ChapterPreview)>,
+> = Mutex::new(None);
+static PREVIEW_REQUEST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+fn next_preview_request() -> u64 {
+    PREVIEW_REQUEST.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+fn shape_options(opts: &converter::ProcessOptions) -> converter::ProcessOptions {
+    let mut key = opts.clone();
+    key.contrast = 50;
+    key.auto_levels = false;
+    key.dither = converter::Dither::Threshold;
+    key.depth = converter::Depth::One;
+    key
+}
+
+pub fn preview_render_order(
+    total: usize,
+    selected: usize,
+    thumb_start: usize,
+    overview: bool,
+) -> Vec<usize> {
+    if total == 0 {
+        return Vec::new();
+    }
+    let selected = selected.min(total - 1);
+    let mut order = vec![selected];
+    let range = if overview {
+        0..total
+    } else {
+        thumb_start.min(total)..(thumb_start + 8).min(total)
+    };
+    for i in range {
+        if !order.contains(&i) {
+            order.push(i);
+        }
+    }
+    for i in selected.saturating_sub(1)..(selected + 2).min(total) {
+        if !order.contains(&i) {
+            order.push(i);
+        }
+    }
+    order
+}
+
+pub fn select_preview_page(state: AppState, selected: usize) {
+    let mut preview = state.preview;
+    let mut p = preview.write();
+    if p.pages.is_empty() {
+        return;
+    }
+    let next = selected.min(p.pages.len() - 1);
+    if next != p.selected {
+        p.draft_crop = None;
+    }
+    p.selected = next;
+    p.overview = false;
+    drop(p);
+    schedule_preview(state, 0);
+    spawn(async move {
+        let js = format!("document.querySelector('[data-editor-page=\"{selected}\"]')?.scrollIntoView({{block:'nearest'}})");
+        let _ = document::eval(&js).await;
+    });
+}
 
 /// Read and decode a chapter's saved pages, in order.
 async fn decode_chapter(
     cache_key: String,
     files: Vec<std::path::PathBuf>,
-) -> Result<Arc<Vec<converter::GrayImage>>, String> {
+) -> Result<(String, Arc<Vec<converter::GrayImage>>), String> {
+    let raw = tokio::task::spawn_blocking(move || {
+        files
+            .into_iter()
+            .map(|path| {
+                std::fs::read(path).map_err(|e| format!("Could not read a saved page: {e}"))
+            })
+            .collect::<Result<Vec<_>, _>>()
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    let mut digest = Sha256::new();
+    for bytes in &raw {
+        digest.update((bytes.len() as u64).to_le_bytes());
+        digest.update(bytes);
+    }
+    let cache_key = format!("{cache_key}/{:x}", digest.finalize());
     if let Some((k, grays)) = DECODED.lock().ok().and_then(|g| g.clone()) {
         if k == cache_key {
-            return Ok(grays);
+            return Ok((cache_key, grays));
         }
     }
-    let decoded: Vec<Result<converter::GrayImage, String>> = stream::iter(files.into_iter())
-        .map(|path| async move {
+    let decoded: Vec<Result<converter::GrayImage, String>> = stream::iter(raw.into_iter())
+        .map(|bytes| async move {
             tokio::task::spawn_blocking(move || {
-                let bytes = std::fs::read(&path)
-                    .map_err(|e| format!("Could not read a saved page: {e}"))?;
                 pipeline::decode_page(&bytes).map_err(|e| e.to_string())
             })
             .await
@@ -1253,9 +1334,9 @@ async fn decode_chapter(
         .await;
     let grays = Arc::new(decoded.into_iter().collect::<Result<Vec<_>, _>>()?);
     if let Ok(mut g) = DECODED.lock() {
-        *g = Some((cache_key, grays.clone()));
+        *g = Some((cache_key.clone(), grays.clone()));
     }
-    Ok(grays)
+    Ok((cache_key, grays))
 }
 
 /// Plan the chapter with the series' settings, then draw each page a few at a
@@ -1266,7 +1347,7 @@ pub fn schedule_preview(state: AppState, delay_ms: u64) {
     let mut preview = state.preview;
     let generation = {
         let mut p = preview.write();
-        p.generation += 1;
+        p.generation = next_preview_request();
         p.busy = true;
         p.error = None;
         p.fresh = 0;
@@ -1309,7 +1390,7 @@ pub fn schedule_preview(state: AppState, delay_ms: u64) {
             return fail("This chapter has no saved pages. Download it again.".into());
         }
         let image_count = files.len();
-        let grays =
+        let (cache_key, grays) =
             match decode_chapter(format!("{}/{key}/{image_count}", ws.series_id), files).await {
                 Ok(g) => g,
                 Err(message) => return fail(message),
@@ -1320,12 +1401,27 @@ pub fn schedule_preview(state: AppState, delay_ms: u64) {
 
         // The same planning and conversion the export runs.
         let opts = pipeline::process_options_for(&device, &series.settings);
-        let chapter = {
-            let (opts, grays) = (opts.clone(), grays.clone());
-            match tokio::task::spawn_blocking(move || pipeline::prepare_chapter(&grays, &opts))
-                .await
+        let shape_key = shape_options(&opts);
+        let cached = PREPARED_PREVIEW.lock().ok().and_then(|g| {
+            g.as_ref()
+                .filter(|(k, o, _)| k == &cache_key && o == &shape_key)
+                .map(|(_, _, p)| p.clone())
+        });
+        let chapter = if let Some(cached) = cached {
+            cached
+        } else {
+            let (prepare_opts, grays) = (opts.clone(), grays.clone());
+            match tokio::task::spawn_blocking(move || {
+                pipeline::prepare_chapter(&grays, &prepare_opts)
+            })
+            .await
             {
-                Ok(c) => c,
+                Ok(c) => {
+                    if let Ok(mut cache) = PREPARED_PREVIEW.lock() {
+                        *cache = Some((cache_key, shape_key, c.clone()));
+                    }
+                    c
+                }
                 Err(e) => return fail(e.to_string()),
             }
         };
@@ -1345,50 +1441,108 @@ pub fn schedule_preview(state: AppState, delay_ms: u64) {
                 .plan
                 .pages
                 .iter()
-                .enumerate()
-                .map(|(i, page)| {
+                .map(|page| {
                     // Keep the previous drawing of this page until it is redrawn.
-                    let (shot, original, kept) = old.get(i).map_or((None, None, None), |o| {
-                        (o.shot.clone(), o.original.clone(), o.kept)
-                    });
+                    let (shot, thumbnail, original, kept) = old
+                        .iter()
+                        .find(|o| o.crop_key == pipeline::crop_page_key(page))
+                        .map_or((None, None, None, None), |o| {
+                            (
+                                o.shot.clone(),
+                                o.thumbnail.clone(),
+                                o.original.clone(),
+                                o.kept,
+                            )
+                        });
                     let image = match page.source {
                         converter::Source::Image { index, .. } => Some(index),
                         converter::Source::Strip { .. } => None,
                     };
                     Rc::new(PreviewPage {
                         shot,
+                        thumbnail,
                         original,
                         kept,
                         image,
+                        crop_key: pipeline::crop_page_key(page),
+                        source: Some(page.clone()),
+                        generation: 0,
                     })
                 })
                 .collect();
+            w.selected = w.selected.min(w.pages.len().saturating_sub(1));
         }
 
         let prepared = chapter.prepared.clone();
-        let jobs: Vec<(usize, converter::PlannedPage)> =
-            chapter.plan.pages.iter().cloned().enumerate().collect();
+        let (selected, thumb_start, overview, draft) = {
+            let p = state.preview.peek();
+            (p.selected, p.thumb_start, p.overview, p.draft_crop.clone())
+        };
+        let jobs: Vec<_> =
+            preview_render_order(chapter.plan.pages.len(), selected, thumb_start, overview)
+                .into_iter()
+                .map(|i| (i, chapter.plan.pages[i].clone()))
+                .collect();
+        let crops = series.crops.clone();
+        let chapter_key = key.clone();
         let mut drawn = stream::iter(jobs)
             .map(|(index, page)| {
-                let (opts, prepared, grays) = (opts.clone(), prepared.clone(), grays.clone());
+                let (opts, prepared, crops, chapter_key, draft) = (
+                    opts.clone(),
+                    prepared.clone(),
+                    crops.clone(),
+                    chapter_key.clone(),
+                    draft.clone(),
+                );
                 async move {
                     let result = tokio::task::spawn_blocking(move || {
-                        let converted = pipeline::render_planned(&prepared, &page, &opts);
-                        // The downloaded picture beside it: shown once per image.
-                        let original = match page.source {
-                            converter::Source::Image { index, part } => (part
-                                != converter::plan::Part::Half(1))
-                            .then(|| pipeline::render_original(&grays[index], &opts)),
-                            converter::Source::Strip { .. } => {
-                                pipeline::render_strip_original(&prepared, &page).map(|image| {
-                                    pipeline::OriginalPreview {
-                                        image,
-                                        kept: [0.0, 0.0, 1.0, 1.0],
-                                    }
-                                })
-                            }
+                        let key = pipeline::crop_page_key(&page);
+                        let crop = draft
+                            .as_ref()
+                            .filter(|(k, _)| k == &key)
+                            .map(|(_, crop)| *crop)
+                            .or_else(|| crops.effective(&chapter_key, &key));
+                        let levels = converter::plan::render_page_cropped(
+                            &prepared,
+                            &page,
+                            &opts,
+                            crop.unwrap_or_default().as_array(),
+                        );
+                        let thumbnail = pipeline::levels_to_thumbnail(&levels);
+                        let converted = (index == selected)
+                            .then(|| pipeline::levels_to_previews(&[levels]).remove(0));
+                        let original = (index == selected)
+                            .then(|| pipeline::render_source_preview(&prepared, &page, &opts));
+                        let samples = if index == selected {
+                            let source = converter::plan::page_source(&prepared, &page, &opts);
+                            [
+                                converter::Dither::FloydSteinberg,
+                                converter::Dither::Atkinson,
+                                converter::Dither::Ordered,
+                                converter::Dither::Threshold,
+                            ]
+                            .into_iter()
+                            .map(|dither| {
+                                let mut sample_opts = opts.clone();
+                                sample_opts.width = 96;
+                                sample_opts.height = 160;
+                                sample_opts.layout = converter::process::Layout::Manga;
+                                sample_opts.crop = converter::process::CropMode::Full;
+                                sample_opts.margins = converter::process::Margins::default();
+                                sample_opts.spread = converter::process::SpreadMode::Fit;
+                                sample_opts.dither = dither;
+                                let levels =
+                                    converter::process::process_page(&source, &sample_opts);
+                                pipeline::levels_to_previews(&levels)
+                                    .first()
+                                    .map(|image| shot(image).url)
+                                    .unwrap_or_default()
+                            })
+                            .collect::<Vec<_>>()
+                        } else {
+                            Vec::new()
                         };
-                        (converted, original)
+                        (converted, thumbnail, original, samples)
                     })
                     .await;
                     (index, result)
@@ -1401,17 +1555,23 @@ pub fn schedule_preview(state: AppState, delay_ms: u64) {
                 return;
             }
             match result {
-                Ok((converted, original)) => {
+                Ok((converted, thumbnail, original, samples)) => {
                     let mut p = state.preview;
                     let mut w = p.write();
                     if let Some(slot) = w.pages.get_mut(index) {
                         let mut next = (**slot).clone();
-                        next.shot = Some(shot(&converted));
-                        if let Some(o) = original {
-                            next.original = Some(shot(&o.image));
-                            next.kept = (next.image.is_some()).then_some(o.kept);
+                        if let Some(converted) = converted {
+                            next.shot = Some(shot(&converted));
                         }
+                        next.thumbnail = Some(shot(&thumbnail));
+                        if let Some(original) = original {
+                            next.original = Some(shot(&original));
+                        }
+                        next.generation = generation;
                         *slot = Rc::new(next);
+                    }
+                    if index == selected {
+                        w.shading_samples = samples;
                     }
                     w.fresh += 1;
                 }
@@ -1431,6 +1591,79 @@ pub fn schedule_preview(state: AppState, delay_ms: u64) {
 
 /// Pages drawn at the same time while previewing.
 const PREVIEW_THREADS: usize = 3;
+
+#[cfg(test)]
+mod page_editor_tests {
+    use super::*;
+
+    #[test]
+    fn selected_page_precedes_visible_thumbnails_without_rendering_the_whole_chapter() {
+        let order = preview_render_order(148, 100, 90, false);
+        assert_eq!(order[0], 100);
+        for i in 90..98 {
+            assert!(order.contains(&i));
+        }
+        assert!(order.contains(&99));
+        assert!(order.contains(&101));
+        assert!(order.len() <= 11);
+        let mut unique = order.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), order.len());
+        assert_eq!(preview_render_order(0, 10, 0, false), Vec::<usize>::new());
+        assert_eq!(preview_render_order(3, 99, 0, true), [2, 0, 1]);
+    }
+
+    #[test]
+    fn appearance_changes_reuse_the_prepared_chapter_but_layout_changes_do_not() {
+        let opts = converter::ProcessOptions::manga_default(480, 800, converter::Depth::Two);
+        let mut changed = opts.clone();
+        changed.contrast = 90;
+        changed.auto_levels = !opts.auto_levels;
+        changed.dither = converter::Dither::Atkinson;
+        assert_eq!(shape_options(&opts), shape_options(&changed));
+        changed.layout = converter::process::Layout::Webtoon;
+        assert_ne!(shape_options(&opts), shape_options(&changed));
+    }
+
+    #[test]
+    fn preview_tokens_do_not_reset_between_workspaces() {
+        let first = next_preview_request();
+        let second = next_preview_request();
+        assert!(second > first);
+    }
+
+    #[tokio::test]
+    async fn preview_reloads_replaced_sources_with_the_same_page_count() {
+        let root = std::env::temp_dir().join(format!(
+            "mangapoint-preview-revision-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("00001.img");
+        fn image(value: u8) -> Vec<u8> {
+            use image::ImageEncoder;
+            let mut bytes = Vec::new();
+            image::codecs::png::PngEncoder::new(&mut bytes)
+                .write_image(&[value; 16], 4, 4, image::ExtendedColorType::L8)
+                .unwrap();
+            bytes
+        }
+        std::fs::write(&path, image(0)).unwrap();
+        let (old, first) = decode_chapter("revision-test".into(), vec![path.clone()])
+            .await
+            .unwrap();
+        std::fs::write(&path, image(255)).unwrap();
+        let (new, second) = decode_chapter("revision-test".into(), vec![path.clone()])
+            .await
+            .unwrap();
+        assert_ne!(old, new);
+        assert_eq!(first[0].pixels, [0; 16]);
+        assert_eq!(second[0].pixels, [255; 16]);
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_dir(root);
+    }
+}
 
 /// Pages from the chosen one on that the Presets test page plans together.
 const LAB_WINDOW: usize = 6;
