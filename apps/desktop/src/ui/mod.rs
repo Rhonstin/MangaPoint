@@ -4,6 +4,7 @@ pub mod cat;
 mod chapter_table;
 mod conversion;
 mod devices;
+mod download_dialog;
 mod downloads_page;
 mod hang;
 mod icons;
@@ -66,6 +67,7 @@ pub fn App() -> Element {
                 BootState::Ready => rsx! { Shell {} },
             }}
             ModalHost {}
+            download_dialog::DownloadDialogHost {}
             ToastHost {}
         }
     }

@@ -214,7 +214,29 @@ pub fn SettingsPage() -> Element {
                             }
                         }
                         Group { title: "Downloaded chapters" }
-                        Row { label: "Downloads folder", desc: "Where the pages you download are kept.",
+                        Row {
+                            label: "Download folder",
+                            desc: format!("New downloads are kept in {}. Series you already have stay where they are.", crate::state::library_files().root().display()),
+                            button { class: "btn", title: "Choose where new downloads are kept",
+                                onclick: move |_| {
+                                    spawn(async move {
+                                        let start = Some(crate::state::library_files().root().to_path_buf());
+                                        if let Some(dir) = super::widgets::pick_folder("Where should downloads be kept?", start).await {
+                                            super::work::set_download_folder(state, dir);
+                                        }
+                                    });
+                                },
+                                Icon { name: "folder-open", size: 15 }
+                                "Choose folder…"
+                            }
+                        }
+                        Row { label: "Ask each time", desc: "Show where files go whenever you start a download.",
+                            input {
+                                r#type: "checkbox", checked: s.ask_download_folder,
+                                onchange: move |e| { let mut st = state.settings; st.write().ask_download_folder = e.checked(); state.save_settings(); },
+                            }
+                        }
+                        Row { label: "Open the downloads folder", desc: "Where the pages you download are kept.",
                             button { class: "btn", title: "Open the downloads folder",
                                 onclick: move |_| {
                                     let dir = crate::state::library_files().root().to_path_buf();

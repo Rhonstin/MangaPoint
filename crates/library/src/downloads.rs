@@ -367,7 +367,11 @@ impl LibraryDb {
 /// Where downloaded pages live, and the only code that deletes them.
 #[derive(Clone, Debug)]
 pub struct LibraryFiles {
+    /// Where new series are kept.
     root: PathBuf,
+    /// Other folders earlier downloads were kept in. A series stays in the
+    /// folder it was first downloaded to.
+    others: Vec<PathBuf>,
 }
 
 /// Add the sources that are new (same source and series id counts as known).
@@ -410,15 +414,38 @@ fn component(name: &str) -> String {
 
 impl LibraryFiles {
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into() }
+        Self {
+            root: root.into(),
+            others: Vec::new(),
+        }
     }
 
+    /// Also look for series in these folders.
+    pub fn with_other_roots(mut self, others: impl IntoIterator<Item = PathBuf>) -> Self {
+        self.others = others.into_iter().filter(|o| *o != self.root).collect();
+        self
+    }
+
+    /// The folder new series are kept in.
     pub fn root(&self) -> &Path {
         &self.root
     }
 
+    /// The folder a series is kept in: the one it is already in, or else the
+    /// one new series go to.
+    fn series_root(&self, series_id: &str) -> &Path {
+        let name = component(series_id);
+        if self.root.join(&name).exists() {
+            return &self.root;
+        }
+        self.others
+            .iter()
+            .find(|other| other.join(&name).exists())
+            .map_or(self.root.as_path(), PathBuf::as_path)
+    }
+
     pub fn series_dir(&self, series_id: &str) -> PathBuf {
-        self.root.join(component(series_id))
+        self.series_root(series_id).join(component(series_id))
     }
 
     /// Where the series' cover image is kept: in its folder, beside the
@@ -466,11 +493,14 @@ impl LibraryFiles {
     }
 
     pub fn remove_chapter(&self, series_id: &str, key: &str) -> io::Result<()> {
-        remove_inside(&self.root, &self.chapter_dir(series_id, key))
+        remove_inside(
+            self.series_root(series_id),
+            &self.chapter_dir(series_id, key),
+        )
     }
 
     pub fn remove_series(&self, series_id: &str) -> io::Result<()> {
-        remove_inside(&self.root, &self.series_dir(series_id))
+        remove_inside(self.series_root(series_id), &self.series_dir(series_id))
     }
 }
 
@@ -855,5 +885,23 @@ mod tests {
         assert!(remove_inside(&root, &root.join("series")).is_ok());
         assert!(!root.join("series").exists());
         let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn a_series_stays_in_the_folder_it_started_in() {
+        let base = std::env::temp_dir().join(format!("mangapoint-roots-{}", std::process::id()));
+        let (old, new) = (base.join("old"), base.join("new"));
+        fs::create_dir_all(old.join("kept-series")).unwrap();
+        fs::create_dir_all(&new).unwrap();
+        let files = LibraryFiles::new(&new).with_other_roots([old.clone()]);
+        assert_eq!(files.root(), new.as_path());
+        // An existing series is found where it is, a new one goes to the new folder.
+        assert_eq!(files.series_dir("kept-series"), old.join("kept-series"));
+        assert_eq!(files.series_dir("fresh-series"), new.join("fresh-series"));
+        // Deleting it deletes it from the folder it is in.
+        files.remove_series("kept-series").unwrap();
+        assert!(!old.join("kept-series").exists());
+        assert!(old.exists(), "the folder itself is left alone");
+        let _ = fs::remove_dir_all(&base);
     }
 }

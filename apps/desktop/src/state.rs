@@ -28,9 +28,31 @@ pub fn paths() -> &'static AppPaths {
     })
 }
 
+/// The folders downloads are kept in: where new ones go, and the others.
+static LIBRARY_DIRS: std::sync::RwLock<Option<(PathBuf, Vec<PathBuf>)>> =
+    std::sync::RwLock::new(None);
+
+/// Use the download folders from the settings. Call at start and whenever the
+/// choice changes.
+pub fn apply_library_dirs(settings: &Settings) {
+    let app_folder = paths().library_dir();
+    let active = settings.library_dir.clone().unwrap_or(app_folder.clone());
+    let mut others: Vec<PathBuf> = std::iter::once(app_folder)
+        .chain(settings.library_dirs.iter().cloned())
+        .filter(|p| *p != active)
+        .collect();
+    others.dedup();
+    if let Ok(mut dirs) = LIBRARY_DIRS.write() {
+        *dirs = Some((active, others));
+    }
+}
+
 /// The downloaded chapters on disk.
 pub fn library_files() -> LibraryFiles {
-    LibraryFiles::new(paths().library_dir())
+    match LIBRARY_DIRS.read().ok().and_then(|d| d.clone()) {
+        Some((active, others)) => LibraryFiles::new(active).with_other_roots(others),
+        None => LibraryFiles::new(paths().library_dir()),
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -202,6 +224,23 @@ pub struct LoadedChapters {
     /// The same members as they are kept in the library.
     pub saved: Vec<library::SavedSource>,
     pub unreachable: usize,
+}
+
+/// What a download dialog will start once the user confirms.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PendingDownload {
+    /// The chapters ticked on the open series.
+    Chapters,
+    /// Everything chosen in the download planner.
+    Plan,
+}
+
+/// The dialog that asks where downloaded files go, before they start.
+#[derive(Clone, PartialEq, Debug)]
+pub struct DownloadDialog {
+    pub pending: PendingDownload,
+    /// What is about to download, in words.
+    pub summary: String,
 }
 
 /// What the download planner knows about one series.
@@ -431,6 +470,8 @@ pub struct AppState {
     pub queue: Signal<DownloadQueue>,
     /// The series being planned for download, with their ticked chapters.
     pub plan: Signal<Vec<PlanEntry>>,
+    /// Asking where a download should go, if it is open.
+    pub download_dialog: Signal<Option<DownloadDialog>>,
     /// Series whose details are being fetched right now.
     pub info_busy: Signal<HashSet<String>>,
     pub workspace: Signal<Option<Workspace>>,
@@ -478,7 +519,11 @@ impl AppState {
                 percent: None,
             }),
             services: sig(None),
-            settings: sig(JsonFile::<Settings>::new(paths().settings_file()).load()),
+            settings: sig({
+                let settings = JsonFile::<Settings>::new(paths().settings_file()).load();
+                apply_library_dirs(&settings);
+                settings
+            }),
             sources: sig(sources),
             health: sig(JsonFile::<HealthDb>::new(paths().health_file()).load()),
             page: sig(first_page),
@@ -496,6 +541,7 @@ impl AppState {
             download_source: sig(SourceChoice::Adaptive),
             queue: sig(DownloadQueue::default()),
             plan: sig(Vec::new()),
+            download_dialog: sig(None),
             info_busy: sig(HashSet::new()),
             workspace: sig(None),
             chapters: sig(ChaptersState::Idle),

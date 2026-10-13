@@ -4,9 +4,9 @@
 
 use super::chapter_table::{ChapterGrid, GridRow};
 use super::widgets::{Cover, EmptyState, Icon};
-use super::work::{commit_plan, downloaded_keys, load_saved_cover, merged_key, saved_cover_key};
+use super::work::{ask_download, downloaded_keys, load_saved_cover, merged_key, saved_cover_key};
 use crate::logic::{self, plural};
-use crate::state::{AppState, Page, PlanChapters, PlanEntry};
+use crate::state::{AppState, Page, PendingDownload, PlanChapters, PlanEntry};
 use dioxus::prelude::*;
 
 /// Change one series' entry in the planner.
@@ -79,7 +79,11 @@ pub fn PlanPage() -> Element {
             }
             span { class: "grow" }
             button { class: "btn", onclick: move |_| leave(state), "Cancel" }
-            button { class: "btn primary", disabled: chapters == 0, onclick: move |_| commit_plan(state),
+            button { class: "btn primary", disabled: chapters == 0, onclick: move |_| ask_download(
+                    state,
+                    PendingDownload::Plan,
+                    format!("{} from {}", plural(chapters, "chapter"), plural(with_picks, "series")),
+                ),
                 Icon { name: "download", size: 16 } "Add to downloads"
             }
         }

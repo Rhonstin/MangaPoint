@@ -5,9 +5,10 @@
 use crate::logic::{self, JobProgress};
 use crate::queue::{Batch, BatchStatus};
 use crate::state::{
-    library_files, now_secs, paths, spawn_forever, AppState, ChaptersState, ExportOpts,
-    GroupingChoice, JobKind, JobView, LoadedChapters, Page, PlanChapters, PlanEntry, PreviewPage,
-    PreviewState, SeriesTab, Shot, TableView, Workspace,
+    apply_library_dirs, library_files, now_secs, paths, spawn_forever, AppState, ChaptersState,
+    DownloadDialog, ExportOpts, GroupingChoice, JobKind, JobView, LoadedChapters, Page,
+    PendingDownload, PlanChapters, PlanEntry, PreviewPage, PreviewState, SeriesTab, Shot,
+    TableView, Workspace,
 };
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
@@ -567,6 +568,46 @@ fn enqueue_picked(
         chapters: added.chapters,
         not_offered,
     })
+}
+
+/// Start a download, after asking where its files should go (unless the user
+/// asked not to be asked).
+pub fn ask_download(state: AppState, pending: PendingDownload, summary: String) {
+    if !state.settings.peek().ask_download_folder {
+        start_pending(state, pending);
+        return;
+    }
+    let mut dialog = state.download_dialog;
+    dialog.set(Some(DownloadDialog { pending, summary }));
+}
+
+/// Begin what the dialog was asked about.
+pub fn start_pending(state: AppState, pending: PendingDownload) {
+    match pending {
+        PendingDownload::Chapters => queue_download(state),
+        PendingDownload::Plan => commit_plan(state),
+    }
+}
+
+/// Keep new downloads in this folder. What was downloaded before stays where
+/// it is, and is still found there.
+pub fn set_download_folder(state: AppState, dir: std::path::PathBuf) {
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        state.error(format!("Could not use that folder: {e}"));
+        return;
+    }
+    let mut settings = state.settings;
+    {
+        let mut st = settings.write();
+        let app_folder = paths().library_dir();
+        let old = st.library_dir.clone().unwrap_or_else(|| app_folder.clone());
+        if old != dir && !st.library_dirs.contains(&old) {
+            st.library_dirs.push(old);
+        }
+        st.library_dir = (dir != app_folder).then_some(dir);
+    }
+    apply_library_dirs(&settings.peek());
+    state.save_settings();
 }
 
 /// Add the ticked chapters that are not downloaded yet to the download queue.

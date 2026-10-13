@@ -269,6 +269,12 @@ pub struct Settings {
     pub shrink_downloads: bool,
     /// How many chapters and pages to download at once.
     pub download: DownloadSettings,
+    /// Where new downloads are kept. `None` means the app's own folder.
+    pub library_dir: Option<PathBuf>,
+    /// Other folders downloads were kept in before, so they stay available.
+    pub library_dirs: Vec<PathBuf>,
+    /// Ask where to keep the files each time something is downloaded.
+    pub ask_download_folder: bool,
     /// The preset the default conversion settings started from, if any.
     pub default_preset_id: Option<String>,
     /// Preferred source language for search and ranking.
@@ -293,6 +299,9 @@ impl Default for Settings {
             browser_support: false,
             shrink_downloads: false,
             download: DownloadSettings::default(),
+            library_dir: None,
+            library_dirs: Vec::new(),
+            ask_download_folder: true,
             default_preset_id: None,
             language: "en".into(),
             preferred_sources: Vec::new(),

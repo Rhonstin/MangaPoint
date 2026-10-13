@@ -3,11 +3,11 @@
 
 use crate::logic::{self, plural};
 use crate::queue::QueuedChapter;
-use crate::state::{AppState, ChaptersState, Modal, ModalAction, Page, SeriesTab};
+use crate::state::{AppState, ChaptersState, Modal, ModalAction, Page, PendingDownload, SeriesTab};
 use crate::ui::chapter_table::{ChapterGrid, GridRow};
 use crate::ui::search::run_search;
 use crate::ui::widgets::{Chip, EmptyState, Icon, ProgressBar};
-use crate::ui::work::{downloaded_keys, merged_key, prepare_preview, queue_download, retry_batch};
+use crate::ui::work::{ask_download, downloaded_keys, merged_key, prepare_preview, retry_batch};
 use dioxus::prelude::*;
 use pipeline::SourceChoice;
 use search::missing_numbers;
@@ -420,7 +420,11 @@ pub fn ChaptersTab() -> Element {
                         Icon { name: "eye", size: 16 } "Preview them"
                     }
                 } else {
-                    button { class: "btn primary", onclick: move |_| queue_download(state),
+                    button { class: "btn primary",
+                        onclick: {
+                            let summary = format!("{} of {}", plural(to_download - not_offered, "chapter"), ws.title);
+                            move |_| ask_download(state, PendingDownload::Chapters, summary.clone())
+                        },
                         Icon { name: "download", size: 16 } "Add {to_download - not_offered} to downloads"
                     }
                 }

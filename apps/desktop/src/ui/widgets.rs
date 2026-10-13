@@ -173,3 +173,16 @@ pub fn open_link(url: &str) {
         let _ = std::process::Command::new("xdg-open").arg(url).spawn();
     }
 }
+
+/// Ask the user for a folder with the system's own dialog. `start` is where
+/// it opens. `None` if they cancel.
+pub async fn pick_folder(
+    title: &str,
+    start: Option<std::path::PathBuf>,
+) -> Option<std::path::PathBuf> {
+    let mut dialog = rfd::AsyncFileDialog::new().set_title(title);
+    if let Some(dir) = start.filter(|d| d.is_dir()) {
+        dialog = dialog.set_directory(dir);
+    }
+    dialog.pick_folder().await.map(|h| h.path().to_path_buf())
+}
