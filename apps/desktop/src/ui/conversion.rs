@@ -2,7 +2,7 @@
 //! starting defaults) and the Preview tab (this one series).
 
 use crate::state::AppState;
-use converter::process::{CropMode, Layout, Margins, SpreadMode};
+use converter::process::{CropMode, Layout, Margins, SpreadMode, StripCut};
 use converter::xtc::{Format, ReadDirection};
 use converter::Dither;
 use dioxus::prelude::*;
@@ -121,6 +121,30 @@ pub fn ConversionControls(
         },
         None,
     );
+    let cut_tiles = choices(
+        vec![
+            (
+                "Quiet spot",
+                "Cut where little is drawn",
+                "cutquiet",
+                c.strip_cut == StripCut::Quiet,
+            ),
+            (
+                "Repeat rows",
+                "The older way",
+                "cutrepeat",
+                c.strip_cut == StripCut::Overlap,
+            ),
+        ],
+        |s, v| {
+            s.strip_cut = if v == "cutrepeat" {
+                StripCut::Overlap
+            } else {
+                StripCut::Quiet
+            }
+        },
+        None,
+    );
     let spread_tiles = choices(
         vec![
             (
@@ -224,7 +248,18 @@ pub fn ConversionControls(
             div { class: "mp-choice-grid two", role: "group", aria_label: "Reading direction", {direction_tiles.into_iter()} }
             h4 { class: "mp-control-heading", "Double-page spreads" }
             div { class: "mp-choice-grid", role: "group", aria_label: "Double-page spreads", {spread_tiles.into_iter()} }
-            if advanced && strips {
+            if strips {
+                h4 { class: "mp-control-heading", "Where long strips are cut" }
+                div { class: "mp-choice-grid two", role: "group", aria_label: "Where long strips are cut", {cut_tiles.into_iter()} }
+                p { class: "mp-control-note",
+                    if c.strip_cut == StripCut::Quiet {
+                        "Each page ends at the quietest row near its bottom: a gap, a panel edge or a flat area. No row is shown twice."
+                    } else {
+                        "Each page ends at the full screen height, and its last rows repeat at the top of the next page."
+                    }
+                }
+            }
+            if advanced && strips && c.strip_cut == StripCut::Overlap {
                 details { class: "mp-tuning",
                 summary { "Strip tuning" }
                 div { class: "field",

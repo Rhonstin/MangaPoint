@@ -7,8 +7,43 @@ use crate::ui::devices::DeviceSelect;
 use crate::ui::presets::{apply_to_series, PresetPicker};
 use crate::ui::widgets::{EmptyState, Icon};
 use crate::ui::work::{prepare_preview, schedule_preview, select_preview_page};
+use converter::plan::Source;
 use dioxus::prelude::*;
 use library::CropRect;
+
+/// What the page after this one repeats of it: how many rows, and where those
+/// rows sit on the page (as shares of the screen height).
+#[derive(Clone, PartialEq)]
+struct Seam {
+    rows: u32,
+    band_top: f32,
+    band_height: f32,
+}
+
+/// The seam after each page of a strip chapter; `None` for the last page and
+/// for chapters that are not strips.
+fn seams(
+    pages: &[std::rc::Rc<crate::state::PreviewPage>],
+    screen_height: u32,
+) -> Vec<Option<Seam>> {
+    let rows_of = |page: &crate::state::PreviewPage| match page.source.as_ref().map(|p| p.source) {
+        Some(Source::Strip { top, height }) => Some((top, height)),
+        _ => None,
+    };
+    (0..pages.len())
+        .map(|i| {
+            let (top, height) = rows_of(&pages[i])?;
+            let (next_top, _) = rows_of(pages.get(i + 1)?)?;
+            let rows = (top + height).saturating_sub(next_top);
+            let screen = screen_height.max(1) as f32;
+            Some(Seam {
+                rows,
+                band_top: height.saturating_sub(rows) as f32 / screen * 100.0,
+                band_height: rows as f32 / screen * 100.0,
+            })
+        })
+        .collect()
+}
 
 /// Sizes the viewer to the window, reports which pages are on screen (as
 /// `[first, last, current]`, `-1` when there are none), and wires the keys.
@@ -106,6 +141,7 @@ fn EditorRow(
     guide: bool,
     row_style: String,
     frame_style: String,
+    seam: Option<Seam>,
     chapter: String,
     crop_key: String,
     draft: Signal<CropRect>,
@@ -159,6 +195,25 @@ fn EditorRow(
                         } else {
                             div { class: "editor-image-loading", "Drawing page…" }
                         }
+                        if let Some(seam) = seam.as_ref().filter(|s| s.rows > 0) {
+                            div {
+                                class: "editor-seam-band",
+                                style: "top: {seam.band_top}%; height: {seam.band_height}%;",
+                                title: "The next page starts with these rows again",
+                                span { "Repeated on the next page" }
+                            }
+                        }
+                    }
+                }
+            }
+            if let Some(seam) = seam {
+                div { class: if seam.rows > 0 { "editor-seam-note repeats" } else { "editor-seam-note clean" },
+                    if seam.rows > 0 {
+                        Icon { name: "layers", size: 13 }
+                        "Next page repeats these last {seam.rows} rows"
+                    } else {
+                        Icon { name: "check", size: 13 }
+                        "Clean cut: the next page starts right below"
                     }
                 }
             }
@@ -282,6 +337,7 @@ pub fn PreviewTab() -> Element {
         }
     );
     let compare = view.show_original;
+    let seams = seams(&p.pages, device.height);
     rsx! {
         div { id: "page-editor", class: "{classes}", tabindex: "0",
             div { class: "editor-toolbar",
@@ -461,6 +517,7 @@ pub fn PreviewTab() -> Element {
                                 guide: view.show_crop,
                                 row_style: row_style.clone(),
                                 frame_style: frame_style.clone(),
+                                seam: seams.get(i).cloned().flatten(),
                                 chapter: chapter.clone(),
                                 crop_key: page.crop_key.clone(),
                                 draft,

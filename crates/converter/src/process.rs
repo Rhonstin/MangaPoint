@@ -66,6 +66,20 @@ pub enum SpreadMode {
     Rotate,
 }
 
+/// How a long strip is cut into screen-sized pages where there is no blank
+/// gap to cut in.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum StripCut {
+    /// At the quietest row near the bottom of the page, where the least is
+    /// drawn, so no row appears twice.
+    #[default]
+    Quiet,
+    /// At the full screen height, with the last rows repeated at the top of
+    /// the next page (the older way).
+    Overlap,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProcessOptions {
     pub width: u32,
@@ -86,7 +100,10 @@ pub struct ProcessOptions {
     pub contrast: u8,
     /// Stretch the tonal range so the paper becomes white and ink black.
     pub auto_levels: bool,
-    /// Webtoon slices overlap by this share of the screen height (0..=50).
+    /// How a long strip is cut when there is no blank gap.
+    pub strip_cut: StripCut,
+    /// With [`StripCut::Overlap`], slices overlap by this share of the screen
+    /// height (0..=50).
     pub overlap_percent: u8,
     pub dither: Dither,
     pub depth: Depth,
@@ -108,6 +125,7 @@ impl ProcessOptions {
             direction: ReadDirection::RightToLeft,
             contrast: 55,
             auto_levels: true,
+            strip_cut: StripCut::Quiet,
             overlap_percent: 8,
             dither: Dither::FloydSteinberg,
             depth,

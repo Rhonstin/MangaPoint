@@ -11,7 +11,9 @@
 //!   spine, rotated, or fitted, as the settings say.
 //! * Webtoon chapters: every image is scaled to the screen width and joined.
 //!   Pages are cut at the blank gutters between scenes when there is one near
-//!   the bottom of the screen, and overlap slightly when there is not.
+//!   the bottom of the screen. When there is not, the cut is made at the
+//!   quietest row near the bottom (or, in the older way, at the full screen
+//!   height with the last rows repeated on the next page).
 //!
 //! Positions in a strip are also given in *units* (the strip scaled to 1000
 //! wide), which do not depend on the device.
@@ -19,7 +21,7 @@
 use crate::gray::{GrayImage, LevelImage};
 use crate::process::{
     border_median, crop_bounds, crop_rect, finish, fit, letterbox_top, resize, rotate_cw,
-    trim_bounds, trim_threshold, CropMode, Layout, Margins, ProcessOptions, SpreadMode,
+    trim_bounds, trim_threshold, CropMode, Layout, Margins, ProcessOptions, SpreadMode, StripCut,
 };
 use crate::xtc::ReadDirection;
 
@@ -308,7 +310,14 @@ fn plan_strip(strip: &Strip, opts: &ProcessOptions) -> ChapterPlan {
                 let end = (a + pad).min(ideal_end);
                 (end, b.saturating_sub(pad).max(end))
             }
-            None => (ideal_end, ideal_end - overlap),
+            None => match opts.strip_cut {
+                // The quietest row near the bottom; nothing is repeated.
+                StripCut::Quiet => {
+                    let cut = quietest_row(strip, start + min_fill, ideal_end);
+                    (cut, cut)
+                }
+                StripCut::Overlap => (ideal_end, ideal_end - overlap),
+            },
         };
         spans.push((start, end - start));
         start = next.max(start + 1);
@@ -332,6 +341,53 @@ fn plan_strip(strip: &Strip, opts: &ProcessOptions) -> ChapterPlan {
         pages,
         unit_height: to_units(strip.total, strip.width),
     }
+}
+
+/// One row of the strip.
+fn strip_row(strip: &Strip, y: u32) -> &[u8] {
+    let part = strip.starts.partition_point(|&first| first <= y).max(1) - 1;
+    let image = &strip.parts[part];
+    let width = strip.width as usize;
+    let row = (y - strip.starts[part]) as usize;
+    &image.pixels[row * width..(row + 1) * width]
+}
+
+/// How much is drawn on row `y`: the difference between neighbouring pixels,
+/// added up. A flat row, a straight panel border or a blank gap scores near
+/// nothing; a row through lettering or a face scores a lot.
+fn row_activity(strip: &Strip, y: u32) -> u32 {
+    strip_row(strip, y)
+        .windows(2)
+        .map(|pair| (pair[0] as i32 - pair[1] as i32).unsigned_abs())
+        .sum()
+}
+
+/// Where to cut a page that has no blank gap: the quietest row in
+/// `[from, to)`, which is the row the next page starts with. Rows nearly as
+/// quiet as the quietest are all as good, so the latest of them is taken, to
+/// keep the page as full as it can be.
+fn quietest_row(strip: &Strip, from: u32, to: u32) -> u32 {
+    let to = to.min(strip.total);
+    if from + 1 >= to {
+        return to;
+    }
+    // Each row's own activity and its neighbours', so a single quiet row
+    // between two lines of lettering does not win.
+    let activity: Vec<f32> = (from.saturating_sub(1)..=to.min(strip.total - 1))
+        .map(|y| row_activity(strip, y) as f32 / strip.width.max(1) as f32)
+        .collect();
+    let base = from.saturating_sub(1);
+    let at = |y: u32| (y - base) as usize;
+    let cost = |y: u32| {
+        let (a, b, c) = (activity[at(y) - 1], activity[at(y)], activity[at(y) + 1]);
+        (a + b + c) / 3.0
+    };
+    let lowest = (from..to - 1).map(cost).fold(f32::MAX, f32::min);
+    let allowed = lowest + 0.5 + lowest * 0.25;
+    (from..to - 1)
+        .rev()
+        .find(|&y| cost(y) <= allowed)
+        .unwrap_or(to)
 }
 
 /// The last run of at least `min_len` blank rows that lies inside
@@ -590,7 +646,8 @@ mod tests {
     fn many_short_images_are_stitched_into_one_strip() {
         // Six 700-row images: no image alone fills a page, together 4200 rows.
         let images = scenes(6, 700, 100_000, 0);
-        let o = opts();
+        let mut o = opts();
+        o.strip_cut = StripCut::Overlap;
         let prepared = prepare(&images, &o);
         assert!(prepared.is_strip());
         let plan = plan(&prepared, &o);
@@ -601,6 +658,72 @@ mod tests {
         // inside image 1 and is a single continuous slice.
         let rows = original_rows(&prepared, &plan.pages[1]).unwrap();
         assert_eq!(rows.height, 800);
+    }
+
+    /// Busy pictures (stripes) with one flat black band. The band differs from
+    /// the page's background enough to count as drawing, so it is not a gap.
+    fn busy_with_a_quiet_band(rows: u32, band: std::ops::Range<u32>) -> GrayImage {
+        GrayImage::from_fn(480, rows, |x, y| {
+            if band.contains(&y) {
+                0
+            } else if (x / 3) % 2 == 0 {
+                40
+            } else {
+                220
+            }
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn without_a_gap_the_page_is_cut_at_the_quietest_row_and_nothing_repeats() {
+        // Rows 700..740 are flat, everything else is busy: the page has to end
+        // in the band, not at the 800-row screen limit, and the next page
+        // starts exactly where it ends.
+        let images = [busy_with_a_quiet_band(5000, 700..740)];
+        let mut o = opts();
+        o.strip_cut = StripCut::Quiet;
+        let plan = plan(&prepare(&images, &o), &o);
+        let tops = tops(&plan);
+        let Source::Strip { height, .. } = plan.pages[0].source else {
+            unreachable!()
+        };
+        assert!((700..=740).contains(&height), "cut at {height}");
+        assert_eq!(tops[1], height, "the next page starts where this one ends");
+        // No page repeats any row of the one before it.
+        for pair in plan.pages.windows(2) {
+            let (Source::Strip { top, height }, Source::Strip { top: next, .. }) =
+                (pair[0].source, pair[1].source)
+            else {
+                unreachable!()
+            };
+            assert!(
+                next >= top + height,
+                "rows repeated: {top}+{height} then {next}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_older_cut_repeats_the_last_rows_on_the_next_page() {
+        let images = [busy_with_a_quiet_band(5000, 700..740)];
+        let mut o = opts();
+        o.strip_cut = StripCut::Overlap;
+        let tops = tops(&plan(&prepare(&images, &o), &o));
+        // Full 800-row pages, each starting 64 rows (8%) before the last ended.
+        assert_eq!(&tops[..3], &[0, 736, 1472]);
+    }
+
+    #[test]
+    fn a_blank_gap_is_still_used_first() {
+        let images = scenes(1, 6000, 600, 90);
+        let mut o = opts();
+        o.strip_cut = StripCut::Quiet;
+        let plan = plan(&prepare(&images, &o), &o);
+        let Source::Strip { height, .. } = plan.pages[0].source else {
+            unreachable!()
+        };
+        assert!((510..=530).contains(&height), "height {height}");
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! User preferences.
 
 use converter::process::{
-    CropMode, Layout, Margins, SpreadMode, DEFAULT_TRIM_PADDING, DEFAULT_TRIM_SENSITIVITY,
+    CropMode, Layout, Margins, SpreadMode, StripCut, DEFAULT_TRIM_PADDING, DEFAULT_TRIM_SENSITIVITY,
 };
 use converter::xtc::{Format, ReadDirection};
 use converter::Dither;
@@ -28,6 +28,9 @@ pub struct ConversionSettings {
     /// 0..=100, 50 = unchanged.
     pub contrast: u8,
     pub auto_levels: bool,
+    /// How a long strip is cut where it has no blank gap.
+    pub strip_cut: StripCut,
+    /// With the older cut, how much of a page repeats on the next.
     pub overlap_percent: u8,
     pub dither: Dither,
 }
@@ -47,6 +50,7 @@ impl Default for ConversionSettings {
             spread: SpreadMode::Split,
             contrast: 55,
             auto_levels: true,
+            strip_cut: StripCut::Quiet,
             overlap_percent: 8,
             dither: Dither::FloydSteinberg,
         }
@@ -67,12 +71,13 @@ pub enum ConversionField {
     Spread,
     Contrast,
     AutoLevels,
+    StripCut,
     OverlapPercent,
     Dither,
 }
 
 impl ConversionField {
-    pub const ALL: [ConversionField; 12] = [
+    pub const ALL: [ConversionField; 13] = [
         ConversionField::Format,
         ConversionField::Direction,
         ConversionField::Layout,
@@ -83,6 +88,7 @@ impl ConversionField {
         ConversionField::Spread,
         ConversionField::Contrast,
         ConversionField::AutoLevels,
+        ConversionField::StripCut,
         ConversionField::OverlapPercent,
         ConversionField::Dither,
     ];
@@ -114,6 +120,7 @@ impl ConversionSettings {
             ConversionField::Spread => self.spread = from.spread,
             ConversionField::Contrast => self.contrast = from.contrast,
             ConversionField::AutoLevels => self.auto_levels = from.auto_levels,
+            ConversionField::StripCut => self.strip_cut = from.strip_cut,
             ConversionField::OverlapPercent => self.overlap_percent = from.overlap_percent,
             ConversionField::Dither => self.dither = from.dither,
         }

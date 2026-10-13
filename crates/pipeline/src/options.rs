@@ -23,6 +23,7 @@ pub fn process_options_for(
         direction: conversion.direction,
         contrast: conversion.contrast,
         auto_levels: conversion.auto_levels,
+        strip_cut: conversion.strip_cut,
         overlap_percent: conversion.overlap_percent,
         dither: conversion.dither,
         depth: conversion.format.depth(),

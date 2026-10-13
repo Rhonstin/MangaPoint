@@ -47,3 +47,9 @@
 .controls.mp-conversion .field .hint { grid-column: 1; margin-top: 0; }
 .controls.mp-conversion .check-line { color: var(--muted); }
 @media (max-width: 520px) { .mp-choice-grid { gap: 5px; }.mp-choice { padding: 8px 4px; } }
+
+/* the two ways of cutting a long strip */
+.mp-diagram.cutquiet, .mp-diagram.cutrepeat { flex-direction: column; gap: 3px; }
+.mp-diagram.cutquiet i, .mp-diagram.cutrepeat i { width: 30px; height: 17px; flex-shrink: 0; display: block; }
+.mp-diagram.cutrepeat { gap: 0; }
+.mp-diagram.cutrepeat i:nth-child(2) { margin-top: -6px; border-top: 6px solid var(--warn); }
