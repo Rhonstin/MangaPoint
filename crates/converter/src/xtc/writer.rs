@@ -143,22 +143,35 @@ impl XtcBuilder {
                 found: page.depth,
             });
         }
+        let bytes = encode_page(page)?;
+        self.add_encoded_page(&bytes)
+    }
+
+    /// Append a previously packed XTG/XTH page without unpacking or encoding
+    /// its pixels again. The header, depth and bitmap length are validated.
+    pub fn add_encoded_page(&mut self, bytes: &[u8]) -> Result<(), XtcError> {
+        let (width, height, depth) = super::encode::validate_page(bytes, self.entries.len())?;
+        if depth != self.format.depth() {
+            return Err(XtcError::DepthMismatch {
+                expected: self.format.depth(),
+                found: depth,
+            });
+        }
         if self.entries.len() >= u16::MAX as usize {
             return Err(XtcError::TooManyPages(self.entries.len() + 1));
         }
-        let bytes = encode_page(page)?;
         let entry = PageEntry {
             len: bytes.len() as u32,
-            width: page.width as u16,
-            height: page.height as u16,
+            width: width as u16,
+            height: height as u16,
         };
         match &mut self.data {
-            PageData::Memory(pages) => pages.push(bytes),
+            PageData::Memory(pages) => pages.push(bytes.to_vec()),
             PageData::Spool(spool) => spool
                 .file
                 .as_mut()
                 .expect("the spool file is open until the builder is finished")
-                .write_all(&bytes)
+                .write_all(bytes)
                 .map_err(|e| XtcError::Spool(e.to_string()))?,
         }
         self.entries.push(entry);
@@ -309,6 +322,44 @@ mod tests {
             height: 8,
             depth,
             levels: vec![depth.max_level(); 64],
+        }
+    }
+
+    #[test]
+    fn packed_pages_preserve_both_formats_and_reject_invalid_data_before_appending() {
+        for format in [Format::Xtc, Format::Xtch] {
+            let mut builder = XtcBuilder::new(format);
+            let image = varied(format.depth(), 3);
+            let packed = encode_page(&image).unwrap();
+            let other = if format == Format::Xtc {
+                Depth::Two
+            } else {
+                Depth::One
+            };
+            assert!(matches!(
+                builder.add_encoded_page(&encode_page(&blank(other)).unwrap()),
+                Err(XtcError::DepthMismatch { .. })
+            ));
+            assert!(builder
+                .add_encoded_page(&packed[..packed.len() - 1])
+                .is_err());
+            let mut oversized = packed.clone();
+            oversized.push(0);
+            assert!(builder.add_encoded_page(&oversized).is_err());
+            for offset in [0, 4, 8, 9, 10] {
+                let mut damaged = packed.clone();
+                if offset == 4 {
+                    damaged[4..6].fill(0);
+                } else {
+                    damaged[offset] ^= 0xff;
+                }
+                assert!(builder.add_encoded_page(&damaged).is_err());
+            }
+            assert_eq!(builder.page_count(), 0);
+            builder.add_encoded_page(&packed).unwrap();
+            let bytes = builder.build().unwrap();
+            let file = super::super::XtcFile::parse(&bytes).unwrap();
+            assert_eq!(file.decode_page(0).unwrap().image, image);
         }
     }
 

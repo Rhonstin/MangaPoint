@@ -4,6 +4,7 @@ mod assets;
 mod backend;
 mod logic;
 mod queue;
+mod sample;
 mod state;
 mod ui;
 
@@ -62,7 +63,7 @@ fn main() {
     let window = WindowBuilder::new()
         .with_window_icon(Icon::from_rgba(rgba, w, h).ok())
         .with_title("MangaPoint")
-        .with_inner_size(LogicalSize::new(1180.0, 800.0))
+        .with_inner_size(LogicalSize::new(1480.0, 940.0))
         .with_min_inner_size(LogicalSize::new(860.0, 560.0));
     let mut config = Config::new().with_window(window).with_menu(None);
     // Developer switch: let tools such as an automated UI test connect to the

@@ -8,11 +8,15 @@
 use crate::error::{PipelineError, Result};
 use converter::decode::decode_to_gray;
 use converter::process::resize;
-use converter::{crop_bounds, process_page, GrayImage, LevelImage, ProcessOptions};
+use converter::{
+    crop_bounds, process_page, ChapterPlan, GrayImage, LevelImage, PlannedPage, Prepared,
+    ProcessOptions,
+};
 use image::{
     codecs::{jpeg::JpegEncoder, png::PngEncoder},
     ExtendedColorType, ImageEncoder,
 };
+use std::sync::Arc;
 
 /// A page ready to show: encoded image bytes plus its size.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -40,6 +44,31 @@ pub fn render_levels(gray: &GrayImage, opts: &ProcessOptions) -> Vec<LevelImage>
 /// gray, light gray, white for four levels; black and white for two.
 pub fn levels_to_previews(levels: &[LevelImage]) -> Vec<PreviewImage> {
     levels.iter().map(level_png).collect()
+}
+
+/// A small navigator image derived from the exact rendered levels.
+pub fn levels_to_thumbnail(img: &LevelImage) -> PreviewImage {
+    let max = img.depth.max_level() as u32;
+    let gray = GrayImage {
+        width: img.width,
+        height: img.height,
+        pixels: img
+            .levels
+            .iter()
+            .map(|&l| (l as u32 * 255 / max) as u8)
+            .collect(),
+    };
+    let height = 160;
+    let width = (img.width as f64 * height as f64 / img.height as f64)
+        .round()
+        .max(1.0) as u32;
+    let small = resize(&gray, width, height);
+    PreviewImage {
+        bytes: encode_png(&small.pixels, width, height),
+        mime: "image/png",
+        width,
+        height,
+    }
 }
 
 fn level_png(img: &LevelImage) -> PreviewImage {
@@ -134,6 +163,44 @@ pub fn render_gray(gray: &GrayImage, opts: &ProcessOptions) -> RenderedPage {
         converted: levels_to_previews(&render_levels(gray, opts)),
         original: render_original(gray, opts),
     }
+}
+
+/// A chapter prepared for previewing: cropped and (for a webtoon) stitched,
+/// with the pages it will become. Share it between threads to draw pages in
+/// parallel with [`render_planned`].
+#[derive(Clone)]
+pub struct ChapterPreview {
+    pub prepared: Arc<Prepared>,
+    pub plan: ChapterPlan,
+}
+
+/// Prepare and plan a whole decoded chapter, the way the export does.
+pub fn prepare_chapter(grays: &[GrayImage], opts: &ProcessOptions) -> ChapterPreview {
+    let prepared = Arc::new(converter::plan::prepare(grays, opts));
+    let plan = converter::plan::plan(&prepared, opts);
+    ChapterPreview { prepared, plan }
+}
+
+/// Draw one planned page: the exact pixels the export writes for it.
+pub fn render_planned(
+    prepared: &Prepared,
+    page: &PlannedPage,
+    opts: &ProcessOptions,
+) -> PreviewImage {
+    level_png(&converter::plan::render_page(prepared, page, opts))
+}
+
+/// The downloaded rows a strip page is made from, as a picture to show beside
+/// the converted page. `None` for a paged chapter, whose original is the
+/// downloaded image itself ([`render_original`]).
+pub fn render_strip_original(prepared: &Prepared, page: &PlannedPage) -> Option<PreviewImage> {
+    let rows = converter::plan::original_rows(prepared, page)?;
+    Some(PreviewImage {
+        bytes: encode_jpeg(&rows.pixels, rows.width, rows.height),
+        mime: "image/jpeg",
+        width: rows.width,
+        height: rows.height,
+    })
 }
 
 /// A page drawn from scratch to try settings on when there is nothing
@@ -237,6 +304,32 @@ mod tests {
 
     fn page() -> GrayImage {
         GrayImage::from_fn(600, 900, |x, _| (x * 255 / 599) as u8).unwrap()
+    }
+
+    #[test]
+    fn a_chapter_preview_matches_what_the_export_writes() {
+        // Three short webtoon images: stitched, planned, and drawn per page.
+        let images: Vec<GrayImage> = (0..3)
+            .map(|i| GrayImage::new(480, 900, 60 + i * 50).unwrap())
+            .collect();
+        let mut o = opts(Depth::Two);
+        o.layout = converter::Layout::Webtoon;
+        o.crop = converter::CropMode::Full;
+        let chapter = prepare_chapter(&images, &o);
+        assert!(chapter.plan.strip);
+        let drawn: Vec<PreviewImage> = chapter
+            .plan
+            .pages
+            .iter()
+            .map(|p| render_planned(&chapter.prepared, p, &o))
+            .collect();
+        let exported = converter::plan::convert_chapter(&images, &o);
+        assert_eq!(drawn.len(), exported.len());
+        assert_eq!(
+            drawn,
+            levels_to_previews(&exported),
+            "preview and export draw the same pixels"
+        );
     }
 
     #[test]
@@ -385,5 +478,121 @@ mod tests {
             decode_page(b"not an image"),
             Err(PipelineError::Decode(_))
         ));
+    }
+}
+
+#[cfg(test)]
+mod crop_tests {
+    use super::*;
+    use library::CropRect;
+    #[test]
+    fn stable_keys_ignore_page_positions_but_separate_source_sections() {
+        let mut p = PlannedPage {
+            source: converter::plan::Source::Image {
+                index: 7,
+                part: converter::plan::Part::Whole,
+            },
+            unit_top: 0,
+            unit_height: 0,
+            landscape: false,
+        };
+        let key = crop_page_key(&p);
+        p.landscape = true;
+        assert_eq!(key, crop_page_key(&p));
+        p.source = converter::plan::Source::Image {
+            index: 7,
+            part: converter::plan::Part::Half(0),
+        };
+        assert_ne!(key, crop_page_key(&p));
+        p.source = converter::plan::Source::Strip {
+            top: 50,
+            height: 80,
+        };
+        p.unit_top = 100;
+        p.unit_height = 160;
+        let key = crop_page_key(&p);
+        p.source = converter::plan::Source::Strip {
+            top: 100,
+            height: 160,
+        };
+        assert_eq!(key, crop_page_key(&p));
+        p.unit_height += 1;
+        assert_ne!(key, crop_page_key(&p));
+    }
+    #[test]
+    fn cropped_preview_matches_converter_and_source_keeps_raw_tones() {
+        let mut o = ProcessOptions::manga_default(40, 60, converter::Depth::Two);
+        o.layout = converter::Layout::Manga;
+        o.crop = converter::CropMode::Full;
+        let gray = GrayImage::from_fn(80, 120, |x, _| (x * 3) as u8).unwrap();
+        let chapter = prepare_chapter(std::slice::from_ref(&gray), &o);
+        let p = &chapter.plan.pages[0];
+        let crop = CropRect {
+            left: 0.25,
+            ..Default::default()
+        };
+        let shown = render_planned_with_crop(&chapter.prepared, p, &o, Some(crop));
+        let expected =
+            converter::plan::render_page_cropped(&chapter.prepared, p, &o, crop.as_array());
+        assert_eq!(shown, levels_to_previews(&[expected])[0]);
+        let source = render_source_preview(&chapter.prepared, p, &o);
+        assert_eq!((source.width, source.height), (80, 120));
+        let restored = image::load_from_memory(&source.bytes).unwrap().to_luma8();
+        assert_eq!(restored.get_pixel(40, 50).0[0], gray.get(40, 50));
+    }
+}
+
+/// Crop identity follows source content, never its position in the page list.
+pub fn crop_page_key(page: &PlannedPage) -> String {
+    use converter::plan::{Part, Source};
+    match page.source {
+        Source::Image { index, part } => {
+            let part = match part {
+                Part::Whole => "whole".into(),
+                Part::Rotated => "rotated".into(),
+                Part::Half(n) => format!("half:{n}"),
+            };
+            format!("image:{index}:{part}")
+        }
+        Source::Strip { .. } => format!("strip:{}:{}", page.unit_top, page.unit_height),
+    }
+}
+pub fn render_planned_with_crop(
+    prepared: &Prepared,
+    page: &PlannedPage,
+    opts: &ProcessOptions,
+    crop: Option<library::CropRect>,
+) -> PreviewImage {
+    level_png(&converter::plan::render_page_cropped(
+        prepared,
+        page,
+        opts,
+        crop.unwrap_or_default().as_array(),
+    ))
+}
+/// Source sections retain all tones; PNG makes crop inspection exact.
+pub fn render_source_preview(
+    prepared: &Prepared,
+    page: &PlannedPage,
+    opts: &ProcessOptions,
+) -> PreviewImage {
+    let raw = converter::plan::page_source(prepared, page, opts);
+    let scale = (ORIGINAL_MAX_WIDTH as f64 / raw.width as f64)
+        .min(ORIGINAL_MAX_HEIGHT as f64 / raw.height as f64)
+        .min(1.0);
+    let shown = if scale < 1.0 {
+        resize(
+            &raw,
+            (raw.width as f64 * scale).round().max(1.0) as u32,
+            (raw.height as f64 * scale).round().max(1.0) as u32,
+        )
+    } else {
+        raw
+    };
+    PreviewImage {
+        bytes: encode_png(&shown.pixels, shown.width, shown.height),
+        mime: "image/png",
+        width: shown.width,
+        height: shown.height,
     }
 }

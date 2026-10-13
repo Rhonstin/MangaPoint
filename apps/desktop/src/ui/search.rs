@@ -94,7 +94,16 @@ pub fn SearchPage() -> Element {
         changed.set(false);
     };
 
+    // Before anything is searched the box sits in the middle of the window, under
+    // the cat. Searching moves it up and widens it (see style.css).
+    let idle = view.query.is_empty() && !view.searching;
     rsx! {
+      div { class: if idle { "search-stage idle" } else { "search-stage" },
+        div { class: "search-hero",
+            super::ocean::OceanCat {}
+            h2 { "What are we reading?" }
+            p { class: "muted", "Type a title below and the cat will go looking for it." }
+        }
         // The search box is all there is at the top. It is a grid of two things
         // in one place: an invisible copy of the full-size box, which holds the
         // space (so nothing below moves and the pointer is never left outside
@@ -200,12 +209,6 @@ pub fn SearchPage() -> Element {
                 message: format!("It found nothing for “{}”. Try another spelling, or add more sources.", view.query),
                 scene: "search",
             }
-        } else if view.query.is_empty() && !view.no_sources && !view.none_selected {
-            EmptyState {
-                title: "What are we reading?",
-                message: "Type a title above and the cat will go looking for it.",
-                scene: "ocean",
-            }
         }
         if !view.failed.is_empty() && !view.searching {
             p { class: "muted small",
@@ -219,6 +222,7 @@ pub fn SearchPage() -> Element {
                 SeriesCard { key: "{view.ranked[i].title}-{i}", index: i }
             }
         }
+      }
     }
 }
 
@@ -257,11 +261,14 @@ fn SourcePanel(
 
     rsx! {
         div { class: "popover",
-            div { class: "row", style: "margin-bottom: 8px",
+            div { class: "popover-head",
                 strong { class: "grow", "Search these sources" }
-                button { class: "btn ghost small", r#type: "button", onclick: move |_| on_change.call(Vec::new()), "All" }
-                button { class: "btn ghost small", r#type: "button", onclick: move |_| on_change.call(all_ids.clone()), "None" }
-                button { class: "btn ghost small", r#type: "button", title: "Only the sources whose last test passed",
+                span { class: "muted small", "{on} of {total}" }
+            }
+            div { class: "popover-quick",
+                button { class: "pill small", r#type: "button", onclick: move |_| on_change.call(Vec::new()), "All" }
+                button { class: "pill small", r#type: "button", onclick: move |_| on_change.call(all_ids.clone()), "None" }
+                button { class: "pill small", r#type: "button", title: "Only the sources whose last test passed",
                     onclick: move |_| on_change.call(failing.clone()),
                     "Tested OK"
                 }

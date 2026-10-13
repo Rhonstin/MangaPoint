@@ -19,7 +19,7 @@ pub mod speeds;
 
 pub use downloads::{
     chapter_key, remove_inside, series_id, status_label, DownloadedChapter, DownloadedSeries,
-    LibraryDb, LibraryFiles, SavedSource, SeriesInfo,
+    LibraryDb, LibraryFiles, SavedSource, SeriesInfo, SAMPLE_TITLE,
 };
 pub use exports::{delete_exported_file, ExportRecord, ExportedFileRecord, ExportsDb};
 pub use health::{HealthDb, StepTiming, TestRecord, Verdict};
@@ -29,7 +29,10 @@ pub use presets::{
     builtin_presets, ConversionPreset, Deleted, PresetEntry, PresetError, PresetsDb,
 };
 pub use settings::{
-    ConversionSettings, DownloadLimits, DownloadSettings, DownloadSpeed, ExportSettings, Settings,
+    ConversionField, ConversionSettings, DownloadLimits, DownloadSettings, DownloadSpeed,
+    ExportSettings, Settings,
 };
 pub use sources::{Choice, SourceState};
 pub use speeds::{SourceSpeed, SpeedDb};
+pub mod crops;
+pub use crops::{CropOverrides, CropRect, CropScope};

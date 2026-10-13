@@ -2,19 +2,18 @@
 
 use super::ask_enable_browser;
 
-use super::presets_lab::PresetsLab;
+use super::devices::DevicesEditor;
 use super::widgets::Icon;
 use crate::logic::{human_bytes, plural};
 use crate::state::{paths, AppState, BootState, Modal, ModalAction, Page, SettingsSection};
 use catalog::browser;
-use device_profiles::{Device, Firmware};
+use device_profiles::Firmware;
 use dioxus::prelude::*;
 use library::{DownloadLimits, DownloadSpeed};
 
 /// The sections, in the order the sidebar lists them.
-const SECTIONS: [(SettingsSection, &str, &str); 6] = [
+const SECTIONS: [(SettingsSection, &str, &str); 5] = [
     (SettingsSection::Reader, "hard-drive", "Your reader"),
-    (SettingsSection::Presets, "layers", "Presets"),
     (SettingsSection::Downloads, "download", "Downloads"),
     (SettingsSection::Files, "folder-open", "Files"),
     (SettingsSection::Browser, "globe", "Browser support"),
@@ -70,15 +69,8 @@ pub fn SettingsPage() -> Element {
             div { class: "settings-content",
                 {match section {
                     SettingsSection::Reader => rsx! {
-                        h1 { class: "sx-title", "Your reader" }
-                        Row { label: "Device",
-                            select {
-                                value: if s.device == Device::XteinkX4 { "x4" } else { "x4pro" },
-                                onchange: move |e| update(|s, v| s.device = if v == "x4" { Device::XteinkX4 } else { Device::XteinkX4Pro }, e.value()),
-                                option { value: "x4pro", selected: s.device == Device::XteinkX4Pro, "Xteink X4 Pro" }
-                                option { value: "x4", selected: s.device == Device::XteinkX4, "Xteink X4" }
-                            }
-                        }
+                        DevicesEditor {}
+                        Group { title: "Firmware" }
                         Row { label: "Firmware", desc: "What the reader runs. It decides which file types it can open.",
                             select {
                                 value: if s.firmware == Firmware::CrossPoint { "cross" } else { "stock" },
@@ -88,7 +80,6 @@ pub fn SettingsPage() -> Element {
                             }
                         }
                     },
-                    SettingsSection::Presets => rsx! { PresetsLab {} },
                     SettingsSection::Downloads => rsx! {
                         h1 { class: "sx-title", "Downloads" }
                         Group { title: "Speed" }
@@ -220,7 +211,29 @@ pub fn SettingsPage() -> Element {
                             }
                         }
                         Group { title: "Downloaded chapters" }
-                        Row { label: "Downloads folder", desc: "Where the pages you download are kept.",
+                        Row {
+                            label: "Download folder",
+                            desc: format!("New downloads are kept in {}. Series you already have stay where they are.", crate::state::library_files().root().display()),
+                            button { class: "btn", title: "Choose where new downloads are kept",
+                                onclick: move |_| {
+                                    spawn(async move {
+                                        let start = Some(crate::state::library_files().root().to_path_buf());
+                                        if let Some(dir) = super::widgets::pick_folder("Where should downloads be kept?", start).await {
+                                            super::work::set_download_folder(state, dir);
+                                        }
+                                    });
+                                },
+                                Icon { name: "folder-open", size: 15 }
+                                "Choose folder…"
+                            }
+                        }
+                        Row { label: "Ask each time", desc: "Show where files go whenever you start a download.",
+                            input {
+                                r#type: "checkbox", checked: s.ask_download_folder,
+                                onchange: move |e| { let mut st = state.settings; st.write().ask_download_folder = e.checked(); state.save_settings(); },
+                            }
+                        }
+                        Row { label: "Open the downloads folder", desc: "Where the pages you download are kept.",
                             button { class: "btn", title: "Open the downloads folder",
                                 onclick: move |_| {
                                     let dir = crate::state::library_files().root().to_path_buf();

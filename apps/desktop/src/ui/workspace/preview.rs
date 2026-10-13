@@ -1,463 +1,545 @@
-//! Tab 3: scroll through the chapter as it will look on the reader, and tune
-//! the settings. Every page is drawn in one long column, the original beside
-//! the converted page, so you read it like a normal screen.
-
-use crate::state::{AppState, PreviewPage, SeriesTab, Zoom};
-use crate::ui::conversion::ConversionControls;
-use crate::ui::presets::{apply_to_series, PresetPicker};
+//! The page editor: every page of a chapter in one continuous scroll, like a
+//! PDF viewer, with the original beside each converted page.
+use super::crop_editor::SourceCanvas;
+use crate::state::{AppState, Shot, Zoom};
 use crate::ui::widgets::{EmptyState, Icon};
-use crate::ui::work::{prepare_preview, schedule_preview};
+use crate::ui::work::{prepare_preview, schedule_preview, select_preview_page};
+use converter::plan::Source;
 use dioxus::prelude::*;
-use std::rc::Rc;
+use library::CropRect;
 
-/// The tallest a page is drawn when it is sized to "fit", in screen pixels.
-const FIT_MAX_HEIGHT: u32 = 1100;
-/// Space between the pictures in a row, in screen pixels.
-const GAP: u32 = 16;
-/// A long strip is cut into this many screens or more.
-const STRIP_PARTS: usize = 3;
-
-/// One picture to draw.
-struct Figure {
-    key: String,
-    caption: String,
-    url: String,
-    width: u32,
-    height: u32,
-    /// The kept area to outline on the original: left, top, width, height.
-    kept: Option<[f32; 4]>,
+/// What the page after this one repeats of it: how many rows, and where those
+/// rows sit on the page (as shares of the screen height).
+#[derive(Clone, PartialEq)]
+struct Seam {
+    rows: u32,
+    band_top: f32,
+    band_height: f32,
 }
 
-/// How big to draw a picture. In "fit" the pictures of a row share one height:
-/// the largest that lets them sit side by side across the width.
-fn image_style(zoom: Zoom, width: u32, height: u32, total_aspect: f32, count: usize) -> String {
-    let gaps = GAP * count.saturating_sub(1) as u32;
-    let ratio = format!("aspect-ratio: {width} / {height};");
-    // Every size property is always set: the web view only updates the
-    // properties present in a style, so one left out would keep its old value
-    // (a 200% width surviving a switch back to "fit").
-    match zoom {
-        Zoom::Fit => format!(
-            "width: auto; height: min(calc((100cqw - {gaps}px) / {total_aspect:.4}), {FIT_MAX_HEIGHT}px); {ratio}"
-        ),
-        Zoom::Width => format!(
-            "width: auto; height: calc((100cqw - {gaps}px) / {total_aspect:.4}); {ratio}"
-        ),
-        Zoom::Actual => format!("width: {width}px; height: {height}px; {ratio}"),
-        Zoom::Double => format!(
-            "width: {}px; height: {}px; {ratio}",
-            width * 2,
-            height * 2
-        ),
-    }
-}
-
-/// The width of one screen of a long strip. The original beside it is
-/// `original_ratio` times as wide, so the two together fill the row.
-fn slice_width(zoom: Zoom, slice: u32, original_ratio: f32) -> String {
-    let share = 1.0 + original_ratio;
-    let gap = if original_ratio > 0.0 { GAP } else { 0 };
-    match zoom {
-        Zoom::Fit => format!(
-            "min(calc((100cqw - {gap}px) / {share:.4}), {}px)",
-            slice * 3 / 2
-        ),
-        Zoom::Width => format!("calc((100cqw - {gap}px) / {share:.4})"),
-        Zoom::Actual => format!("{slice}px"),
-        Zoom::Double => format!("{}px", slice * 2),
-    }
-}
-
-/// How many screens tall a strip is once the overlap between them is counted.
-fn strip_screens(parts: usize, overlap_percent: u8) -> f32 {
-    let overlap = overlap_percent.min(50) as f32 / 100.0;
-    1.0 + (parts.saturating_sub(1)) as f32 * (1.0 - overlap)
-}
-
-fn skeleton(index: usize, view: crate::state::PreviewView) -> Element {
-    // A guess at the row's shape, so the page does not jump as pages arrive.
-    let aspect = if view.show_original { 1.25 } else { 0.6 };
-    let style = image_style(view.zoom, 480, 800, aspect, 1);
-    rsx! {
-        div { class: "page-row", key: "{index}",
-            div { class: "page-label", "Page {index + 1}" }
-            div { class: "skeleton", style: "{style}" }
-        }
-    }
-}
-
-fn page_row(
-    index: usize,
-    page: &PreviewPage,
-    view: crate::state::PreviewView,
-    overlap: u8,
-    device_name: &str,
-) -> Element {
-    let parts = page.converted.len();
-    let strip = parts >= STRIP_PARTS;
-    let original = Figure {
-        key: "original".into(),
-        caption: "Original".into(),
-        url: page.original.url.clone(),
-        width: page.original.width,
-        height: page.original.height,
-        kept: if view.show_crop {
-            Some(page.kept)
-        } else {
-            None
-        },
+/// The seam after each page of a strip chapter; `None` for the last page and
+/// for chapters that are not strips.
+fn seams(
+    pages: &[std::rc::Rc<crate::state::PreviewPage>],
+    screen_height: u32,
+) -> Vec<Option<Seam>> {
+    let rows_of = |page: &crate::state::PreviewPage| match page.source.as_ref().map(|p| p.source) {
+        Some(Source::Strip { top, height }) => Some((top, height)),
+        _ => None,
     };
-    let converted: Vec<Figure> = page
-        .converted
-        .iter()
-        .enumerate()
-        .map(|(i, shot)| Figure {
-            key: format!("page-{i}"),
-            caption: if parts > 1 {
-                format!("On your {device_name} · part {} of {parts}", i + 1)
-            } else {
-                format!("On your {device_name}")
-            },
-            url: shot.url.clone(),
-            width: shot.width,
-            height: shot.height,
-            kept: None,
+    (0..pages.len())
+        .map(|i| {
+            let (top, height) = rows_of(&pages[i])?;
+            let (next_top, _) = rows_of(pages.get(i + 1)?)?;
+            let rows = (top + height).saturating_sub(next_top);
+            let screen = screen_height.max(1) as f32;
+            Some(Seam {
+                rows,
+                band_top: height.saturating_sub(rows) as f32 / screen * 100.0,
+                band_height: rows as f32 / screen * 100.0,
+            })
         })
-        .collect();
+        .collect()
+}
 
-    if strip {
-        // Original on the left, the screens stacked on the right.
-        let (sw, sh) = (converted[0].width, converted[0].height);
-        let screens = strip_screens(parts, overlap);
-        // How wide the original is next to one screen: its height is the
-        // screens stacked, and its shape is its own.
-        let original_ratio = if view.show_original {
-            (sh as f32 / sw as f32)
-                * screens
-                * (original.width as f32 / original.height.max(1) as f32)
-        } else {
-            0.0
-        };
-        let slice = slice_width(view.zoom, sw, original_ratio);
-        let original_height = format!(
-            "calc(var(--sw) * {:.4} * {screens:.3})",
-            sh as f32 / sw as f32
-        );
-        let original_shape = format!("{} / {}", original.width, original.height);
-        return rsx! {
-            div { class: "page-row strip", key: "{index}", style: "--sw: {slice};",
-                div { class: "page-label", "Page {index + 1} · {parts} screens" }
-                div { class: "page-pair",
-                    if view.show_original {
-                        figure { class: "device",
-                            figcaption { "Original" }
-                            div { class: "shot",
-                                img { src: "{original.url}", style: "width: auto; height: {original_height}; aspect-ratio: {original_shape};", alt: "Original" }
-                                if let Some([x, y, w, h]) = original.kept {
-                                    if w < 0.999 || h < 0.999 {
-                                        div { class: "kept", style: "left: {x * 100.0:.3}%; top: {y * 100.0:.3}%; width: {w * 100.0:.3}%; height: {h * 100.0:.3}%;" }
+/// Sizes the viewer to the window, reports which pages are on screen (as
+/// `[first, last, current]`, `-1` when there are none), and wires the keys.
+const EDITOR_SCRIPT: &str = r#"
+let tries = 0;
+const start = () => {
+ const root = document.getElementById('page-editor');
+ if (!root) { if (tries++ < 120) requestAnimationFrame(start); return; }
+ if (root.dataset.bound) return;
+ root.dataset.bound = '1';
+ const scroller = root.querySelector('.editor-scroll');
+ const page = root.closest('.content') || document.documentElement;
+ let frame = 0, last = '';
+ const vars = {};
+ const set = (name, value) => { if (vars[name] !== value) { vars[name] = value; root.style.setProperty(name, value); } };
+ // The viewer is as tall as the space left under the series header, so the
+ // whole page does not scroll. Its position is measured inside the scrolling
+ // page: measured on the screen it would change as the page scrolls, and the
+ // viewer would grow every time it was scrolled.
+ const fit = () => {
+  const top = scroller.getBoundingClientRect().top - page.getBoundingClientRect().top + page.scrollTop;
+  const bar = root.querySelector('.editor-bottom');
+  const below = (bar ? bar.offsetHeight : 0) + (parseFloat(getComputedStyle(page).paddingBottom) || 0) + 8;
+  set('--canvas-height', Math.max(240, Math.round(page.clientHeight - top - below)) + 'px');
+  set('--bottom-height', (bar ? bar.offsetHeight : 0) + 'px');
+  const style = getComputedStyle(scroller);
+  const room = scroller.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom) - 96;
+  set('--reader-page-height', Math.max(120, Math.round(room)) + 'px');
+  const pane = root.querySelector('.row-pane.result-pane');
+  if (pane && pane.clientWidth > 0) set('--reader-page-width', pane.clientWidth + 'px');
+ };
+ const report = () => {
+  const box = scroller.getBoundingClientRect();
+  const probe = box.top + box.height * 0.3;
+  let lo = -1, hi = -1, cur = -1;
+  for (const row of scroller.querySelectorAll('.editor-row')) {
+   const b = row.getBoundingClientRect(), i = Number(row.dataset.row);
+   if (b.bottom >= box.top - box.height * 0.5 && b.top <= box.bottom + box.height * 0.5) {
+    if (lo < 0) lo = i;
+    hi = i;
+   }
+   if (cur < 0 && b.bottom > probe) cur = i;
+  }
+  const message = lo + ',' + hi + ',' + cur;
+  if (message !== last) { last = message; dioxus.send([lo, hi, cur]); }
+ };
+ const run = () => { frame = 0; if (root.isConnected) { fit(); report(); } };
+ const later = () => { if (!frame) frame = requestAnimationFrame(run); };
+ scroller.addEventListener('scroll', later, { passive: true });
+ window.addEventListener('resize', later);
+ new ResizeObserver(later).observe(scroller);
+ new ResizeObserver(later).observe(page);
+ new MutationObserver(later).observe(scroller, { childList: true, subtree: true });
+ // Things above the viewer (the series header, a cover) can still be loading.
+ const timer = setInterval(() => { if (!root.isConnected) clearInterval(timer); else later(); }, 400);
+ root.addEventListener('keydown', e => {
+  if (e.target.closest('input,select,textarea,[contenteditable=true]')) return;
+  const ids = { Escape: 'editor-close-overview' };
+  const id = ids[e.key];
+  if (id) { const b = document.getElementById(id); if (b && !b.disabled) { e.preventDefault(); b.click(); } }
+ });
+ later();
+};
+start();
+// Stay alive: messages can only be sent while the script has not finished.
+await new Promise(() => {});
+"#;
+
+/// How tall a page is at this zoom, as a CSS length.
+fn row_height(zoom: Zoom, width: u32, height: u32) -> String {
+    match zoom {
+        Zoom::Fit => format!(
+            "min(var(--reader-page-height),calc(var(--reader-page-width) * {height} / {width}))"
+        ),
+        Zoom::Width => format!("calc(var(--reader-page-width) * {height} / {width})"),
+        Zoom::Custom(percent) => format!("{}px", height * percent as u32 / 100),
+    }
+}
+
+fn reader_style(zoom: Zoom, width: u32, height: u32) -> String {
+    let size = match zoom {
+        Zoom::Fit => format!("height:{};width:auto;", row_height(zoom, width, height)),
+        Zoom::Width => "height:auto;width:100%;".to_string(),
+        Zoom::Custom(percent) => format!(
+            "height:{}px;width:{}px;",
+            height * percent as u32 / 100,
+            width * percent as u32 / 100
+        ),
+    };
+    format!("{size}aspect-ratio:{width}/{height};")
+}
+
+/// One page of the chapter in the scrolling list: the original on the left
+/// (when comparing) and the page as the reader will show it on the right.
+#[component]
+fn EditorRow(
+    index: usize,
+    selected: bool,
+    result: Option<Shot>,
+    source: Option<Shot>,
+    compare: bool,
+    editing: bool,
+    guide: bool,
+    row_style: String,
+    frame_style: String,
+    seam: Option<Seam>,
+    chapter: String,
+    crop_key: String,
+    draft: Signal<CropRect>,
+) -> Element {
+    let state = use_context::<AppState>();
+    rsx! {
+        article {
+            class: if selected { "editor-row selected" } else { "editor-row" },
+            "data-row": "{index}",
+            style: "{row_style}",
+            onclick: move |_| {
+                if !selected {
+                    let mut preview = state.preview;
+                    let mut p = preview.write();
+                    p.selected = index;
+                    p.draft_crop = None;
+                }
+            },
+            div { class: "editor-row-label", "Page {index + 1}" }
+            div { class: if compare { "editor-row-panes comparing" } else { "editor-row-panes" },
+                if compare {
+                    div { class: "row-pane source-pane",
+                        if let Some(source) = source {
+                            if selected {
+                                SourceCanvas {
+                                    key: "{chapter}/{crop_key}",
+                                    source: source.clone(),
+                                    draft,
+                                    crop_key: crop_key.clone(),
+                                    editing,
+                                    guide,
+                                }
+                            } else {
+                                div { class: "editor-source-scroll",
+                                    div {
+                                        class: "editor-source-art",
+                                        style: "aspect-ratio: {source.width} / {source.height}; --source-aspect: {source.width as f64 / source.height.max(1) as f64};",
+                                        img { src: "{source.url}", alt: "Source artwork of page {index + 1}", draggable: "false" }
                                     }
                                 }
                             }
+                        } else {
+                            div { class: "editor-image-loading", style: "{frame_style}", "Preparing source…" }
                         }
                     }
-                    figure { class: "device",
-                        figcaption { "On your {device_name}" }
-                        div { class: "slices",
-                            for f in converted.iter() {
-                                div { class: "shot", key: "{f.key}",
-                                    img { src: "{f.url}", style: "width: var(--sw); height: auto; aspect-ratio: {f.width} / {f.height};", alt: "{f.caption}" }
-                                }
+                }
+                div { class: "row-pane result-pane",
+                    div { class: "editor-reader-frame", style: "{frame_style}",
+                        if let Some(shot) = result {
+                            img { src: "{shot.url}", alt: "Page {index + 1} exactly as exported to the reader", draggable: "false" }
+                        } else {
+                            div { class: "editor-image-loading", "Drawing page…" }
+                        }
+                        if let Some(seam) = seam.as_ref().filter(|s| s.rows > 0) {
+                            div {
+                                class: "editor-seam-band",
+                                style: "top: {seam.band_top}%; height: {seam.band_height}%;",
+                                title: "The next page starts with these rows again",
+                                span { "Repeated on the next page" }
                             }
                         }
                     }
                 }
             }
-        };
-    }
-
-    let mut figures: Vec<&Figure> = Vec::new();
-    if view.show_original {
-        figures.push(&original);
-    }
-    figures.extend(converted.iter());
-    let total_aspect: f32 = figures
-        .iter()
-        .map(|f| f.width as f32 / f.height.max(1) as f32)
-        .sum::<f32>()
-        .max(0.1);
-    let count = figures.len();
-    rsx! {
-        div { class: "page-row", key: "{index}",
-            div { class: "page-label", "Page {index + 1}" }
-            div { class: "page-pair",
-                for f in figures.iter() {
-                    figure { class: "device", key: "{f.key}",
-                        figcaption { "{f.caption}" }
-                        div { class: "shot",
-                            img {
-                                src: "{f.url}",
-                                style: "{image_style(view.zoom, f.width, f.height, total_aspect, count)}",
-                                alt: "{f.caption}",
-                            }
-                            if let Some([x, y, w, h]) = f.kept {
-                                if w < 0.999 || h < 0.999 {
-                                    div { class: "kept", style: "left: {x * 100.0:.3}%; top: {y * 100.0:.3}%; width: {w * 100.0:.3}%; height: {h * 100.0:.3}%;" }
-                                }
-                            }
-                        }
+            if let Some(seam) = seam {
+                div { class: if seam.rows > 0 { "editor-seam-note repeats" } else { "editor-seam-note clean" },
+                    if seam.rows > 0 {
+                        Icon { name: "layers", size: 13 }
+                        "Next page repeats these last {seam.rows} rows"
+                    } else {
+                        Icon { name: "check", size: 13 }
+                        "Clean cut: the next page starts right below"
                     }
                 }
             }
         }
+    }
+}
+
+/// Preview another downloaded chapter, from its first page.
+pub(crate) fn switch_chapter(state: AppState, key: String) {
+    let mut pv = state.preview;
+    let mut w = pv.write();
+    if w.chapter_key.as_deref() == Some(key.as_str()) {
+        return;
+    }
+    w.chapter_key = Some(key);
+    w.selected = 0;
+    w.thumb_start = 0;
+    w.window = (0, 0);
+    w.pages.clear();
+    w.draft_crop = None;
+    w.shading_samples.clear();
+    drop(w);
+    spawn(async move {
+        let _ = document::eval("document.querySelector('.editor-scroll')?.scrollTo(0,0)").await;
+    });
+    schedule_preview(state, 0);
+}
+
+/// The pages now on screen changed: draw them, and follow the page at the top.
+fn track_scroll(state: AppState, first: i64, last: i64, current: i64) {
+    if first < 0 || last < 0 {
+        return;
+    }
+    let (window, selected) = ((first as usize, last as usize), current.max(0) as usize);
+    let (window_changed, page_changed) = {
+        let mut preview = state.preview;
+        let mut p = preview.write();
+        let total = p.pages.len();
+        if total == 0 {
+            return;
+        }
+        let window = (window.0.min(total - 1), window.1.min(total - 1));
+        let window_changed = p.window != window;
+        p.window = window;
+        // While a crop is being dragged, the page stays where it is.
+        let selected = selected.min(total - 1);
+        let page_changed = !p.view.editing_crop && p.selected != selected;
+        if page_changed {
+            p.selected = selected;
+            p.draft_crop = None;
+        }
+        (window_changed, page_changed)
+    };
+    if page_changed {
+        let selected = state.preview.peek().selected;
+        spawn(async move {
+            let js = format!("document.querySelector('[data-editor-page=\"{selected}\"]')?.scrollIntoView({{block:'nearest'}})");
+            let _ = document::eval(&js).await;
+        });
+    }
+    if window_changed || page_changed {
+        schedule_preview(state, 120);
     }
 }
 
 #[component]
 pub fn PreviewTab() -> Element {
-    let state = use_context::<AppState>();
-    // Make sure there is something to show when the tab opens.
+    let mut state = use_context::<AppState>();
+    let mut draft = state.crop_draft;
+    let mut identity = use_signal(String::new);
     use_effect(move || prepare_preview(state));
-
+    use_future(move || async move {
+        let mut eval = document::eval(EDITOR_SCRIPT);
+        while let Ok(message) = eval.recv::<Vec<i64>>().await {
+            if let [first, last, current] = message.as_slice() {
+                track_scroll(state, *first, *last, *current);
+            }
+        }
+    });
+    use_effect(move || {
+        let p = state.preview.read();
+        let ws = state.workspace.read();
+        let lib = state.library.read();
+        if let (Some(ws), Some(chapter), Some(page)) =
+            (ws.as_ref(), p.chapter_key.as_ref(), p.pages.get(p.selected))
+        {
+            if let Some(series) = lib.find(&ws.series_id) {
+                let crop = series
+                    .crops
+                    .effective(chapter, &page.crop_key)
+                    .unwrap_or_default();
+                let next = format!("{}/{}/{}:{crop:?}", ws.series_id, chapter, page.crop_key);
+                if *identity.peek() != next {
+                    identity.set(next);
+                    draft.set(crop);
+                }
+            }
+        }
+    });
     let Some(ws) = state.workspace.read().clone() else {
         return rsx! {};
     };
-    let Some(series) = state.library.read().find(&ws.series_id).cloned() else {
-        return rsx! {
-            EmptyState {
-                title: "Nothing to preview yet",
-                message: "Download a chapter first and the cat will lay it out for you.",
-            }
-        };
-    };
+    if state.library.read().find(&ws.series_id).is_none() {
+        return rsx! {EmptyState{title:"Nothing to edit yet",message:"Download a chapter to open it in the editor."}};
+    }
     let p = state.preview.read().clone();
     let view = p.view;
-    let current = p.chapter_key.clone().unwrap_or_default();
+    let chapter = p.chapter_key.clone().unwrap_or_default();
     let total = p.pages.len();
-    let device_name = state.settings.read().device.profile().name;
-    let overlap = series.settings.overlap_percent;
-
-    let rows: Vec<Element> = p
-        .pages
-        .iter()
-        .enumerate()
-        .map(
-            |(index, page): (usize, &Option<Rc<PreviewPage>>)| match page {
-                Some(page) => page_row(index, page, view, overlap, device_name),
-                None => skeleton(index, view),
-            },
-        )
-        .collect();
-
-    let series_id = series.id.clone();
-    let pick_id = series.id.clone();
-    let saved_id = series.id.clone();
-    let reset_id = series.id.clone();
-    let copy_settings = series.settings.clone();
-    let copy_preset = series.preset_id.clone();
-    let layout_class = if view.focus {
-        "preview-layout focus"
-    } else {
-        "preview-layout"
-    };
-
+    let selected = p.selected.min(total.saturating_sub(1));
+    let number = if total == 0 { 0 } else { selected + 1 };
+    let device = state.settings.read().device_profile();
+    let frame_style = reader_style(view.zoom, device.width, device.height);
+    let row_style = format!(
+        "--row-h:{};",
+        row_height(view.zoom, device.width, device.height)
+    );
+    let classes = format!(
+        "page-editor{}{}",
+        "",
+        if view.source_focus {
+            " source-focused"
+        } else {
+            ""
+        }
+    );
+    let compare = view.show_original;
+    let seams = seams(&p.pages, device.height);
     rsx! {
-        div { class: "{layout_class}",
-            // ---- the pages ----
-            div { class: "preview-main",
-                div { class: "toolbar sticky",
-                    select {
-                        style: "min-width: 200px; max-width: 320px",
+        div { id: "page-editor", class: "{classes}", tabindex: "0",
+            div { class: "editor-toolbar",
+                label { class: "editor-page-jump",
+                    span { "Page" }
+                    input {
+                        r#type: "number", min: "1", max: "{total}", step: "1",
+                        value: "{number}", disabled: total == 0, "aria-label": "Go to page",
                         onchange: move |e| {
-                            let mut pv = state.preview;
-                            {
-                                let mut w = pv.write();
-                                w.chapter_key = Some(e.value());
-                                w.pages.clear();
-                                w.fresh = 0;
+                            if let Ok(n) = e.value().trim().parse::<usize>() {
+                                if (1..=total).contains(&n) { select_preview_page(state, n - 1); }
                             }
+                        },
+                    }
+                    span { class: "muted", "/ {total}" }
+                }
+                div { class: "editor-toolbar-actions",
+                    span { class: "editor-status",
+                        if p.busy {
+                            span { class: "spin", Icon { name: "loader-circle", size: 13 } }
+                            " Updating…"
+                        } else {
+                            Icon { name: "check", size: 13 }
+                            " Ready"
+                        }
+                    }
+                    button {
+                        class: if compare { "btn small on" } else { "btn small" },
+                        title: "Show the downloaded artwork beside each reader page",
+                        onclick: move |_| {
+                            state.preview.write().view.show_original = !compare;
                             schedule_preview(state, 0);
                         },
-                        for c in series.chapters.iter() {
-                            option { key: "{c.key}", value: "{c.key}", selected: c.key == current, "{c.name} ({c.pages} pages)" }
-                        }
+                        Icon { name: "eye", size: 14 } "Compare"
                     }
-                    if p.busy && total > 0 {
-                        span { class: "muted small", span { class: "spin", Icon { name: "loader-circle", size: 14 } } " Drawing {p.fresh} of {total}" }
-                    } else if total > 0 {
-                        span { class: "muted small", "{total} pages" }
-                    } else if p.busy {
-                        span { class: "spin muted", Icon { name: "loader-circle", size: 16 } }
-                    }
-                    span { class: "grow" }
-                    div { class: "seg", title: "How big the pages are drawn",
-                        for (zoom, label) in [(Zoom::Fit, "Fit"), (Zoom::Width, "Wide"), (Zoom::Actual, "100%"), (Zoom::Double, "200%")] {
-                            button {
-                                key: "{label}",
-                                class: if view.zoom == zoom { "on" } else { "" },
-                                onclick: move |_| { let mut pv = state.preview; pv.write().view.zoom = zoom; },
-                                "{label}"
-                            }
-                        }
-                    }
-                    button {
-                        class: if view.show_original { "btn small on" } else { "btn small" },
-                        title: "Show the downloaded page next to the converted one",
-                        onclick: move |_| { let mut pv = state.preview; let mut w = pv.write(); w.view.show_original = !w.view.show_original; },
-                        Icon { name: "eye", size: 14 } "Original"
-                    }
-                    button {
-                        class: if view.show_crop { "btn small on" } else { "btn small" },
-                        title: "Outline what the cropping keeps, and dim what it cuts",
-                        disabled: !view.show_original,
-                        onclick: move |_| { let mut pv = state.preview; let mut w = pv.write(); w.view.show_crop = !w.view.show_crop; },
-                        Icon { name: "crop", size: 14 } "Crop"
-                    }
-                    button {
-                        class: "btn small",
-                        title: if view.focus { "Show the settings" } else { "Hide the settings to give the pages the whole width" },
-                        onclick: move |_| { let mut pv = state.preview; let mut w = pv.write(); w.view.focus = !w.view.focus; },
-                        if view.focus { Icon { name: "panel-right-open", size: 14 } "Settings" } else { Icon { name: "panel-right-close", size: 14 } "Hide settings" }
-                    }
-                }
-                if let Some(message) = &p.error {
-                    div { class: "banner bad small", Icon { name: "circle-x", size: 16 } "{message}" }
-                }
-                div { class: if p.busy { "preview-stage busy" } else { "preview-stage" },
-                    {rows.into_iter()}
-                }
-                p { class: "muted small", style: "margin: 14px 0 0",
-                    "The converted pages are the exact images that go into the file. The real screen's gray shades can look a little different; the first time you test on your reader, compare it with this."
-                }
-            }
-
-            // ---- this series' settings ----
-            if !view.focus {
-                div { class: "side panel",
-                    PresetPicker {
-                        value: series.settings.clone(),
-                        preset_id: series.preset_id.clone(),
-                        on_pick: move |(id, settings)| apply_to_series(state, &pick_id, Some(id), settings),
-                        on_saved: move |id| {
-                            let mut library = state.library;
-                            library.write().set_preset(&saved_id, Some(id));
-                            state.save_library();
+                    select {
+                        class: "editor-zoom", "aria-label": "Preview zoom",
+                        onchange: move |e| {
+                            state.preview.write().view.zoom = match e.value().as_str() {
+                                "width" => Zoom::Width,
+                                "custom" => Zoom::Custom(match view.zoom { Zoom::Custom(p) => p, _ => 100 }),
+                                _ => Zoom::Fit,
+                            };
                         },
+                        option { value: "fit", selected: view.zoom == Zoom::Fit, "Fit page" }
+                        option { value: "width", selected: view.zoom == Zoom::Width, "Fit width" }
+                        option { value: "custom", selected: matches!(view.zoom, Zoom::Custom(_)), "Custom zoom" }
                     }
-                    div { class: "card",
-                        h2 { Icon { name: "sliders-horizontal", size: 17 } "This series" }
-                        p { class: "muted small", "These settings apply to every chapter of {ws.title}." }
-                        ConversionControls {
-                            value: series.settings.clone(),
-                            compact: true,
-                            onchange: move |v| {
-                                let mut lib = state.library;
-                                lib.write().set_settings(&series_id, v);
-                                state.save_library();
-                                schedule_preview(state, 250);
-                            },
-                        }
-                        div { class: "row wrap", style: "margin-top: 8px",
-                            button { class: "btn ghost small",
-                                onclick: move |_| {
-                                    let (defaults, preset) = {
-                                        let s = state.settings.peek();
-                                        (s.conversion.clone(), s.default_preset_id.clone())
-                                    };
-                                    apply_to_series(state, &reset_id, preset, defaults);
-                                },
-                                Icon { name: "rotate-ccw", size: 14 } "Back to my defaults"
-                            }
-                            button { class: "btn ghost small",
-                                onclick: move |_| {
-                                    let linked = copy_preset.clone().filter(|id| {
-                                        state.presets.peek().find(id).is_some_and(|e| e.preset.settings == copy_settings)
-                                    });
-                                    let mut settings = state.settings;
-                                    {
-                                        let mut s = settings.write();
-                                        s.conversion = copy_settings.clone();
-                                        s.default_preset_id = linked;
+                    if let Zoom::Custom(percent) = view.zoom {
+                        div { class: "editor-custom-zoom",
+                            input {
+                                r#type: "range", min: "{Zoom::MIN_PERCENT}", max: "{Zoom::MAX_PERCENT}", step: "5",
+                                value: "{percent}", "aria-label": "Zoom percentage",
+                                oninput: move |e| {
+                                    if let Ok(v) = e.value().parse::<u16>() {
+                                        state.preview.write().view.zoom = Zoom::Custom(v.clamp(Zoom::MIN_PERCENT, Zoom::MAX_PERCENT));
                                     }
-                                    state.save_settings();
-                                    state.notify("Saved as your starting point for new series.");
                                 },
-                                Icon { name: "check", size: 14 } "Use for new series"
+                            }
+                            input {
+                                r#type: "number", min: "{Zoom::MIN_PERCENT}", max: "{Zoom::MAX_PERCENT}", step: "5",
+                                value: "{percent}", "aria-label": "Zoom percentage",
+                                onchange: move |e| {
+                                    if let Ok(v) = e.value().parse::<u16>() {
+                                        state.preview.write().view.zoom = Zoom::Custom(v.clamp(Zoom::MIN_PERCENT, Zoom::MAX_PERCENT));
+                                    }
+                                },
+                            }
+                            span { class: "muted", "%" }
+                        }
+                    }
+                }
+            }
+            if let Some(error) = &p.error { div { class: "banner bad small", "{error}" } }
+            div { class: "editor-body",
+                nav {
+                    class: "editor-thumbnails", "aria-label": "Reader pages",
+                    onscroll: move |e| {
+                        let start = (e.data.scroll_top() / 132.0).floor().max(0.0) as usize;
+                        let needs = {
+                            let mut pv = state.preview;
+                            let mut w = pv.write();
+                            if w.thumb_start != start { w.thumb_start = start; true } else { false }
+                        };
+                        if needs && !state.preview.peek().overview { schedule_preview(state, 80); }
+                    },
+                    for (i, page) in p.pages.iter().enumerate() {
+                        button {
+                            key: "{i}",
+                            class: if i == selected { "editor-thumb selected" } else { "editor-thumb" },
+                            "data-editor-page": "{i}",
+                            "aria-label": "Open page {i + 1}",
+                            "aria-current": if i == selected { "page" } else { "false" },
+                            onclick: move |_| select_preview_page(state, i),
+                            div { class: "editor-thumb-art",
+                                if let Some(shot) = page.thumbnail.as_ref().or(page.shot.as_ref()) {
+                                    img { src: "{shot.url}", alt: "Reader page {i + 1}" }
+                                } else {
+                                    Icon { name: "file-image", size: 23 }
+                                }
+                            }
+                            span { "{i + 1}" }
+                        }
+                    }
+                    button {
+                        class: "btn small editor-overview-button",
+                        title: "See every page of the chapter at once",
+                        onclick: move |_| {
+                            state.preview.write().overview = true;
+                            schedule_preview(state, 0);
+                        },
+                        "Overview"
+                    }
+                }
+                main { class: "editor-main",
+                    div { class: "editor-mobile-switch",
+                        button {
+                            class: if !view.source_focus { "selected" } else { "" },
+                            onclick: move |_| { state.preview.write().view.source_focus = false; },
+                            "Reader result"
+                        }
+                        button {
+                            class: if view.source_focus { "selected" } else { "" },
+                            onclick: move |_| {
+                                let mut pv = state.preview;
+                                let mut w = pv.write();
+                                w.view.source_focus = true;
+                                w.view.show_original = true;
+                            },
+                            "Source"
+                        }
+                    }
+                    div { class: "editor-scroll",
+                        div { class: if compare { "editor-columns comparing" } else { "editor-columns" },
+                            if compare {
+                                span { class: "source-pane",
+                                    if p.strip { "Source section · joined strip" } else { "Source artwork" }
+                                    if view.editing_crop { " · drag the edges to crop" }
+                                }
+                            }
+                            span { class: "result-pane", "Reader result · {device.name} · {device.width} × {device.height}" }
+                        }
+                        if total == 0 && p.error.is_none() {
+                            div { class: "editor-image-loading", "Preparing the chapter…" }
+                        }
+                        for (i, page) in p.pages.iter().enumerate() {
+                            EditorRow {
+                                key: "{chapter}/{i}",
+                                index: i,
+                                selected: i == selected,
+                                result: page.shot.clone(),
+                                source: page.original.clone(),
+                                compare,
+                                editing: view.editing_crop && i == selected,
+                                guide: view.show_crop,
+                                row_style: row_style.clone(),
+                                frame_style: frame_style.clone(),
+                                seam: seams.get(i).cloned().flatten(),
+                                chapter: chapter.clone(),
+                                crop_key: page.crop_key.clone(),
+                                draft,
                             }
                         }
-                        div { style: "height: 12px" }
-                        button { class: "btn primary big", onclick: move |_| state.open_tab(SeriesTab::Export),
-                            "Next: Export"
-                            span { style: "display: inline-flex; transform: rotate(180deg)", Icon { name: "arrow-left", size: 16 } }
+                    }
+                }
+            }
+            if p.overview {
+                div { class: "editor-overview-backdrop",
+                    section { class: "editor-overview", role: "dialog", "aria-modal": "true", "aria-label": "Chapter page overview",
+                        header {
+                            strong { "Chapter overview · {total} reader pages" }
+                            button { id: "editor-close-overview", class: "btn small", onclick: move |_| { state.preview.write().overview = false; }, Icon { name: "x", size: 16 } }
+                        }
+                        div { class: "editor-overview-grid",
+                            for (i, page) in p.pages.iter().enumerate() {
+                                button {
+                                    key: "{i}",
+                                    class: if i == selected { "selected" } else { "" },
+                                    onclick: move |_| select_preview_page(state, i),
+                                    div { class: "editor-overview-art",
+                                        if let Some(shot) = page.thumbnail.as_ref().or(page.shot.as_ref()) {
+                                            img { src: "{shot.url}", alt: "Reader page {i + 1}" }
+                                        } else {
+                                            Icon { name: "file-image", size: 24 }
+                                        }
+                                    }
+                                    span { "Page {i + 1}" }
+                                }
+                            }
                         }
                     }
                 }
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn fit_shares_one_height_and_caps_it_while_wide_does_not() {
-        let fit = image_style(Zoom::Fit, 480, 800, 1.25, 2);
-        assert!(
-            fit.contains("min(calc((100cqw - 16px) / 1.2500), 1100px)"),
-            "{fit}"
-        );
-        assert!(fit.contains("aspect-ratio: 480 / 800"));
-        let wide = image_style(Zoom::Width, 480, 800, 1.25, 2);
-        assert!(
-            wide.contains("calc((100cqw - 16px) / 1.2500)") && !wide.contains("min("),
-            "{wide}"
-        );
-    }
-
-    #[test]
-    fn fixed_zooms_use_exact_sizes_and_nothing_left_over_from_fit() {
-        let actual = image_style(Zoom::Actual, 480, 800, 1.0, 1);
-        assert_eq!(
-            actual,
-            "width: 480px; height: 800px; aspect-ratio: 480 / 800;"
-        );
-        let double = image_style(Zoom::Double, 480, 800, 1.0, 1);
-        assert_eq!(
-            double,
-            "width: 960px; height: 1600px; aspect-ratio: 480 / 800;"
-        );
-    }
-
-    #[test]
-    fn every_zoom_sets_both_size_properties_so_none_is_left_over_from_the_last() {
-        for zoom in [Zoom::Fit, Zoom::Width, Zoom::Actual, Zoom::Double] {
-            let style = image_style(zoom, 480, 800, 1.0, 1);
-            assert!(style.contains("width:"), "{zoom:?}: {style}");
-            assert!(style.contains("height:"), "{zoom:?}: {style}");
-        }
-        assert!(image_style(Zoom::Fit, 480, 800, 1.0, 1).contains("width: auto"));
-    }
-
-    #[test]
-    fn a_strip_and_its_original_share_the_row_width() {
-        // The original is 1.25 screens wide: together they split the width 2.25 ways.
-        let fit = slice_width(Zoom::Fit, 480, 1.25);
-        assert!(
-            fit.contains("(100cqw - 16px) / 2.2500") && fit.contains("720px"),
-            "{fit}"
-        );
-        // With no original beside it, the screens take the whole row.
-        let alone = slice_width(Zoom::Width, 480, 0.0);
-        assert_eq!(alone, "calc((100cqw - 0px) / 1.0000)");
-        assert_eq!(slice_width(Zoom::Double, 480, 1.25), "960px");
-    }
-
-    #[test]
-    fn a_strips_screens_count_the_overlap() {
-        assert_eq!(strip_screens(1, 8), 1.0);
-        assert!((strip_screens(3, 10) - 2.8).abs() < 1e-6);
-        assert_eq!(strip_screens(5, 0), 5.0);
     }
 }

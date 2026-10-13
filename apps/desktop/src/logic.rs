@@ -246,34 +246,6 @@ pub fn export_target(
     }
 }
 
-// ---- Steps within a series -------------------------------------------------
-
-/// What a tab needs before it can be opened.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Needs {
-    Nothing,
-    /// Chapters ticked, or something already downloaded.
-    SelectionOrDownloads,
-    /// At least one downloaded chapter.
-    Downloads,
-}
-
-/// Why a tab cannot be opened yet, in words for a tooltip; `None` if it can.
-pub fn tab_blocked(
-    needs: Needs,
-    selected: usize,
-    downloaded: usize,
-    downloading: bool,
-) -> Option<&'static str> {
-    match needs {
-        Needs::Nothing => None,
-        Needs::SelectionOrDownloads if selected > 0 || downloaded > 0 || downloading => None,
-        Needs::SelectionOrDownloads => Some("Tick some chapters first"),
-        Needs::Downloads if downloaded > 0 => None,
-        Needs::Downloads => Some("Download a chapter first"),
-    }
-}
-
 /// Where a chapter stands in the Downloads tab.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChapterStatus {
@@ -531,14 +503,6 @@ pub fn plural(n: usize, noun: &str) -> String {
     } else {
         format!("{n} {noun}s")
     }
-}
-
-/// The first and last chapter numbers of a list, if any are numbered.
-pub fn number_range(numbers: impl Iterator<Item = Option<f64>>) -> Option<(f64, f64)> {
-    numbers.flatten().fold(None, |range, n| match range {
-        None => Some((n, n)),
-        Some((lo, hi)) => Some((lo.min(n), hi.max(n))),
-    })
 }
 
 /// How search results are ordered.
@@ -869,23 +833,6 @@ mod tests {
         assert_eq!(format_date(1_700_000_000_000), "2023-11-14");
         assert_eq!(format_date(951_782_400_000), "2000-02-29", "leap day");
         assert_eq!(format_date(1_000_000_000_000), "2001-09-09");
-    }
-
-    #[test]
-    fn tabs_open_only_when_their_step_can_work() {
-        // Chapters is always open.
-        assert_eq!(tab_blocked(Needs::Nothing, 0, 0, false), None);
-        // Downloads needs something ticked, something downloaded, or a download running.
-        assert!(tab_blocked(Needs::SelectionOrDownloads, 0, 0, false).is_some());
-        assert_eq!(tab_blocked(Needs::SelectionOrDownloads, 3, 0, false), None);
-        assert_eq!(tab_blocked(Needs::SelectionOrDownloads, 0, 2, false), None);
-        assert_eq!(tab_blocked(Needs::SelectionOrDownloads, 0, 0, true), None);
-        // Preview and Export need a downloaded chapter, however many are ticked.
-        assert_eq!(
-            tab_blocked(Needs::Downloads, 50, 0, true),
-            Some("Download a chapter first")
-        );
-        assert_eq!(tab_blocked(Needs::Downloads, 0, 1, false), None);
     }
 
     fn member(source: &str, manga_id: i64, score: f32) -> ScoredMember {
@@ -1227,14 +1174,6 @@ mod info_tests {
         assert_eq!(plural(0, "chapter"), "0 chapters");
         assert_eq!(plural(1, "chapter"), "1 chapter");
         assert_eq!(plural(235, "page"), "235 pages");
-    }
-
-    #[test]
-    fn the_chapter_range_ignores_unnumbered_chapters() {
-        let nums = [Some(3.0), None, Some(1.5), Some(10.0)];
-        assert_eq!(number_range(nums.into_iter()), Some((1.5, 10.0)));
-        assert_eq!(number_range([None, None].into_iter()), None);
-        assert_eq!(number_range(std::iter::empty()), None);
     }
 }
 

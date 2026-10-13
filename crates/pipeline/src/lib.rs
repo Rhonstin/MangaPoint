@@ -9,6 +9,7 @@
 
 pub mod balance;
 pub mod compose;
+mod conversion_cache;
 pub mod download;
 pub mod error;
 pub mod export;
@@ -31,8 +32,12 @@ pub use plan::{
     apply_choice, coverage, rank_sources, top_tier, Chosen, RankedSource, SourceChoice,
 };
 pub use preview::{
-    decode_page, levels_to_previews, render_gray, render_levels, render_original, render_page,
-    sample_page, OriginalPreview, PreviewImage, RenderedPage,
+    crop_page_key, levels_to_thumbnail, render_planned_with_crop, render_source_preview,
+};
+pub use preview::{
+    decode_page, levels_to_previews, prepare_chapter, render_gray, render_levels, render_original,
+    render_page, render_planned, render_strip_original, sample_page, ChapterPreview,
+    OriginalPreview, PreviewImage, RenderedPage,
 };
 pub use probe::{probe_source, probe_sources, PROBE_PAGES};
 pub use types::{

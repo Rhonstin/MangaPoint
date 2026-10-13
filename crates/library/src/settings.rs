@@ -1,12 +1,13 @@
 //! User preferences.
 
 use converter::process::{
-    CropMode, Layout, Margins, SpreadMode, DEFAULT_TRIM_PADDING, DEFAULT_TRIM_SENSITIVITY,
+    CropMode, Layout, Margins, SpreadMode, StripCut, DEFAULT_TRIM_PADDING, DEFAULT_TRIM_SENSITIVITY,
 };
 use converter::xtc::{Format, ReadDirection};
 use converter::Dither;
-use device_profiles::{Device, Firmware};
-use serde::{Deserialize, Serialize};
+use device_profiles::{DeviceProfile, Firmware};
+use serde::{Deserialize, Deserializer, Serialize};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -27,6 +28,9 @@ pub struct ConversionSettings {
     /// 0..=100, 50 = unchanged.
     pub contrast: u8,
     pub auto_levels: bool,
+    /// How a long strip is cut where it has no blank gap.
+    pub strip_cut: StripCut,
+    /// With the older cut, how much of a page repeats on the next.
     pub overlap_percent: u8,
     pub dither: Dither,
 }
@@ -46,8 +50,79 @@ impl Default for ConversionSettings {
             spread: SpreadMode::Split,
             contrast: 55,
             auto_levels: true,
+            strip_cut: StripCut::Quiet,
             overlap_percent: 8,
             dither: Dither::FloydSteinberg,
+        }
+    }
+}
+
+/// One setting of [`ConversionSettings`], named, so a series can remember
+/// which ones it changed from its preset.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ConversionField {
+    Format,
+    Direction,
+    Layout,
+    Crop,
+    Margins,
+    TrimSensitivity,
+    TrimPadding,
+    Spread,
+    Contrast,
+    AutoLevels,
+    StripCut,
+    OverlapPercent,
+    Dither,
+}
+
+impl ConversionField {
+    pub const ALL: [ConversionField; 13] = [
+        ConversionField::Format,
+        ConversionField::Direction,
+        ConversionField::Layout,
+        ConversionField::Crop,
+        ConversionField::Margins,
+        ConversionField::TrimSensitivity,
+        ConversionField::TrimPadding,
+        ConversionField::Spread,
+        ConversionField::Contrast,
+        ConversionField::AutoLevels,
+        ConversionField::StripCut,
+        ConversionField::OverlapPercent,
+        ConversionField::Dither,
+    ];
+}
+
+impl ConversionSettings {
+    /// The settings in which `self` and `other` differ.
+    pub fn differing(&self, other: &ConversionSettings) -> Vec<ConversionField> {
+        ConversionField::ALL
+            .into_iter()
+            .filter(|&f| {
+                let mut probe = self.clone();
+                probe.copy_field(other, f);
+                probe != *self
+            })
+            .collect()
+    }
+
+    /// Take one setting from `from`.
+    pub fn copy_field(&mut self, from: &ConversionSettings, field: ConversionField) {
+        match field {
+            ConversionField::Format => self.format = from.format,
+            ConversionField::Direction => self.direction = from.direction,
+            ConversionField::Layout => self.layout = from.layout,
+            ConversionField::Crop => self.crop = from.crop,
+            ConversionField::Margins => self.margins = from.margins,
+            ConversionField::TrimSensitivity => self.trim_sensitivity = from.trim_sensitivity,
+            ConversionField::TrimPadding => self.trim_padding = from.trim_padding,
+            ConversionField::Spread => self.spread = from.spread,
+            ConversionField::Contrast => self.contrast = from.contrast,
+            ConversionField::AutoLevels => self.auto_levels = from.auto_levels,
+            ConversionField::StripCut => self.strip_cut = from.strip_cut,
+            ConversionField::OverlapPercent => self.overlap_percent = from.overlap_percent,
+            ConversionField::Dither => self.dither = from.dither,
         }
     }
 }
@@ -173,8 +248,18 @@ impl Default for ExportSettings {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
-    pub device: Device,
+    /// Id of the device pages are made for: a built-in or one of
+    /// `custom_devices`. Files from before devices were data hold the old
+    /// enum's name, which is mapped on load.
+    #[serde(deserialize_with = "device_id")]
+    pub device: String,
+    /// Devices the user added.
+    pub custom_devices: Vec<DeviceProfile>,
+    /// The preset a device starts from, by device id.
+    pub device_presets: BTreeMap<String, String>,
     pub firmware: Firmware,
+    /// Show every conversion setting, not just the few that matter most.
+    pub advanced_conversion: bool,
     pub conversion: ConversionSettings,
     pub export: ExportSettings,
     /// Allow Suwayomi's embedded Chromium (needed by a few sources).
@@ -184,6 +269,12 @@ pub struct Settings {
     pub shrink_downloads: bool,
     /// How many chapters and pages to download at once.
     pub download: DownloadSettings,
+    /// Where new downloads are kept. `None` means the app's own folder.
+    pub library_dir: Option<PathBuf>,
+    /// Other folders downloads were kept in before, so they stay available.
+    pub library_dirs: Vec<PathBuf>,
+    /// Ask where to keep the files each time something is downloaded.
+    pub ask_download_folder: bool,
     /// The preset the default conversion settings started from, if any.
     pub default_preset_id: Option<String>,
     /// Preferred source language for search and ranking.
@@ -198,18 +289,43 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            device: Device::XteinkX4Pro,
+            device: device_profiles::X4_PRO_ID.into(),
+            custom_devices: Vec::new(),
+            device_presets: BTreeMap::new(),
             firmware: Firmware::CrossPoint,
+            advanced_conversion: false,
             conversion: ConversionSettings::default(),
             export: ExportSettings::default(),
             browser_support: false,
             shrink_downloads: false,
             download: DownloadSettings::default(),
+            library_dir: None,
+            library_dirs: Vec::new(),
+            ask_download_folder: true,
             default_preset_id: None,
             language: "en".into(),
             preferred_sources: Vec::new(),
             search_excluded_sources: Vec::new(),
         }
+    }
+}
+
+fn device_id<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    let raw = String::deserialize(d)?;
+    Ok(device_profiles::legacy_id(&raw).map_or(raw, str::to_string))
+}
+
+impl Settings {
+    /// The chosen device. A device that has since been removed falls back to
+    /// the X4 Pro, so export never fails over a stale id.
+    pub fn device_profile(&self) -> DeviceProfile {
+        device_profiles::find(&self.device, &self.custom_devices)
+            .unwrap_or_else(device_profiles::x4_pro)
+    }
+
+    /// Every device the user can pick.
+    pub fn devices(&self) -> Vec<DeviceProfile> {
+        device_profiles::all(&self.custom_devices)
     }
 }
 
@@ -220,7 +336,7 @@ mod tests {
     #[test]
     fn defaults_follow_the_plan() {
         let s = Settings::default();
-        assert_eq!(s.device, Device::XteinkX4Pro);
+        assert_eq!(s.device, device_profiles::X4_PRO_ID);
         assert_eq!(s.conversion.direction, ReadDirection::RightToLeft);
         assert_eq!(s.conversion.contrast, 55);
         assert_eq!(s.conversion.overlap_percent, 8);
@@ -297,6 +413,23 @@ mod tests {
     }
 
     #[test]
+    fn differing_names_exactly_the_changed_settings() {
+        let a = ConversionSettings::default();
+        assert!(a.differing(&a).is_empty());
+        let mut b = a.clone();
+        b.contrast = 80;
+        b.margins.top = 5;
+        assert_eq!(
+            a.differing(&b),
+            vec![ConversionField::Margins, ConversionField::Contrast]
+        );
+        let mut c = a.clone();
+        c.copy_field(&b, ConversionField::Contrast);
+        assert_eq!(c.contrast, 80);
+        assert_eq!(c.margins, a.margins, "only the named setting is copied");
+    }
+
+    #[test]
     fn partial_files_fill_in_defaults() {
         let s: Settings =
             serde_json::from_str(r#"{"language":"ja","conversion":{"contrast":70}}"#).unwrap();
@@ -304,6 +437,30 @@ mod tests {
         assert_eq!(s.conversion.contrast, 70);
         assert_eq!(s.conversion.overlap_percent, 8);
         assert_eq!(s.export.device_folder, "Manga");
+    }
+
+    #[test]
+    fn old_device_names_and_missing_devices_are_handled() {
+        let s: Settings = serde_json::from_str(r#"{"device":"XteinkX4"}"#).unwrap();
+        assert_eq!(s.device, device_profiles::X4_ID);
+        assert_eq!(s.device_profile().width, 480);
+        let gone: Settings = serde_json::from_str(r#"{"device":"custom-removed"}"#).unwrap();
+        assert_eq!(gone.device_profile().id, device_profiles::X4_PRO_ID);
+    }
+
+    #[test]
+    fn custom_devices_round_trip_and_are_selectable() {
+        let mut s = Settings::default();
+        let dev = DeviceProfile::custom(&s.devices(), "Kobo Nia", 758, 1024).unwrap();
+        s.device = dev.id.clone();
+        s.custom_devices.push(dev);
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(back, s);
+        assert_eq!(
+            (back.device_profile().width, back.device_profile().height),
+            (758, 1024)
+        );
+        assert!(!back.device_profile().builtin);
     }
 
     #[test]

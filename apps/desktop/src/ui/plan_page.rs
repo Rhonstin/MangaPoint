@@ -4,9 +4,9 @@
 
 use super::chapter_table::{ChapterGrid, GridRow};
 use super::widgets::{Cover, EmptyState, Icon};
-use super::work::{commit_plan, downloaded_keys, load_saved_cover, merged_key, saved_cover_key};
+use super::work::{ask_download, downloaded_keys, load_saved_cover, merged_key, saved_cover_key};
 use crate::logic::{self, plural};
-use crate::state::{AppState, Page, PlanChapters, PlanEntry};
+use crate::state::{AppState, Page, PendingDownload, PlanChapters, PlanEntry};
 use dioxus::prelude::*;
 
 /// Change one series' entry in the planner.
@@ -79,7 +79,11 @@ pub fn PlanPage() -> Element {
             }
             span { class: "grow" }
             button { class: "btn", onclick: move |_| leave(state), "Cancel" }
-            button { class: "btn primary", disabled: chapters == 0, onclick: move |_| commit_plan(state),
+            button { class: "btn primary", disabled: chapters == 0, onclick: move |_| ask_download(
+                    state,
+                    PendingDownload::Plan,
+                    format!("{} from {}", plural(chapters, "chapter"), plural(with_picks, "series")),
+                ),
                 Icon { name: "download", size: 16 } "Add to downloads"
             }
         }
@@ -105,6 +109,12 @@ fn PlanSection(series_id: String) -> Element {
         .and_then(|s| s.info.as_ref())
         .is_some_and(|i| i.has_cover);
     let have = downloaded_keys(state, &series_id);
+    let series_chapters = state
+        .library
+        .read()
+        .find(&series_id)
+        .map(|s| s.chapters.clone())
+        .unwrap_or_default();
     let queue = state.queue.read().clone();
 
     let loaded = match &entry.chapters {
@@ -138,6 +148,7 @@ fn PlanSection(series_id: String) -> Element {
                 .map(|i| {
                     let c = &l.merged[i];
                     let key = merged_key(c);
+                    let saved = series_chapters.iter().find(|c| c.key == key);
                     GridRow {
                         index: i,
                         number: c
@@ -145,17 +156,19 @@ fn PlanSection(series_id: String) -> Element {
                             .map(logic::format_number)
                             .unwrap_or_else(|| "–".into()),
                         name: c.name.clone(),
-                        sources: c.options.len(),
-                        tip: c
+                        source_names: c
                             .options
                             .iter()
                             .filter_map(|o| l.member_names.get(o.member).cloned())
-                            .collect::<Vec<_>>()
-                            .join(", "),
+                            .collect(),
                         date: logic::format_date(logic::latest_upload(c)),
                         saved: have.contains(&key),
                         queued: !have.contains(&key)
                             && queue.chapter_state(&series_id, &key).is_some(),
+                        size: saved
+                            .map(|c| logic::human_bytes(c.bytes))
+                            .unwrap_or_default(),
+                        ..Default::default()
                     }
                 })
                 .collect()
@@ -261,7 +274,7 @@ fn PlanSection(series_id: String) -> Element {
                         }
                     }),
                     empty_message,
-                    max_height: Some("380px".to_string()),
+                    max_height: Some("max(280px, calc(100vh - 420px))".to_string()),
                 }
             }
         }

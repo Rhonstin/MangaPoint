@@ -99,6 +99,36 @@ pub struct DecodedPage {
     pub color_mode: u8,
 }
 
+/// Check a packed page without allocating an unpacked pixel buffer.
+pub(crate) fn validate_page(bytes: &[u8], index: usize) -> Result<(u32, u32, Depth), XtcError> {
+    let bad = |reason| XtcError::InvalidPage { index, reason };
+    if bytes.len() < PAGE_HEADER_SIZE {
+        return Err(bad("shorter than the 22-byte page header"));
+    }
+    let depth = match u32::from_le_bytes(bytes[0..4].try_into().unwrap()) {
+        XTG_MAGIC => Depth::One,
+        XTH_MAGIC => Depth::Two,
+        _ => return Err(bad("unknown page magic")),
+    };
+    let width = u16::from_le_bytes(bytes[4..6].try_into().unwrap()) as u32;
+    let height = u16::from_le_bytes(bytes[6..8].try_into().unwrap()) as u32;
+    if width == 0 || height == 0 {
+        return Err(bad("zero-sized page"));
+    }
+    if bytes[8] != 0 || bytes[9] != 0 {
+        return Err(bad("unsupported color mode or compression"));
+    }
+    let size = u32::from_le_bytes(bytes[10..14].try_into().unwrap()) as usize;
+    let expected = match depth {
+        Depth::One => xtg_data_size(width, height),
+        Depth::Two => xth_data_size(width, height),
+    };
+    if size != expected || bytes.len() != PAGE_HEADER_SIZE + expected {
+        return Err(bad("bitmap length does not match the page dimensions"));
+    }
+    Ok((width, height, depth))
+}
+
 /// Decode a page (header + bitmap). `index` is only used in error messages.
 pub fn decode_page(bytes: &[u8], index: usize) -> Result<DecodedPage, XtcError> {
     let bad = |reason| XtcError::InvalidPage { index, reason };

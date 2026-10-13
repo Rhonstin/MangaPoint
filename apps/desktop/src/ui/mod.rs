@@ -3,14 +3,16 @@
 pub mod cat;
 mod chapter_table;
 mod conversion;
+mod devices;
+mod download_dialog;
 mod downloads_page;
+mod export_page;
 mod hang;
 mod icons;
 mod library_page;
 mod ocean;
 mod plan_page;
 mod presets;
-mod presets_lab;
 mod scenes;
 mod search;
 mod settings;
@@ -18,7 +20,7 @@ mod setup;
 mod shelf;
 mod sources_page;
 mod widgets;
-mod work;
+pub mod work;
 mod workspace;
 
 use crate::backend;
@@ -56,6 +58,8 @@ pub fn App() -> Element {
     let boot = state.boot.read().clone();
     rsx! {
         style { "{CSS}" }
+        style { {include_str!("../page-editor.css")} }
+        style { {include_str!("../editor-controls.css")} }
         div { class: "app",
             {match boot {
                 BootState::Starting { message, percent } => rsx! { Splash { message, percent } },
@@ -63,6 +67,7 @@ pub fn App() -> Element {
                 BootState::Ready => rsx! { Shell {} },
             }}
             ModalHost {}
+            download_dialog::DownloadDialogHost {}
             ToastHost {}
         }
     }
@@ -121,6 +126,7 @@ fn Shell() -> Element {
                 page: Page::Downloads, label: "Downloads", icon: "download",
                 badge: (in_queue > 0).then(|| in_queue.to_string()),
             }
+            NavItem { page: Page::Export, label: "Export", icon: "file-down" }
             div { class: "nav-spacer" }
             NavItem { page: Page::Sources, label: "Sources", icon: "layers" }
             NavItem { page: Page::Settings, label: "Settings", icon: "settings" }
@@ -136,6 +142,7 @@ fn Shell() -> Element {
                     Page::Library => rsx! { library_page::LibraryPage {} },
                     Page::Downloads => rsx! { downloads_page::DownloadsPage {} },
                     Page::Plan => rsx! { plan_page::PlanPage {} },
+                    Page::Export => rsx! { export_page::ExportPage {} },
                     Page::Sources => rsx! { sources_page::SourcesPage {} },
                     Page::Settings => rsx! { settings::SettingsPage {} },
                 }}
@@ -342,7 +349,6 @@ fn run_action(state: AppState, action: ModalAction) {
             ModalAction::DeleteChapters { series_id, keys } => {
                 work::delete_chapters(state, series_id, keys)
             }
-            ModalAction::ExportSeries { series_ids } => work::export_series_many(state, series_ids),
             ModalAction::DeleteDownloads { series_ids } => {
                 work::delete_downloads(state, series_ids)
             }

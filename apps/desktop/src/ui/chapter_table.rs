@@ -1,25 +1,39 @@
 //! The chapter table, shared by the Chapters tab and the download planner:
-//! tick boxes with a select-all in the header, and sortable columns. It only
-//! draws what it is given; whoever uses it decides what ticking and sorting do.
+//! tick boxes with a select-all in the header, sortable columns, and for each
+//! chapter whether it is downloaded (and how big it is). It only draws what it
+//! is given; whoever uses it decides what ticking and sorting do.
 
-use super::widgets::{EmptyState, Icon};
+use super::widgets::{Chip, EmptyState, Icon};
 use crate::logic::SortKey;
 use dioxus::prelude::*;
 use std::collections::HashSet;
 
 /// One chapter as the table shows it.
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Default, PartialEq)]
 pub struct GridRow {
     /// Its position in the merged chapter list; what the handlers are given.
     pub index: usize,
     pub number: String,
     pub name: String,
-    pub sources: usize,
-    /// Names of the sources, shown when hovering the count.
-    pub tip: String,
+    /// The names of the sources that have it; shown when hovering the count.
+    pub source_names: Vec<String>,
     pub date: String,
     pub saved: bool,
     pub queued: bool,
+    /// Pages done and in all, while it downloads.
+    pub progress: Option<(usize, usize)>,
+    pub failed: bool,
+    /// Its size on this computer; empty until it is downloaded.
+    pub size: String,
+    /// The source the downloaded copy came from.
+    pub from: String,
+}
+
+impl GridRow {
+    /// Downloaded, in the queue or on its way: nothing left to download.
+    fn is_settled(&self) -> bool {
+        self.saved || self.queued || self.progress.is_some()
+    }
 }
 
 fn sort_icon(current: (SortKey, bool), column: SortKey) -> &'static str {
@@ -53,7 +67,7 @@ pub fn ChapterGrid(
 ) -> Element {
     let tickable: Vec<usize> = rows
         .iter()
-        .filter(|r| !(lock_done && (r.saved || r.queued)))
+        .filter(|r| !(lock_done && r.is_settled()))
         .map(|r| r.index)
         .collect();
     let all_on = !tickable.is_empty() && tickable.iter().all(|i| picked.contains(i));
@@ -88,7 +102,8 @@ pub fn ChapterGrid(
                             }
                             {header(SortKey::Number, "num", "No.")}
                             {header(SortKey::Name, "", "Title")}
-                            th { class: "saved", title: "Downloaded, or in the queue" }
+                            th { class: "status", "Status" }
+                            th { class: "size", "Size" }
                             {header(SortKey::Sources, "src", "Sources")}
                             {header(SortKey::Date, "date", "Updated")}
                         }
@@ -98,7 +113,7 @@ pub fn ChapterGrid(
                             ChapterRow {
                                 key: "{r.index}",
                                 on: picked.contains(&r.index),
-                                locked: lock_done && (r.saved || r.queued),
+                                locked: lock_done && r.is_settled(),
                                 row: r,
                                 on_toggle,
                             }
@@ -123,6 +138,12 @@ fn ChapterRow(row: GridRow, on: bool, locked: bool, on_toggle: EventHandler<usiz
         (true, _) => "on",
         _ => "",
     };
+    let sources_tip = row.source_names.join("\n");
+    let from_tip = if row.from.is_empty() {
+        "Downloaded".to_string()
+    } else {
+        format!("Downloaded from {}", row.from)
+    };
     rsx! {
         tr {
             class: "{class}",
@@ -130,11 +151,24 @@ fn ChapterRow(row: GridRow, on: bool, locked: bool, on_toggle: EventHandler<usiz
             td { class: "check", input { r#type: "checkbox", checked: on, disabled: locked, readonly: true, style: "pointer-events: none" } }
             td { class: "num", "{row.number}" }
             td { class: "name", title: "{row.name}", "{row.name}" }
-            td { class: "saved",
-                if row.saved { span { title: "Downloaded", Icon { name: "circle-check", size: 15 } } }
-                else if row.queued { span { title: "In the download queue", Icon { name: "clock-3", size: 15 } } }
+            td { class: "status",
+                if row.saved {
+                    span { class: "tip", "data-tip": "{from_tip}", Chip { text: "Downloaded", kind: Some("ok".to_string()) } }
+                } else if let Some((done, total)) = row.progress {
+                    Chip {
+                        text: if total > 0 { format!("{done} / {total} pages") } else { "Starting…".to_string() },
+                        kind: Some("accent".to_string()),
+                    }
+                } else if row.failed {
+                    Chip { text: "Couldn't download", kind: Some("bad".to_string()) }
+                } else if row.queued {
+                    span { class: "tip", "data-tip": "In the download queue", Chip { text: "Queued" } }
+                }
             }
-            td { class: "src", title: "{row.tip}", "{row.sources}" }
+            td { class: "size", "{row.size}" }
+            td { class: "src",
+                span { class: "tip dotted", "data-tip": "{sources_tip}", "{row.source_names.len()}" }
+            }
             td { class: "date", "{row.date}" }
         }
     }

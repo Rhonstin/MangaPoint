@@ -5,8 +5,8 @@ use crate::queue::DownloadQueue;
 use catalog::SuwayomiClient;
 use dioxus::prelude::*;
 use library::{
-    AppPaths, ConversionSettings, ExportsDb, HealthDb, JsonFile, LibraryDb, LibraryFiles,
-    PresetsDb, Settings, SourceState, SpeedDb,
+    AppPaths, ExportsDb, HealthDb, JsonFile, LibraryDb, LibraryFiles, PresetsDb, Settings,
+    SourceState, SpeedDb,
 };
 use pipeline::{CancelFlag, SourceChoice};
 use search::{MergedChapter, RankedSeries};
@@ -28,9 +28,31 @@ pub fn paths() -> &'static AppPaths {
     })
 }
 
+/// The folders downloads are kept in: where new ones go, and the others.
+static LIBRARY_DIRS: std::sync::RwLock<Option<(PathBuf, Vec<PathBuf>)>> =
+    std::sync::RwLock::new(None);
+
+/// Use the download folders from the settings. Call at start and whenever the
+/// choice changes.
+pub fn apply_library_dirs(settings: &Settings) {
+    let app_folder = paths().library_dir();
+    let active = settings.library_dir.clone().unwrap_or(app_folder.clone());
+    let mut others: Vec<PathBuf> = std::iter::once(app_folder)
+        .chain(settings.library_dirs.iter().cloned())
+        .filter(|p| *p != active)
+        .collect();
+    others.dedup();
+    if let Ok(mut dirs) = LIBRARY_DIRS.write() {
+        *dirs = Some((active, others));
+    }
+}
+
 /// The downloaded chapters on disk.
 pub fn library_files() -> LibraryFiles {
-    LibraryFiles::new(paths().library_dir())
+    match LIBRARY_DIRS.read().ok().and_then(|d| d.clone()) {
+        Some((active, others)) => LibraryFiles::new(active).with_other_roots(others),
+        None => LibraryFiles::new(paths().library_dir()),
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -40,6 +62,8 @@ pub enum Page {
     /// A series the user opened: chapters, downloads, preview, export.
     Series,
     Library,
+    /// Choosing, editing and exporting series, full window.
+    Export,
     /// The download queue and the exported files.
     Downloads,
     /// Choosing what to download from one or more library series.
@@ -53,45 +77,13 @@ pub enum Page {
 pub enum SettingsSection {
     #[default]
     Reader,
-    Presets,
     Downloads,
     Files,
     Browser,
     About,
 }
 
-/// The Presets page: the preset being edited, and the test page it is tried on.
-#[derive(Clone, Default)]
-pub struct PresetLab {
-    /// The preset being edited.
-    pub selected: Option<String>,
-    /// Its settings as they are now, saved or not.
-    pub draft: ConversionSettings,
-    /// The series whose pages supply the test page; `None` uses the built-in
-    /// sample page.
-    pub sample_series: Option<String>,
-    /// Which page of that series' first chapter (0-based).
-    pub page: usize,
-    pub total_pages: usize,
-    pub original: Option<Shot>,
-    pub kept: Option<[f32; 4]>,
-    pub converted: Vec<Shot>,
-    pub busy: bool,
-    pub error: Option<String>,
-    /// Bumped on every change so an older drawing never replaces a newer one.
-    pub generation: u64,
-}
-
 /// The steps within an open series.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum SeriesTab {
-    Overview,
-    Chapters,
-    Downloads,
-    Preview,
-    Export,
-}
-
 #[derive(Clone, PartialEq, Debug)]
 pub enum BootState {
     Starting {
@@ -134,10 +126,6 @@ pub enum ModalAction {
     DeleteChapters {
         series_id: String,
         keys: Vec<String>,
-    },
-    /// Export every downloaded chapter of these series, one file each.
-    ExportSeries {
-        series_ids: Vec<String>,
     },
     /// Delete every downloaded chapter of these series; they stay in the library.
     DeleteDownloads {
@@ -189,7 +177,6 @@ pub struct Workspace {
     pub title: String,
     /// Present when opened from a search; needed to find more chapters.
     pub ranked: Option<RankedSeries>,
-    pub tab: SeriesTab,
     /// Where the back button goes.
     pub origin: Page,
 }
@@ -203,6 +190,23 @@ pub struct LoadedChapters {
     /// The same members as they are kept in the library.
     pub saved: Vec<library::SavedSource>,
     pub unreachable: usize,
+}
+
+/// What a download dialog will start once the user confirms.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PendingDownload {
+    /// The chapters ticked on the open series.
+    Chapters,
+    /// Everything chosen in the download planner.
+    Plan,
+}
+
+/// The dialog that asks where downloaded files go, before they start.
+#[derive(Clone, PartialEq, Debug)]
+pub struct DownloadDialog {
+    pub pending: PendingDownload,
+    /// What is about to download, in words.
+    pub summary: String,
 }
 
 /// What the download planner knows about one series.
@@ -269,9 +273,14 @@ pub enum Zoom {
     Fit,
     /// As wide as the space allows; scroll down for the rest.
     Width,
-    /// One screen pixel per device pixel.
-    Actual,
-    Double,
+    /// A percentage of the device's own size: 100 is one screen pixel for
+    /// each pixel of the reader.
+    Custom(u16),
+}
+
+impl Zoom {
+    pub const MIN_PERCENT: u16 = 25;
+    pub const MAX_PERCENT: u16 = 400;
 }
 
 /// Preview display choices that are not conversion settings.
@@ -284,6 +293,8 @@ pub struct PreviewView {
     pub show_original: bool,
     /// Draw the cropped-away area on the original.
     pub show_crop: bool,
+    pub editing_crop: bool,
+    pub source_focus: bool,
 }
 
 impl Default for PreviewView {
@@ -293,21 +304,29 @@ impl Default for PreviewView {
             focus: false,
             show_original: true,
             show_crop: true,
+            editing_crop: false,
+            source_focus: false,
         }
     }
 }
 
-/// One page of the chapter, rendered for the preview.
-#[derive(Clone, PartialEq)]
+/// One page of the chapter's plan, as the Preview tab shows it.
+#[derive(Clone, Default, PartialEq)]
 pub struct PreviewPage {
-    /// The page as it will appear on the reader (several for a long strip,
-    /// two for a split spread).
-    pub converted: Vec<Shot>,
-    /// The downloaded page, unconverted, for comparison.
-    pub original: Shot,
-    /// The part of the original the conversion keeps: left, top, width, height
-    /// as fractions of the image.
-    pub kept: [f32; 4],
+    /// The page as it will appear on the reader; `None` until it is drawn.
+    pub shot: Option<Shot>,
+    pub thumbnail: Option<Shot>,
+    /// The exact source section: whole image, physical spread half, or joined strip rows.
+    pub original: Option<Shot>,
+    /// The part of the original the conversion keeps (left, top, width,
+    /// height as fractions); paged chapters only.
+    pub kept: Option<[f32; 4]>,
+    /// The page's image, for a paged chapter. A split double page is two pages
+    /// from one image.
+    pub image: Option<usize>,
+    pub crop_key: String,
+    pub source: Option<converter::PlannedPage>,
+    pub generation: u64,
 }
 
 /// What the Preview tab is showing: every page of one chapter.
@@ -315,10 +334,13 @@ pub struct PreviewPage {
 pub struct PreviewState {
     /// Downloaded chapter being previewed.
     pub chapter_key: Option<String>,
-    /// Every page of the chapter, in order. A page is `None` until it has been
-    /// drawn; after a settings change the old drawing stays until the new one
-    /// replaces it.
-    pub pages: Vec<Option<Rc<PreviewPage>>>,
+    /// Every page the chapter becomes, in order. After a settings change the
+    /// old drawing of a page stays until the new one replaces it.
+    pub pages: Vec<Rc<PreviewPage>>,
+    /// The chapter is one stitched strip (a webtoon), not one page per image.
+    pub strip: bool,
+    /// How many downloaded images the chapter has.
+    pub images: usize,
     /// Pages drawn with the current settings so far.
     pub fresh: usize,
     pub view: PreviewView,
@@ -326,6 +348,15 @@ pub struct PreviewState {
     pub error: Option<String>,
     /// Bumped on every change so an older render never overwrites a newer one.
     pub generation: u64,
+    pub selected: usize,
+    pub thumb_start: usize,
+    /// The first and last page on or near the screen in the scrolling list;
+    /// those are drawn full size.
+    pub window: (usize, usize),
+    pub overview: bool,
+    /// An unsaved crop projected only on the selected source section.
+    pub draft_crop: Option<(String, library::CropRect)>,
+    pub shading_samples: Vec<String>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -335,16 +366,13 @@ pub enum GroupingChoice {
     EveryN,
 }
 
-/// Choices on the Export tab, kept while the user moves between tabs.
+/// Choices on the Export screen that cover every series being exported.
 #[derive(Clone)]
 pub struct ExportOpts {
     pub target: TargetChoice,
     pub grouping: GroupingChoice,
     /// The "N" of "every N chapters", as typed.
     pub every_n: String,
-    pub advanced_open: bool,
-    /// Downloaded chapters left out of the export.
-    pub excluded: HashSet<String>,
 }
 
 impl Default for ExportOpts {
@@ -353,10 +381,27 @@ impl Default for ExportOpts {
             target: TargetChoice::Folder,
             grouping: GroupingChoice::Single,
             every_n: "10".into(),
-            advanced_open: false,
-            excluded: HashSet::new(),
         }
     }
+}
+
+/// One series in the Export screen's list.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ExportItem {
+    pub series_id: String,
+    /// Downloaded chapters left out of the export.
+    pub excluded: HashSet<String>,
+    /// Switched off, a series stays in the list but is not exported.
+    pub off: bool,
+    /// The chapter being previewed, kept for when the screen is opened again.
+    pub chapter: Option<String>,
+}
+
+/// The series being edited and exported together, and the one on screen.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ExportPlan {
+    pub items: Vec<ExportItem>,
+    pub active: usize,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -386,7 +431,6 @@ pub struct AppState {
     /// How the search results are ordered.
     pub search_sort: Signal<SearchSort>,
     pub settings_section: Signal<SettingsSection>,
-    pub preset_lab: Signal<PresetLab>,
     /// Cover images as data URLs, keyed by `source:manga`.
     pub covers: Signal<HashMap<String, String>>,
     pub notice: Signal<Option<Notice>>,
@@ -405,6 +449,8 @@ pub struct AppState {
     pub queue: Signal<DownloadQueue>,
     /// The series being planned for download, with their ticked chapters.
     pub plan: Signal<Vec<PlanEntry>>,
+    /// Asking where a download should go, if it is open.
+    pub download_dialog: Signal<Option<DownloadDialog>>,
     /// Series whose details are being fetched right now.
     pub info_busy: Signal<HashSet<String>>,
     pub workspace: Signal<Option<Workspace>>,
@@ -414,6 +460,10 @@ pub struct AppState {
     pub table: Signal<TableView>,
     pub preview: Signal<PreviewState>,
     pub export_opts: Signal<ExportOpts>,
+    /// The series on the Export screen.
+    pub export_plan: Signal<ExportPlan>,
+    /// The manual crop being dragged, for the page on screen.
+    pub crop_draft: Signal<library::CropRect>,
     /// The running (or just finished) download or export.
     pub job: Signal<Option<JobView>>,
     /// Bumped when installed sources or test results change.
@@ -452,14 +502,17 @@ impl AppState {
                 percent: None,
             }),
             services: sig(None),
-            settings: sig(JsonFile::<Settings>::new(paths().settings_file()).load()),
+            settings: sig({
+                let settings = JsonFile::<Settings>::new(paths().settings_file()).load();
+                apply_library_dirs(&settings);
+                settings
+            }),
             sources: sig(sources),
             health: sig(JsonFile::<HealthDb>::new(paths().health_file()).load()),
             page: sig(first_page),
             search: sig(SearchView::default()),
             search_sort: sig(SearchSort::default()),
             settings_section: sig(SettingsSection::default()),
-            preset_lab: sig(PresetLab::default()),
             covers: sig(HashMap::new()),
             notice: sig(None),
             modal: sig(None),
@@ -470,6 +523,7 @@ impl AppState {
             download_source: sig(SourceChoice::Adaptive),
             queue: sig(DownloadQueue::default()),
             plan: sig(Vec::new()),
+            download_dialog: sig(None),
             info_busy: sig(HashSet::new()),
             workspace: sig(None),
             chapters: sig(ChaptersState::Idle),
@@ -477,6 +531,8 @@ impl AppState {
             table: sig(TableView::default()),
             preview: sig(PreviewState::default()),
             export_opts: sig(ExportOpts::default()),
+            export_plan: sig(ExportPlan::default()),
+            crop_draft: sig(library::CropRect::default()),
             job: sig(None),
             sources_version: sig(0),
             testing: sig(HashSet::new()),
@@ -494,13 +550,6 @@ impl AppState {
     }
 
     /// Switch tab within the open series.
-    pub fn open_tab(&self, tab: SeriesTab) {
-        let mut ws = self.workspace;
-        if let Some(w) = ws.write().as_mut() {
-            w.tab = tab;
-        };
-    }
-
     pub fn notify(&self, text: impl Into<String>) {
         let text = text.into();
         tracing::info!("{text}");
@@ -579,8 +628,36 @@ impl AppState {
         let _ = JsonFile::new(paths().speeds_file()).save(&*self.speeds.read());
     }
 
+    /// Save the presets, bring every series that follows a preset up to date
+    /// with it, and redraw the preview.
     pub fn save_presets(&self) {
         let _ = JsonFile::new(paths().presets_file()).save(&*self.presets.read());
+        let mut library = self.library;
+        let changed = library.write().follow_presets(&self.presets.read());
+        if changed {
+            self.save_library();
+        }
+        if self.workspace.peek().is_some() {
+            crate::ui::work::schedule_preview(*self, 0);
+        }
+    }
+
+    /// The conversion settings and preset a new series starts with: the
+    /// preset chosen for the current reader if there is one, else the user's
+    /// defaults.
+    pub fn new_series_defaults(&self) -> (library::ConversionSettings, Option<String>) {
+        let settings = self.settings.peek();
+        let for_device = settings
+            .device_presets
+            .get(&settings.device)
+            .and_then(|id| self.presets.peek().find(id));
+        match for_device {
+            Some(entry) => (entry.preset.settings, Some(entry.preset.id)),
+            None => (
+                settings.conversion.clone(),
+                settings.default_preset_id.clone(),
+            ),
+        }
     }
 
     pub fn save_exports(&self) {

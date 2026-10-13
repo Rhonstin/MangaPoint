@@ -66,6 +66,20 @@ pub enum SpreadMode {
     Rotate,
 }
 
+/// How a long strip is cut into screen-sized pages where there is no blank
+/// gap to cut in.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum StripCut {
+    /// At the quietest row near the bottom of the page, where the least is
+    /// drawn, so no row appears twice.
+    #[default]
+    Quiet,
+    /// At the full screen height, with the last rows repeated at the top of
+    /// the next page (the older way).
+    Overlap,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProcessOptions {
     pub width: u32,
@@ -86,7 +100,10 @@ pub struct ProcessOptions {
     pub contrast: u8,
     /// Stretch the tonal range so the paper becomes white and ink black.
     pub auto_levels: bool,
-    /// Webtoon slices overlap by this share of the screen height (0..=50).
+    /// How a long strip is cut when there is no blank gap.
+    pub strip_cut: StripCut,
+    /// With [`StripCut::Overlap`], slices overlap by this share of the screen
+    /// height (0..=50).
     pub overlap_percent: u8,
     pub dither: Dither,
     pub depth: Depth,
@@ -108,6 +125,7 @@ impl ProcessOptions {
             direction: ReadDirection::RightToLeft,
             contrast: 55,
             auto_levels: true,
+            strip_cut: StripCut::Quiet,
             overlap_percent: 8,
             dither: Dither::FloydSteinberg,
             depth,
@@ -222,7 +240,7 @@ fn webtoon_slices(img: &GrayImage, opts: &ProcessOptions) -> Vec<GrayImage> {
     out
 }
 
-fn finish(mut screen: GrayImage, opts: &ProcessOptions) -> LevelImage {
+pub(crate) fn finish(mut screen: GrayImage, opts: &ProcessOptions) -> LevelImage {
     if opts.auto_levels {
         stretch_levels(&mut screen);
     }
@@ -235,7 +253,7 @@ fn finish(mut screen: GrayImage, opts: &ProcessOptions) -> LevelImage {
 /// Gray-level difference from the background that counts as content.
 /// Sensitivity 50 is the long-standing default (28); lower ignores faint
 /// marks, higher notices them.
-fn trim_threshold(sensitivity: u8) -> i16 {
+pub(crate) fn trim_threshold(sensitivity: u8) -> i16 {
     let s = sensitivity.min(100) as i16;
     if s <= 50 {
         80 - (80 - 28) * s / 50
@@ -259,7 +277,11 @@ pub fn trim_margins(img: &GrayImage) -> GrayImage {
 }
 
 /// Where the content is, or `None` to leave the image alone.
-fn trim_bounds(img: &GrayImage, threshold: i16, pad: u8) -> Option<(u32, u32, u32, u32)> {
+pub(crate) fn trim_bounds(
+    img: &GrayImage,
+    threshold: i16,
+    pad: u8,
+) -> Option<(u32, u32, u32, u32)> {
     let (w, h) = (img.width, img.height);
     let bg = border_median(img);
     let differs = |x: u32, y: u32| (img.get(x, y) as i16 - bg as i16).abs() > threshold;
@@ -284,7 +306,7 @@ fn trim_bounds(img: &GrayImage, threshold: i16, pad: u8) -> Option<(u32, u32, u3
     Some((x0, y0, x1 - x0, y1 - y0))
 }
 
-fn border_median(img: &GrayImage) -> u8 {
+pub(crate) fn border_median(img: &GrayImage) -> u8 {
     let (w, h) = (img.width, img.height);
     let mut samples = Vec::new();
     for x in 0..w {
@@ -341,7 +363,7 @@ fn letterbox(img: &GrayImage, w: u32, h: u32) -> GrayImage {
     canvas
 }
 
-fn letterbox_top(img: &GrayImage, w: u32, h: u32) -> GrayImage {
+pub(crate) fn letterbox_top(img: &GrayImage, w: u32, h: u32) -> GrayImage {
     let mut canvas = GrayImage::new(w, h, 255).expect("non-zero size");
     blit(&mut canvas, img, (w - img.width.min(w)) / 2, 0);
     canvas
@@ -452,10 +474,13 @@ pub fn stretch_levels(img: &mut GrayImage) {
         return;
     }
     let range = (hi - lo) as f32;
-    for p in &mut img.pixels {
-        *p = ((*p as f32 - lo as f32) / range * 255.0)
+    let lookup: [u8; 256] = std::array::from_fn(|value| {
+        ((value as f32 - lo as f32) / range * 255.0)
             .round()
-            .clamp(0.0, 255.0) as u8;
+            .clamp(0.0, 255.0) as u8
+    });
+    for p in &mut img.pixels {
+        *p = lookup[*p as usize];
     }
 }
 
@@ -465,10 +490,13 @@ pub fn apply_contrast(img: &mut GrayImage, contrast: u8) {
         return;
     }
     let factor = contrast.min(100) as f32 / 50.0;
-    for p in &mut img.pixels {
-        *p = ((*p as f32 - 128.0) * factor + 128.0)
+    let lookup: [u8; 256] = std::array::from_fn(|value| {
+        ((value as f32 - 128.0) * factor + 128.0)
             .round()
-            .clamp(0.0, 255.0) as u8;
+            .clamp(0.0, 255.0) as u8
+    });
+    for p in &mut img.pixels {
+        *p = lookup[*p as usize];
     }
 }
 
@@ -478,6 +506,50 @@ mod tests {
 
     fn opts() -> ProcessOptions {
         ProcessOptions::manga_default(480, 800, Depth::Two)
+    }
+
+    #[test]
+    #[ignore = "manual throughput check on the export benchmark machine; run in release"]
+    fn tone_reader_pages_throughput() {
+        let image = GrayImage::from_fn(480, 800, |x, y| ((x * 71 + y * 29) % 256) as u8).unwrap();
+        let started = std::time::Instant::now();
+        for _ in 0..250 {
+            let mut page = image.clone();
+            stretch_levels(&mut page);
+            apply_contrast(&mut page, 55);
+            std::hint::black_box(page);
+        }
+        let elapsed = started.elapsed();
+        eprintln!("250 reader pages tone adjustment: {elapsed:?}");
+        assert!(
+            elapsed < std::time::Duration::from_millis(200),
+            "first-export tone throughput target missed: {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn tone_adjustment_matches_scalar_math_for_all_byte_values() {
+        let ramp = GrayImage::from_pixels(256, 1, (0..=255).collect()).unwrap();
+        for contrast in [0, 1, 49, 50, 55, 99, 100, 255] {
+            let mut actual = ramp.clone();
+            apply_contrast(&mut actual, contrast);
+            let factor = contrast.min(100) as f32 / 50.0;
+            let expected: Vec<_> = (0..=255)
+                .map(|v| {
+                    ((v as f32 - 128.0) * factor + 128.0)
+                        .round()
+                        .clamp(0.0, 255.0) as u8
+                })
+                .collect();
+            assert_eq!(actual.pixels, expected);
+        }
+        // The ramp's 1st and 99th percentile bins are 2 and 253.
+        let mut stretched = ramp;
+        stretch_levels(&mut stretched);
+        let expected: Vec<_> = (0..=255)
+            .map(|v| ((v as f32 - 2.0) / 251.0 * 255.0).round().clamp(0.0, 255.0) as u8)
+            .collect();
+        assert_eq!(stretched.pixels, expected);
     }
 
     #[test]

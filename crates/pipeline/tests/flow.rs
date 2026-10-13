@@ -5,7 +5,6 @@
 use catalog::fake::FakeCatalog;
 use converter::decode::{decode_to_gray, image_dimensions};
 use converter::xtc::{Format, ReadDirection, XtcFile};
-use device_profiles::Device;
 use image::{ImageEncoder, Rgba, RgbaImage};
 use library::{ConversionSettings, DownloadLimits, DownloadedSeries, LibraryDb, LibraryFiles};
 use pipeline::{
@@ -134,7 +133,7 @@ fn job(lib: &Library, series: &DownloadedSeries, grouping: Grouping) -> ExportJo
     let mut j = ExportJob::new(
         series.clone(),
         series.chapters.iter().map(|c| c.key.clone()).collect(),
-        Device::XteinkX4Pro,
+        device_profiles::x4_pro(),
         ExportTarget::Folder { path: lib.out() },
         lib.work(),
     );
@@ -425,6 +424,162 @@ async fn save_space_shrinks_big_pages_and_keeps_small_ones_untouched() {
 
 // ---- Stage 3: export -------------------------------------------------------
 
+#[tokio::test]
+async fn repeated_exports_reuse_converted_chapters_across_groupings() {
+    let (lib, series) = three_chapters("ex-cache").await;
+    let first = export(&lib, &job(&lib, &series, Grouping::Single))
+        .await
+        .unwrap();
+    let (tx, mut rx) = unbounded_channel();
+    let second = export_series(
+        &lib.files,
+        &job(&lib, &series, Grouping::PerChapter),
+        Some(tx),
+        &CancelFlag::new(),
+    )
+    .await
+    .unwrap();
+    let mut decoded = 0;
+    while let Ok(event) = rx.try_recv() {
+        if matches!(event, JobEvent::PageDone { .. }) {
+            decoded += 1;
+        }
+    }
+    assert_eq!(decoded, 0, "unchanged chapters must not be decoded again");
+    assert_eq!(first.cached_chapters, 0);
+    assert_eq!(second.cached_chapters, 3);
+    assert_eq!(second.pages, first.pages);
+    let original = fs::read(&first.files[0].location).unwrap();
+    let original = XtcFile::parse(&original).unwrap();
+    for (ci, output) in second.files.iter().enumerate() {
+        let bytes = fs::read(&output.location).unwrap();
+        let file = XtcFile::parse(&bytes).unwrap();
+        for pi in 0..file.page_count() {
+            assert_eq!(
+                file.decode_page(pi).unwrap(),
+                original.decode_page(ci * 3 + pi).unwrap()
+            );
+        }
+    }
+    let mut subset = job(&lib, &series, Grouping::Single);
+    subset.chapter_keys = vec!["c2".into()];
+    let subset = export(&lib, &subset).await.unwrap();
+    assert_eq!(
+        (subset.cached_chapters, subset.chapters, subset.pages),
+        (1, 1, 3)
+    );
+    let mut forced = job(&lib, &series, Grouping::Single);
+    forced.force_conversion = true;
+    let forced = export(&lib, &forced).await.unwrap();
+    assert_eq!((forced.cached_chapters, forced.pages), (0, first.pages));
+    let _ = fs::remove_dir_all(lib.root);
+}
+
+#[tokio::test]
+async fn conversion_cache_detects_source_changes_even_with_identical_size_and_timestamp() {
+    let (lib, series) = three_chapters("ex-cache-source").await;
+    let path = lib.files.page_path(&lib.id, "c2", 0);
+    let mut original = fs::read(&path).unwrap();
+    let mut replacement = png(300, 450, 200);
+    let len = original.len().max(replacement.len());
+    original.resize(len, 0);
+    replacement.resize(len, 0);
+    fs::write(&path, original).unwrap();
+    let j = job(&lib, &series, Grouping::Single);
+    let first = export(&lib, &j).await.unwrap();
+    let modified = fs::metadata(&path).unwrap().modified().unwrap();
+    fs::write(&path, &replacement).unwrap();
+    fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_times(fs::FileTimes::new().set_modified(modified))
+        .unwrap();
+    let second = export(&lib, &j).await.unwrap();
+    assert_eq!(
+        second.cached_chapters, 2,
+        "only the changed chapter must be rebuilt"
+    );
+    let before = fs::read(&first.files[0].location).unwrap();
+    let after = fs::read(&second.files[0].location).unwrap();
+    let before = XtcFile::parse(&before).unwrap();
+    let after = XtcFile::parse(&after).unwrap();
+    assert_ne!(
+        before.decode_page(3).unwrap(),
+        after.decode_page(3).unwrap()
+    );
+    let gray = decode_to_gray(&replacement).unwrap();
+    let expected = render_levels(&gray, &process_options_for(&j.device, &series.settings));
+    assert_eq!(after.decode_page(3).unwrap().image, expected[0]);
+    fs::remove_file(lib.files.page_path(&lib.id, "c2", 2)).unwrap();
+    let third = export(&lib, &j).await.unwrap();
+    assert_eq!((third.cached_chapters, third.pages), (2, 8));
+    let _ = fs::remove_dir_all(lib.root);
+}
+
+#[tokio::test]
+async fn conversion_cache_invalidates_for_settings_device_and_format() {
+    let (lib, series) = three_chapters("ex-cache-options").await;
+    let mut j = job(&lib, &series, Grouping::Single);
+    export(&lib, &j).await.unwrap();
+    j.series.settings.contrast = 90;
+    assert_eq!(export(&lib, &j).await.unwrap().cached_chapters, 0);
+    assert_eq!(export(&lib, &j).await.unwrap().cached_chapters, 3);
+    j.device.width = 320;
+    j.device.height = 512;
+    assert_eq!(export(&lib, &j).await.unwrap().cached_chapters, 0);
+    j.series.settings.format = Format::Xtc;
+    assert_eq!(export(&lib, &j).await.unwrap().cached_chapters, 0);
+    let final_run = export(&lib, &j).await.unwrap();
+    assert_eq!(final_run.cached_chapters, 3);
+    let bytes = fs::read(&final_run.files[0].location).unwrap();
+    let file = XtcFile::parse(&bytes).unwrap();
+    assert_eq!(file.format, Format::Xtc);
+    let image = file.decode_page(0).unwrap().image;
+    assert_eq!((image.width, image.height), (320, 512));
+    let _ = fs::remove_dir_all(lib.root);
+}
+
+#[tokio::test]
+async fn conversion_cache_recovers_from_corruption_and_failed_cache_writes() {
+    let (lib, series) = three_chapters("ex-cache-damage").await;
+    let j = job(&lib, &series, Grouping::Single);
+    let first = export(&lib, &j).await.unwrap();
+    let cache = lib
+        .files
+        .chapter_dir(&lib.id, "c2")
+        .join(".mangapoint-converted-v1.bin");
+    let mut data = fs::read(&cache).unwrap();
+    data[100] ^= 1;
+    fs::write(&cache, data).unwrap();
+    let repaired = export(&lib, &j).await.unwrap();
+    assert_eq!(repaired.cached_chapters, 2);
+    let original_bytes = fs::read(&first.files[0].location).unwrap();
+    let repaired_bytes = fs::read(&repaired.files[0].location).unwrap();
+    let original = XtcFile::parse(&original_bytes).unwrap();
+    let repaired = XtcFile::parse(&repaired_bytes).unwrap();
+    for pi in 0..original.page_count() {
+        assert_eq!(
+            original.decode_page(pi).unwrap(),
+            repaired.decode_page(pi).unwrap()
+        );
+    }
+    assert_eq!(export(&lib, &j).await.unwrap().cached_chapters, 3);
+    fs::write(&cache, b"incomplete").unwrap();
+    assert_eq!(export(&lib, &j).await.unwrap().cached_chapters, 2);
+    fs::remove_file(&cache).unwrap();
+    fs::create_dir(&cache).unwrap(); // Writing a file here fails, but export must work.
+    assert_eq!(export(&lib, &j).await.unwrap().cached_chapters, 2);
+    assert!(fs::read_dir(cache.parent().unwrap()).unwrap().all(|entry| {
+        entry
+            .unwrap()
+            .path()
+            .extension()
+            .is_none_or(|ext| ext != "part")
+    }));
+    let _ = fs::remove_dir_all(lib.root);
+}
+
 async fn three_chapters(tag: &str) -> (Library, DownloadedSeries) {
     let lib = library(tag);
     let c = FakeCatalog::new();
@@ -578,7 +733,7 @@ async fn the_preview_shows_exactly_the_pixels_the_export_writes() {
     let gray = decode_to_gray(&saved).unwrap();
     let levels = render_levels(
         &gray,
-        &process_options_for(Device::XteinkX4Pro, &series.settings),
+        &process_options_for(&device_profiles::x4_pro(), &series.settings),
     );
     assert_eq!(levels.len(), 1);
     // Chapter 2 starts at page 3 of the file.
@@ -1206,5 +1361,63 @@ async fn chapters_start_only_when_their_sources_line_has_room() {
     assert!(position("done 1") < position("start 3"), "{order:?}");
     // Source "b" did not have to wait for "a" to finish.
     assert!(position("start 2") < position("done 1"), "{order:?}");
+    let _ = fs::remove_dir_all(lib.root);
+}
+
+#[tokio::test]
+async fn manual_crop_persists_matches_export_and_invalidates_only_affected_cache() {
+    use library::{CropRect, CropScope};
+    let (lib, series) = three_chapters("manual-crop-export").await;
+    let mut j = job(&lib, &series, Grouping::Single);
+    export(&lib, &j).await.unwrap();
+    let path = lib.files.page_path(&lib.id, "c2", 0);
+    let original = fs::read(&path).unwrap();
+    let opts = process_options_for(&j.device, &j.series.settings);
+    let chapter = pipeline::prepare_chapter(&[decode_to_gray(&original).unwrap()], &opts);
+    let page = &chapter.plan.pages[0];
+    let crop = CropRect {
+        left: 0.2,
+        top: 0.1,
+        ..Default::default()
+    };
+    j.series.crops.set(
+        CropScope::Page,
+        "c2",
+        &pipeline::crop_page_key(page),
+        Some(crop),
+    );
+    j.series = serde_json::from_str(&serde_json::to_string(&j.series).unwrap()).unwrap();
+    let out = export(&lib, &j).await.unwrap();
+    assert_eq!(out.cached_chapters, 2);
+    let bytes = fs::read(&out.files[0].location).unwrap();
+    let file = XtcFile::parse(&bytes).unwrap();
+    let actual = file.decode_page(3).unwrap().image;
+    let expected =
+        converter::plan::render_page_cropped(&chapter.prepared, page, &opts, crop.as_array());
+    assert_eq!(actual, expected);
+    let preview = pipeline::render_planned_with_crop(&chapter.prepared, page, &opts, Some(crop));
+    assert_eq!(preview, pipeline::levels_to_previews(&[actual])[0]);
+    assert_eq!(fs::read(&path).unwrap(), original);
+    assert_eq!(export(&lib, &j).await.unwrap().cached_chapters, 3);
+    j.series
+        .crops
+        .set(CropScope::Page, "c2", &pipeline::crop_page_key(page), None);
+    assert_eq!(export(&lib, &j).await.unwrap().cached_chapters, 2);
+    j.series.crops.set(CropScope::Chapter, "c2", "", Some(crop));
+    assert_eq!(export(&lib, &j).await.unwrap().cached_chapters, 2);
+    j.series.crops.set(
+        CropScope::Series,
+        "",
+        "",
+        Some(CropRect {
+            right: 0.1,
+            ..Default::default()
+        }),
+    );
+    assert_eq!(
+        export(&lib, &j).await.unwrap().cached_chapters,
+        1,
+        "chapter override masks series changes"
+    );
     let _ = fs::remove_dir_all(lib.root);
 }

@@ -13,7 +13,8 @@
 //! [`remove_inside`], which refuses to touch anything but a folder strictly
 //! inside the library.
 
-use crate::settings::ConversionSettings;
+use crate::presets::PresetsDb;
+use crate::settings::{ConversionField, ConversionSettings};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io;
@@ -138,6 +139,8 @@ pub fn status_label(raw: &str) -> String {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DownloadedSeries {
+    #[serde(default)]
+    pub crops: crate::CropOverrides,
     pub id: String,
     pub title: String,
     pub chapters: Vec<DownloadedChapter>,
@@ -146,6 +149,10 @@ pub struct DownloadedSeries {
     /// The preset these settings started from, if any. The settings may have
     /// been changed since.
     pub preset_id: Option<String>,
+    /// Settings this series changed from its preset. They keep the series'
+    /// own value; everything else follows the preset, so editing a preset
+    /// updates every series that uses it.
+    pub overridden: Vec<ConversionField>,
     /// Description, author, genres and so on, once they have been fetched.
     pub info: Option<SeriesInfo>,
     /// Where to find the series again: the sources that carry it. A series can
@@ -156,7 +163,16 @@ pub struct DownloadedSeries {
     pub updated_at: u64,
 }
 
+/// The title of the made-up series the Export screen shows when nothing has
+/// been chosen to export. It is kept out of the library's lists.
+pub const SAMPLE_TITLE: &str = "Sample pages";
+
 impl DownloadedSeries {
+    /// The made-up series of sample pages.
+    pub fn is_sample(&self) -> bool {
+        self.title == SAMPLE_TITLE
+    }
+
     pub fn bytes(&self) -> u64 {
         self.chapters.iter().map(|c| c.bytes).sum()
     }
@@ -196,11 +212,13 @@ impl LibraryDb {
             Some(i) => i,
             None => {
                 self.series.push(DownloadedSeries {
+                    crops: Default::default(),
                     id: id.clone(),
                     title: title.to_string(),
                     chapters: Vec::new(),
                     settings: defaults.clone(),
                     preset_id: None,
+                    overridden: Vec::new(),
                     info: None,
                     sources: Vec::new(),
                     added_at: now,
@@ -247,11 +265,13 @@ impl LibraryDb {
         match self.series.iter_mut().find(|s| s.id == id) {
             Some(existing) => merge_sources(&mut existing.sources, sources),
             None => self.series.push(DownloadedSeries {
+                crops: Default::default(),
                 id: id.clone(),
                 title: title.to_string(),
                 chapters: Vec::new(),
                 settings: defaults.clone(),
                 preset_id: None,
+                overridden: Vec::new(),
                 info: None,
                 sources,
                 added_at: now,
@@ -273,10 +293,47 @@ impl LibraryDb {
         Some(self.series.remove(i))
     }
 
-    pub fn set_settings(&mut self, series_id: &str, settings: ConversionSettings) {
+    /// Give a series these settings. `preset` is the settings of the preset it
+    /// follows, if any: whatever differs from it is remembered as the series'
+    /// own.
+    pub fn set_settings(
+        &mut self,
+        series_id: &str,
+        settings: ConversionSettings,
+        preset: Option<&ConversionSettings>,
+    ) {
         if let Some(s) = self.series.iter_mut().find(|s| s.id == series_id) {
+            s.overridden = preset.map(|p| p.differing(&settings)).unwrap_or_default();
             s.settings = settings;
         }
+    }
+
+    /// Bring every series up to date with its preset after presets changed:
+    /// a series takes the preset's settings except the ones it overrides. A
+    /// series whose preset is gone keeps what it has and loses the link.
+    /// Returns whether anything changed.
+    pub fn follow_presets(&mut self, presets: &PresetsDb) -> bool {
+        let mut changed = false;
+        for s in &mut self.series {
+            let Some(id) = s.preset_id.clone() else {
+                continue;
+            };
+            let Some(entry) = presets.find(&id) else {
+                s.preset_id = None;
+                s.overridden.clear();
+                changed = true;
+                continue;
+            };
+            let mut next = entry.preset.settings.clone();
+            for &field in &s.overridden {
+                next.copy_field(&s.settings, field);
+            }
+            if next != s.settings {
+                s.settings = next;
+                changed = true;
+            }
+        }
+        changed
     }
 
     /// A series still on the default settings, with no preset of its own yet,
@@ -290,6 +347,7 @@ impl LibraryDb {
         if let Some(s) = self.series.iter_mut().find(|s| s.id == series_id) {
             if s.preset_id.is_none() && s.settings == *defaults {
                 s.preset_id = preset_id.clone();
+                s.overridden.clear();
             }
         }
     }
@@ -304,6 +362,7 @@ impl LibraryDb {
     pub fn set_preset(&mut self, series_id: &str, preset_id: Option<String>) {
         if let Some(s) = self.series.iter_mut().find(|s| s.id == series_id) {
             s.preset_id = preset_id;
+            s.overridden.clear();
         }
     }
 
@@ -317,7 +376,11 @@ impl LibraryDb {
 /// Where downloaded pages live, and the only code that deletes them.
 #[derive(Clone, Debug)]
 pub struct LibraryFiles {
+    /// Where new series are kept.
     root: PathBuf,
+    /// Other folders earlier downloads were kept in. A series stays in the
+    /// folder it was first downloaded to.
+    others: Vec<PathBuf>,
 }
 
 /// Add the sources that are new (same source and series id counts as known).
@@ -360,15 +423,38 @@ fn component(name: &str) -> String {
 
 impl LibraryFiles {
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into() }
+        Self {
+            root: root.into(),
+            others: Vec::new(),
+        }
     }
 
+    /// Also look for series in these folders.
+    pub fn with_other_roots(mut self, others: impl IntoIterator<Item = PathBuf>) -> Self {
+        self.others = others.into_iter().filter(|o| *o != self.root).collect();
+        self
+    }
+
+    /// The folder new series are kept in.
     pub fn root(&self) -> &Path {
         &self.root
     }
 
+    /// The folder a series is kept in: the one it is already in, or else the
+    /// one new series go to.
+    fn series_root(&self, series_id: &str) -> &Path {
+        let name = component(series_id);
+        if self.root.join(&name).exists() {
+            return &self.root;
+        }
+        self.others
+            .iter()
+            .find(|other| other.join(&name).exists())
+            .map_or(self.root.as_path(), PathBuf::as_path)
+    }
+
     pub fn series_dir(&self, series_id: &str) -> PathBuf {
-        self.root.join(component(series_id))
+        self.series_root(series_id).join(component(series_id))
     }
 
     /// Where the series' cover image is kept: in its folder, beside the
@@ -416,11 +502,14 @@ impl LibraryFiles {
     }
 
     pub fn remove_chapter(&self, series_id: &str, key: &str) -> io::Result<()> {
-        remove_inside(&self.root, &self.chapter_dir(series_id, key))
+        remove_inside(
+            self.series_root(series_id),
+            &self.chapter_dir(series_id, key),
+        )
     }
 
     pub fn remove_series(&self, series_id: &str) -> io::Result<()> {
-        remove_inside(&self.root, &self.series_dir(series_id))
+        remove_inside(self.series_root(series_id), &self.series_dir(series_id))
     }
 }
 
@@ -581,9 +670,47 @@ mod tests {
         // Later chapters do not overwrite settings the user tuned for the series.
         let mut tuned = defaults.clone();
         tuned.contrast = 40;
-        db.set_settings(&id, tuned);
+        db.set_settings(&id, tuned, None);
         db.record_chapter("X", &defaults, chapter(Some(2.0), 2, "b"), 2);
         assert_eq!(db.find(&id).unwrap().settings.contrast, 40);
+    }
+
+    #[test]
+    fn series_follow_their_preset_except_for_what_they_changed() {
+        let mut presets = PresetsDb::default();
+        let manga = presets.find("manga").unwrap().preset.settings;
+        let mut db = LibraryDb::default();
+        let id = db.record_chapter("X", &manga, chapter(Some(1.0), 1, "a"), 1);
+        db.set_preset(&id, Some("manga".into()));
+
+        // The user raises this series' contrast: that one setting is its own.
+        let mut mine = manga.clone();
+        mine.contrast = 90;
+        db.set_settings(&id, mine, Some(&manga));
+        assert_eq!(
+            db.find(&id).unwrap().overridden,
+            vec![ConversionField::Contrast]
+        );
+
+        // Editing the preset changes the series' other settings, not its own.
+        let mut edited = manga.clone();
+        edited.contrast = 20;
+        edited.overlap_percent = 30;
+        presets.overwrite("manga", edited).unwrap();
+        assert!(db.follow_presets(&presets));
+        let s = &db.find(&id).unwrap().settings;
+        assert_eq!(s.contrast, 90, "overridden");
+        assert_eq!(s.overlap_percent, 30, "followed the preset");
+        assert!(!db.follow_presets(&presets), "nothing left to change");
+
+        // Picking a preset again drops the series' own changes.
+        db.set_preset(&id, Some("manga".into()));
+        assert!(db.find(&id).unwrap().overridden.is_empty());
+
+        // A deleted preset leaves the settings and cuts the link.
+        db.series[0].preset_id = Some("gone".into());
+        assert!(db.follow_presets(&presets));
+        assert_eq!(db.series[0].preset_id, None);
     }
 
     #[test]
@@ -767,5 +894,23 @@ mod tests {
         assert!(remove_inside(&root, &root.join("series")).is_ok());
         assert!(!root.join("series").exists());
         let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn a_series_stays_in_the_folder_it_started_in() {
+        let base = std::env::temp_dir().join(format!("mangapoint-roots-{}", std::process::id()));
+        let (old, new) = (base.join("old"), base.join("new"));
+        fs::create_dir_all(old.join("kept-series")).unwrap();
+        fs::create_dir_all(&new).unwrap();
+        let files = LibraryFiles::new(&new).with_other_roots([old.clone()]);
+        assert_eq!(files.root(), new.as_path());
+        // An existing series is found where it is, a new one goes to the new folder.
+        assert_eq!(files.series_dir("kept-series"), old.join("kept-series"));
+        assert_eq!(files.series_dir("fresh-series"), new.join("fresh-series"));
+        // Deleting it deletes it from the folder it is in.
+        files.remove_series("kept-series").unwrap();
+        assert!(!old.join("kept-series").exists());
+        assert!(old.exists(), "the folder itself is left alone");
+        let _ = fs::remove_dir_all(&base);
     }
 }

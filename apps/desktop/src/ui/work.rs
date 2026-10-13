@@ -5,9 +5,10 @@
 use crate::logic::{self, JobProgress};
 use crate::queue::{Batch, BatchStatus};
 use crate::state::{
-    library_files, now_secs, paths, spawn_forever, AppState, ChaptersState, ExportOpts,
-    GroupingChoice, JobKind, JobView, LoadedChapters, Page, PlanChapters, PlanEntry, PreviewPage,
-    PreviewState, SeriesTab, Shot, TableView, Workspace,
+    apply_library_dirs, library_files, now_secs, paths, spawn_forever, AppState, ChaptersState,
+    DownloadDialog, ExportItem, ExportOpts, ExportPlan, GroupingChoice, JobKind, JobView,
+    LoadedChapters, Page, PendingDownload, PlanChapters, PlanEntry, PreviewPage, PreviewState,
+    Shot, TableView, Workspace,
 };
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
@@ -20,8 +21,10 @@ use pipeline::{
     Grouping, JobEvent, PipelineError, PreviewImage, RetryPolicy, SourceChoice,
 };
 use search::{merge_chapters, RankedSeries, ScoredMember};
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc::unbounded_channel;
 use tracing::{info, warn};
@@ -29,12 +32,7 @@ use tracing::{info, warn};
 // ---- Opening a series -------------------------------------------------------
 
 fn reset_workspace_state(state: AppState) {
-    let (mut selected, mut table, mut preview, mut opts) = (
-        state.selected,
-        state.table,
-        state.preview,
-        state.export_opts,
-    );
+    let (mut selected, mut table, mut preview) = (state.selected, state.table, state.preview);
     selected.set(HashSet::new());
     table.set(TableView::default());
     // A new series starts with an empty preview, but keeps how the user likes to view it.
@@ -43,7 +41,6 @@ fn reset_workspace_state(state: AppState) {
         view,
         ..Default::default()
     });
-    opts.set(ExportOpts::default());
     let mut source = state.download_source;
     source.set(SourceChoice::Adaptive);
 }
@@ -58,7 +55,6 @@ pub fn open_series_from_search(state: AppState, ranked: RankedSeries) {
         series_id: series_id.clone(),
         title,
         ranked: Some(ranked.clone()),
-        tab: SeriesTab::Chapters,
         origin: Page::Search,
     }));
     let mut chapters = state.chapters;
@@ -100,7 +96,6 @@ pub fn open_series_from_library(state: AppState, series_id: &str) {
         series_id: series_id.to_string(),
         title,
         ranked: None,
-        tab: SeriesTab::Overview,
         origin: Page::Library,
     }));
     let mut chapters = state.chapters;
@@ -238,8 +233,7 @@ pub fn saved_sources_of(members: &[ScoredMember]) -> Vec<library::SavedSource> {
 
 /// Put a series in the library without downloading anything.
 pub fn add_to_library(state: AppState, title: &str, sources: Vec<library::SavedSource>) {
-    let defaults = state.settings.peek().conversion.clone();
-    let preset = state.settings.peek().default_preset_id.clone();
+    let (defaults, preset) = state.new_series_defaults();
     let already = state
         .library
         .peek()
@@ -568,6 +562,46 @@ fn enqueue_picked(
     })
 }
 
+/// Start a download, after asking where its files should go (unless the user
+/// asked not to be asked).
+pub fn ask_download(state: AppState, pending: PendingDownload, summary: String) {
+    if !state.settings.peek().ask_download_folder {
+        start_pending(state, pending);
+        return;
+    }
+    let mut dialog = state.download_dialog;
+    dialog.set(Some(DownloadDialog { pending, summary }));
+}
+
+/// Begin what the dialog was asked about.
+pub fn start_pending(state: AppState, pending: PendingDownload) {
+    match pending {
+        PendingDownload::Chapters => queue_download(state),
+        PendingDownload::Plan => commit_plan(state),
+    }
+}
+
+/// Keep new downloads in this folder. What was downloaded before stays where
+/// it is, and is still found there.
+pub fn set_download_folder(state: AppState, dir: std::path::PathBuf) {
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        state.error(format!("Could not use that folder: {e}"));
+        return;
+    }
+    let mut settings = state.settings;
+    {
+        let mut st = settings.write();
+        let app_folder = paths().library_dir();
+        let old = st.library_dir.clone().unwrap_or_else(|| app_folder.clone());
+        if old != dir && !st.library_dirs.contains(&old) {
+            st.library_dirs.push(old);
+        }
+        st.library_dir = (dir != app_folder).then_some(dir);
+    }
+    apply_library_dirs(&settings.peek());
+    state.save_settings();
+}
+
 /// Add the ticked chapters that are not downloaded yet to the download queue.
 /// They download in turn, so there is nothing to wait for or start by hand:
 /// keep picking chapters, here or in other series.
@@ -730,8 +764,7 @@ pub fn commit_plan(state: AppState) {
 
 /// Put a series in the library as a download is queued, without a message.
 fn add_to_library_quietly(state: AppState, title: &str, sources: &[library::SavedSource]) {
-    let defaults = state.settings.peek().conversion.clone();
-    let preset = state.settings.peek().default_preset_id.clone();
+    let (defaults, preset) = state.new_series_defaults();
     let id = {
         let mut library = state.library;
         let mut db = library.write();
@@ -783,8 +816,7 @@ async fn run_batch(state: AppState, id: u64) {
     };
     let started = Instant::now();
     let files = library_files();
-    let defaults = state.settings.peek().conversion.clone();
-    let default_preset = state.settings.peek().default_preset_id.clone();
+    let (defaults, default_preset) = state.new_series_defaults();
     let shrink = state.settings.peek().shrink_downloads;
     let policy = RetryPolicy::default();
     let limits = state.settings.peek().download.limits();
@@ -1035,108 +1067,6 @@ async fn order_sources(
 /// export runs (about seven times a second).
 const PROGRESS_REFRESH: Duration = Duration::from_millis(140);
 
-// ---- The Presets page ---------------------------------------------------------
-
-/// Start editing a preset: its settings become the draft, and the test page is
-/// drawn with them.
-pub fn select_lab_preset(state: AppState, id: &str) {
-    let Some(entry) = state.presets.peek().find(id) else {
-        return;
-    };
-    let mut lab = state.preset_lab;
-    {
-        let mut l = lab.write();
-        l.selected = Some(entry.preset.id.clone());
-        l.draft = entry.preset.settings.clone();
-    }
-    schedule_lab(state, 0);
-}
-
-/// Choose the test page: a downloaded series' pages, or the built-in sample.
-pub fn choose_lab_sample(state: AppState, series_id: Option<String>) {
-    let mut lab = state.preset_lab;
-    {
-        let mut l = lab.write();
-        l.sample_series = series_id;
-        // Early pages are often a banner or credits; the third usually has art.
-        l.page = 2;
-        l.total_pages = 0;
-    }
-    schedule_lab(state, 0);
-}
-
-/// Draw the test page with the draft settings. Changes call this with a short
-/// delay, so dragging a slider draws once it settles.
-pub fn schedule_lab(state: AppState, delay_ms: u64) {
-    let mut lab = state.preset_lab;
-    let generation = {
-        let mut l = lab.write();
-        l.generation += 1;
-        l.busy = true;
-        l.error = None;
-        l.generation
-    };
-    spawn_forever(async move {
-        if delay_ms > 0 {
-            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
-        }
-        let current = |state: AppState| state.preset_lab.peek().generation == generation;
-        if !current(state) {
-            return;
-        }
-        let (draft, sample, wanted_page) = {
-            let l = state.preset_lab.peek();
-            (l.draft.clone(), l.sample_series.clone(), l.page)
-        };
-        let device = state.settings.peek().device;
-        let opts = pipeline::process_options_for(device, &draft);
-
-        // The page to try: from the library, or drawn from scratch.
-        let mut total_pages = 0;
-        let mut page_index = 0;
-        let mut file = None;
-        if let Some(series_id) = &sample {
-            let first = state
-                .library
-                .peek()
-                .find(series_id)
-                .and_then(|s| s.chapters.first().map(|c| c.key.clone()));
-            if let Some(key) = first {
-                let pages = library_files().page_files(series_id, &key);
-                if !pages.is_empty() {
-                    total_pages = pages.len();
-                    page_index = wanted_page.min(pages.len() - 1);
-                    file = Some(pages[page_index].clone());
-                }
-            }
-        }
-        let rendered = tokio::task::spawn_blocking(move || match file {
-            Some(path) => std::fs::read(&path)
-                .map_err(|e| format!("Could not read the page: {e}"))
-                .and_then(|bytes| pipeline::render_page(&bytes, &opts).map_err(|e| e.to_string())),
-            None => Ok(pipeline::render_gray(&pipeline::sample_page(), &opts)),
-        })
-        .await;
-        if !current(state) {
-            return;
-        }
-        let mut lab = state.preset_lab;
-        let mut l = lab.write();
-        l.busy = false;
-        match rendered {
-            Ok(Ok(page)) => {
-                l.converted = page.converted.iter().map(shot).collect();
-                l.original = Some(shot(&page.original.image));
-                l.kept = Some(page.original.kept);
-                l.total_pages = total_pages;
-                l.page = page_index;
-            }
-            Ok(Err(message)) => l.error = Some(message),
-            Err(e) => l.error = Some(e.to_string()),
-        }
-    });
-}
-
 /// Stop the running download or export. The screen says so at once; the job
 /// itself ends as soon as the pages already on their way are dropped.
 pub fn cancel_job(state: AppState) {
@@ -1192,21 +1122,165 @@ pub fn prepare_preview(state: AppState) {
             .chapter_key
             .as_ref()
             .map_or(0, |k| library_files().page_files(&ws.series_id, k).len());
-        valid && on_disk > 0 && p.pages.len() == on_disk && p.fresh == on_disk && !p.busy
+        valid && on_disk > 0 && !p.pages.is_empty() && p.fresh == p.pages.len() && !p.busy
     };
     if !up_to_date {
         schedule_preview(state, 0);
     }
 }
 
-/// Draw every page of the chapter with the series' settings, a few at a time
-/// in the background. Settings changes call this with a short delay, so
-/// dragging a slider draws once it settles.
+/// The decoded images of the chapter last previewed, so tuning a slider does
+/// not read and decode every page again.
+type DecodedChapter = (String, Arc<Vec<converter::GrayImage>>);
+static DECODED: Mutex<Option<DecodedChapter>> = Mutex::new(None);
+static PREPARED_PREVIEW: Mutex<
+    Option<(String, converter::ProcessOptions, pipeline::ChapterPreview)>,
+> = Mutex::new(None);
+static PREVIEW_REQUEST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+fn next_preview_request() -> u64 {
+    PREVIEW_REQUEST.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+fn shape_options(opts: &converter::ProcessOptions) -> converter::ProcessOptions {
+    let mut key = opts.clone();
+    key.contrast = 50;
+    key.auto_levels = false;
+    key.dither = converter::Dither::Threshold;
+    key.depth = converter::Depth::One;
+    key
+}
+
+/// Most pages drawn full size at once while scrolling.
+const MAX_FULL_PAGES: usize = 10;
+
+/// The pages to draw full size: the selected one, then those on or near the
+/// screen, nearest first.
+pub fn full_size_pages(total: usize, selected: usize, window: (usize, usize)) -> Vec<usize> {
+    if total == 0 {
+        return Vec::new();
+    }
+    let selected = selected.min(total - 1);
+    let mut pages: Vec<usize> = (window.0.min(total - 1)..=window.1.min(total - 1)).collect();
+    pages.sort_by_key(|&i| i.abs_diff(selected));
+    pages.truncate(MAX_FULL_PAGES);
+    if !pages.contains(&selected) {
+        pages.insert(0, selected);
+    }
+    pages
+}
+
+pub fn preview_render_order(
+    total: usize,
+    selected: usize,
+    thumb_start: usize,
+    overview: bool,
+    window: (usize, usize),
+) -> Vec<usize> {
+    if total == 0 {
+        return Vec::new();
+    }
+    let selected = selected.min(total - 1);
+    let mut order = vec![selected];
+    let range = if overview {
+        0..total
+    } else {
+        thumb_start.min(total)..(thumb_start + 8).min(total)
+    };
+    for i in range {
+        if !order.contains(&i) {
+            order.push(i);
+        }
+    }
+    for i in selected.saturating_sub(1)..(selected + 2).min(total) {
+        if !order.contains(&i) {
+            order.push(i);
+        }
+    }
+    for i in full_size_pages(total, selected, window) {
+        if !order.contains(&i) {
+            order.push(i);
+        }
+    }
+    order
+}
+
+pub fn select_preview_page(state: AppState, selected: usize) {
+    let mut preview = state.preview;
+    let mut p = preview.write();
+    if p.pages.is_empty() {
+        return;
+    }
+    let next = selected.min(p.pages.len() - 1);
+    if next != p.selected {
+        p.draft_crop = None;
+    }
+    p.selected = next;
+    p.overview = false;
+    drop(p);
+    schedule_preview(state, 0);
+    spawn(async move {
+        let js = format!(
+            "document.querySelector('[data-editor-page=\"{next}\"]')?.scrollIntoView({{block:'nearest'}});\
+             document.querySelector('.editor-row[data-row=\"{next}\"]')?.scrollIntoView({{block:'start'}})"
+        );
+        let _ = document::eval(&js).await;
+    });
+}
+
+/// Read and decode a chapter's saved pages, in order.
+async fn decode_chapter(
+    cache_key: String,
+    files: Vec<std::path::PathBuf>,
+) -> Result<(String, Arc<Vec<converter::GrayImage>>), String> {
+    let raw = tokio::task::spawn_blocking(move || {
+        files
+            .into_iter()
+            .map(|path| {
+                std::fs::read(path).map_err(|e| format!("Could not read a saved page: {e}"))
+            })
+            .collect::<Result<Vec<_>, _>>()
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    let mut digest = Sha256::new();
+    for bytes in &raw {
+        digest.update((bytes.len() as u64).to_le_bytes());
+        digest.update(bytes);
+    }
+    let cache_key = format!("{cache_key}/{:x}", digest.finalize());
+    if let Some((k, grays)) = DECODED.lock().ok().and_then(|g| g.clone()) {
+        if k == cache_key {
+            return Ok((cache_key, grays));
+        }
+    }
+    let decoded: Vec<Result<converter::GrayImage, String>> = stream::iter(raw.into_iter())
+        .map(|bytes| async move {
+            tokio::task::spawn_blocking(move || {
+                pipeline::decode_page(&bytes).map_err(|e| e.to_string())
+            })
+            .await
+            .map_err(|e| e.to_string())?
+        })
+        .buffered(PREVIEW_THREADS)
+        .collect()
+        .await;
+    let grays = Arc::new(decoded.into_iter().collect::<Result<Vec<_>, _>>()?);
+    if let Ok(mut g) = DECODED.lock() {
+        *g = Some((cache_key.clone(), grays.clone()));
+    }
+    Ok((cache_key, grays))
+}
+
+/// Plan the chapter with the series' settings, then draw each page a few at a
+/// time in the background. The plan appears first, so the screen takes its
+/// shape at once. Settings changes call this with a short delay, so dragging a
+/// slider draws once it settles.
 pub fn schedule_preview(state: AppState, delay_ms: u64) {
     let mut preview = state.preview;
     let generation = {
         let mut p = preview.write();
-        p.generation += 1;
+        p.generation = next_preview_request();
         p.busy = true;
         p.error = None;
         p.fresh = 0;
@@ -1243,10 +1317,49 @@ pub fn schedule_preview(state: AppState, delay_ms: u64) {
         let Some(series) = state.library.peek().find(&ws.series_id).cloned() else {
             return fail("This series is not in your library.".into());
         };
-        let device = state.settings.peek().device;
-        let pages = library_files().page_files(&ws.series_id, &key);
-        if pages.is_empty() {
+        let device = state.settings.peek().device_profile();
+        let files = library_files().page_files(&ws.series_id, &key);
+        if files.is_empty() {
             return fail("This chapter has no saved pages. Download it again.".into());
+        }
+        let image_count = files.len();
+        let (cache_key, grays) =
+            match decode_chapter(format!("{}/{key}/{image_count}", ws.series_id), files).await {
+                Ok(g) => g,
+                Err(message) => return fail(message),
+            };
+        if !current(state) {
+            return;
+        }
+
+        // The same planning and conversion the export runs.
+        let opts = pipeline::process_options_for(&device, &series.settings);
+        let shape_key = shape_options(&opts);
+        let cached = PREPARED_PREVIEW.lock().ok().and_then(|g| {
+            g.as_ref()
+                .filter(|(k, o, _)| k == &cache_key && o == &shape_key)
+                .map(|(_, _, p)| p.clone())
+        });
+        let chapter = if let Some(cached) = cached {
+            cached
+        } else {
+            let (prepare_opts, grays) = (opts.clone(), grays.clone());
+            match tokio::task::spawn_blocking(move || {
+                pipeline::prepare_chapter(&grays, &prepare_opts)
+            })
+            .await
+            {
+                Ok(c) => {
+                    if let Ok(mut cache) = PREPARED_PREVIEW.lock() {
+                        *cache = Some((cache_key, shape_key, c.clone()));
+                    }
+                    c
+                }
+                Err(e) => return fail(e.to_string()),
+            }
+        };
+        if !current(state) {
+            return;
         }
         {
             let mut p = state.preview;
@@ -1254,25 +1367,140 @@ pub fn schedule_preview(state: AppState, delay_ms: u64) {
             if w.generation != generation {
                 return;
             }
-            w.pages.resize(pages.len(), None);
+            let old = std::mem::take(&mut w.pages);
+            w.strip = chapter.plan.strip;
+            w.images = image_count;
+            let near = (
+                w.window.0.saturating_sub(KEEP_DRAWN_AROUND),
+                w.window.1 + KEEP_DRAWN_AROUND,
+            );
+            w.pages = chapter
+                .plan
+                .pages
+                .iter()
+                .enumerate()
+                .map(|(position, page)| {
+                    // Keep the previous drawing of this page until it is
+                    // redrawn, but only near the screen: the full-size
+                    // drawings of a long chapter would fill the memory.
+                    let (shot, thumbnail, original, kept) = old
+                        .iter()
+                        .find(|o| o.crop_key == pipeline::crop_page_key(page))
+                        .map_or((None, None, None, None), |o| {
+                            let close = (near.0..=near.1).contains(&position);
+                            (
+                                o.shot.clone().filter(|_| close),
+                                o.thumbnail.clone(),
+                                o.original.clone().filter(|_| close),
+                                o.kept,
+                            )
+                        });
+                    let image = match page.source {
+                        converter::Source::Image { index, .. } => Some(index),
+                        converter::Source::Strip { .. } => None,
+                    };
+                    Rc::new(PreviewPage {
+                        shot,
+                        thumbnail,
+                        original,
+                        kept,
+                        image,
+                        crop_key: pipeline::crop_page_key(page),
+                        source: Some(page.clone()),
+                        generation: 0,
+                    })
+                })
+                .collect();
+            w.selected = w.selected.min(w.pages.len().saturating_sub(1));
         }
 
-        // The same conversion the export runs, on background threads.
-        let opts = pipeline::process_options_for(device, &series.settings);
-        let mut drawn = stream::iter(pages.into_iter().enumerate())
-            .map(|(index, path)| {
-                let opts = opts.clone();
+        let prepared = chapter.prepared.clone();
+        let (selected, thumb_start, overview, draft, window, want_source) = {
+            let p = state.preview.peek();
+            (
+                p.selected,
+                p.thumb_start,
+                p.overview,
+                p.draft_crop.clone(),
+                p.window,
+                p.view.show_original,
+            )
+        };
+        let full: std::collections::HashSet<usize> =
+            full_size_pages(chapter.plan.pages.len(), selected, window)
+                .into_iter()
+                .collect();
+        let jobs: Vec<_> = preview_render_order(
+            chapter.plan.pages.len(),
+            selected,
+            thumb_start,
+            overview,
+            window,
+        )
+        .into_iter()
+        .map(|i| (i, chapter.plan.pages[i].clone()))
+        .collect();
+        let crops = series.crops.clone();
+        let chapter_key = key.clone();
+        let mut drawn = stream::iter(jobs)
+            .map(|(index, page)| {
+                let (opts, prepared, crops, chapter_key, draft) = (
+                    opts.clone(),
+                    prepared.clone(),
+                    crops.clone(),
+                    chapter_key.clone(),
+                    draft.clone(),
+                );
+                let (is_full, is_selected) = (full.contains(&index), index == selected);
                 async move {
                     let result = tokio::task::spawn_blocking(move || {
-                        let bytes = std::fs::read(&path)
-                            .map_err(|e| format!("Could not read a saved page: {e}"))?;
-                        let page =
-                            pipeline::render_page(&bytes, &opts).map_err(|e| e.to_string())?;
-                        Ok::<PreviewPage, String>(PreviewPage {
-                            converted: page.converted.iter().map(shot).collect(),
-                            original: shot(&page.original.image),
-                            kept: page.original.kept,
-                        })
+                        let key = pipeline::crop_page_key(&page);
+                        let crop = draft
+                            .as_ref()
+                            .filter(|(k, _)| k == &key)
+                            .map(|(_, crop)| *crop)
+                            .or_else(|| crops.effective(&chapter_key, &key));
+                        let levels = converter::plan::render_page_cropped(
+                            &prepared,
+                            &page,
+                            &opts,
+                            crop.unwrap_or_default().as_array(),
+                        );
+                        let thumbnail = pipeline::levels_to_thumbnail(&levels);
+                        let converted =
+                            is_full.then(|| pipeline::levels_to_previews(&[levels]).remove(0));
+                        let original = (is_full && (want_source || is_selected))
+                            .then(|| pipeline::render_source_preview(&prepared, &page, &opts));
+                        let samples = if is_selected {
+                            let source = converter::plan::page_source(&prepared, &page, &opts);
+                            [
+                                converter::Dither::FloydSteinberg,
+                                converter::Dither::Atkinson,
+                                converter::Dither::Ordered,
+                                converter::Dither::Threshold,
+                            ]
+                            .into_iter()
+                            .map(|dither| {
+                                let mut sample_opts = opts.clone();
+                                sample_opts.width = 96;
+                                sample_opts.height = 160;
+                                sample_opts.layout = converter::process::Layout::Manga;
+                                sample_opts.crop = converter::process::CropMode::Full;
+                                sample_opts.margins = converter::process::Margins::default();
+                                sample_opts.spread = converter::process::SpreadMode::Fit;
+                                sample_opts.dither = dither;
+                                let levels =
+                                    converter::process::process_page(&source, &sample_opts);
+                                pipeline::levels_to_previews(&levels)
+                                    .first()
+                                    .map(|image| shot(image).url)
+                                    .unwrap_or_default()
+                            })
+                            .collect::<Vec<_>>()
+                        } else {
+                            Vec::new()
+                        };
+                        (converted, thumbnail, original, samples)
                     })
                     .await;
                     (index, result)
@@ -1285,19 +1513,28 @@ pub fn schedule_preview(state: AppState, delay_ms: u64) {
                 return;
             }
             match result {
-                Ok(Ok(page)) => {
+                Ok((converted, thumbnail, original, samples)) => {
                     let mut p = state.preview;
                     let mut w = p.write();
                     if let Some(slot) = w.pages.get_mut(index) {
-                        *slot = Some(Rc::new(page));
+                        let mut next = (**slot).clone();
+                        if let Some(converted) = converted {
+                            next.shot = Some(shot(&converted));
+                        }
+                        next.thumbnail = Some(shot(&thumbnail));
+                        if let Some(original) = original {
+                            next.original = Some(shot(&original));
+                        }
+                        next.generation = generation;
+                        *slot = Rc::new(next);
+                    }
+                    if index == selected {
+                        w.shading_samples = samples;
                     }
                     w.fresh += 1;
                 }
-                Ok(Err(message)) => {
-                    first_error.get_or_insert(format!("Page {}: {message}", index + 1));
-                }
                 Err(e) => {
-                    first_error.get_or_insert(e.to_string());
+                    first_error.get_or_insert(format!("Page {}: {e}", index + 1));
                 }
             }
         }
@@ -1311,9 +1548,9 @@ pub fn schedule_preview(state: AppState, delay_ms: u64) {
 }
 
 /// Pages drawn at the same time while previewing.
-const PREVIEW_THREADS: usize = 3;
-
-// ---- Exporting -------------------------------------------------------------
+const PREVIEW_THREADS: usize = 4;
+/// Pages either side of the screen whose full-size drawings are kept.
+const KEEP_DRAWN_AROUND: usize = 12;
 
 pub fn grouping_of(opts: &ExportOpts) -> Grouping {
     match opts.grouping {
@@ -1325,29 +1562,178 @@ pub fn grouping_of(opts: &ExportOpts) -> Grouping {
     }
 }
 
-/// Build the reader files from the downloaded chapters.
-pub fn start_export(state: AppState) {
+// ---- The Export screen ---------------------------------------------------
+
+/// Open the Export screen for these series. Only series with downloaded
+/// chapters can be exported, so the others are left out.
+pub fn open_export(state: AppState, series_ids: Vec<String>) {
+    let items: Vec<ExportItem> = series_ids
+        .iter()
+        .filter(|id| {
+            state
+                .library
+                .peek()
+                .find(id)
+                .is_some_and(|s| !s.chapters.is_empty())
+        })
+        .map(|id| ExportItem {
+            series_id: id.clone(),
+            ..Default::default()
+        })
+        .collect();
+    if items.is_empty() {
+        state.error("Download some chapters first, then export them.");
+        return;
+    }
+    let mut plan = state.export_plan;
+    plan.set(ExportPlan { items, active: 0 });
+    activate_export_series(state, 0);
+    state.go(Page::Export);
+}
+
+/// Open the Export screen on the sample pages, to look around and try presets,
+/// when nothing has been chosen to export.
+pub fn open_sample(state: AppState) {
+    let id = crate::sample::ensure_sample(state);
+    let mut plan = state.export_plan;
+    plan.set(ExportPlan {
+        items: vec![ExportItem {
+            series_id: id,
+            ..Default::default()
+        }],
+        active: 0,
+    });
+    activate_export_series(state, 0);
+    state.go(Page::Export);
+}
+
+/// Edit and preview this series of the Export screen's list.
+pub fn activate_export_series(state: AppState, index: usize) {
+    let id = state
+        .export_plan
+        .peek()
+        .items
+        .get(index)
+        .map(|i| i.series_id.clone());
+    let Some(id) = id else { return };
+    let series_id = id.clone();
+    let title = ws_title(state, &id);
+    let mut plan = state.export_plan;
+    plan.write().active = index;
+    reset_workspace_state(state);
+    let mut ws = state.workspace;
+    ws.set(Some(Workspace {
+        series_id: id,
+        title,
+        ranked: None,
+        origin: Page::Library,
+    }));
+    {
+        let mut preview = state.preview;
+        let mut p = preview.write();
+        p.chapter_key = None;
+        p.pages.clear();
+        p.fresh = 0;
+        p.selected = 0;
+        p.thumb_start = 0;
+        p.window = (0, 0);
+        p.draft_crop = None;
+        p.shading_samples.clear();
+        // Back where it was, if the screen was left and opened again.
+        let remembered = state
+            .export_plan
+            .peek()
+            .items
+            .get(index)
+            .and_then(|i| i.chapter.clone());
+        let valid = remembered.filter(|key| {
+            state
+                .library
+                .peek()
+                .find(&series_id)
+                .is_some_and(|s| s.chapters.iter().any(|c| &c.key == key))
+        });
+        p.chapter_key = valid;
+    }
+    let mut draft = state.crop_draft;
+    draft.set(library::CropRect::default());
+    prepare_preview(state);
+}
+
+/// Add a series to the Export screen's list.
+pub fn add_export_series(state: AppState, series_id: String) {
+    let has_chapters = state
+        .library
+        .peek()
+        .find(&series_id)
+        .is_some_and(|s| !s.chapters.is_empty());
+    if !has_chapters {
+        return;
+    }
+    let mut plan = state.export_plan;
+    let mut p = plan.write();
+    if !p.items.iter().any(|i| i.series_id == series_id) {
+        p.items.push(ExportItem {
+            series_id,
+            ..Default::default()
+        });
+    }
+}
+
+/// Take a series off the Export screen's list. With none left, go back.
+pub fn remove_export_series(state: AppState, index: usize) {
+    let (left, active) = {
+        let mut plan = state.export_plan;
+        let mut p = plan.write();
+        if index >= p.items.len() {
+            return;
+        }
+        p.items.remove(index);
+        let last = p.items.len().saturating_sub(1);
+        p.active = if index < p.active || p.active > last {
+            p.active.saturating_sub(1).min(last)
+        } else {
+            p.active
+        };
+        (p.items.len(), p.active)
+    };
+    if left == 0 {
+        state.go(Page::Library);
+    } else {
+        activate_export_series(state, active);
+    }
+}
+
+/// Export every series switched on in the Export screen's list, one after
+/// another, to the chosen place.
+pub fn start_export_plan(state: AppState) {
     if job_running(state) {
         state.error("Something is already running. Wait for it to finish, or cancel it.");
         return;
     }
-    let Some(ws) = state.workspace.peek().clone() else {
-        return;
-    };
-    let Some(series) = state.library.peek().find(&ws.series_id).cloned() else {
-        state.error("Download some chapters first.");
-        return;
-    };
+    let plan = state.export_plan.peek().clone();
     let opts = state.export_opts.peek().clone();
     let settings = state.settings.peek().clone();
-    let keys: Vec<String> = series
-        .chapters
+    let list: Vec<(library::DownloadedSeries, Vec<String>)> = plan
+        .items
         .iter()
-        .filter(|c| !opts.excluded.contains(&c.key))
-        .map(|c| c.key.clone())
+        .filter(|i| !i.off)
+        .filter_map(|i| {
+            let series = state.library.peek().find(&i.series_id).cloned()?;
+            if series.is_sample() {
+                return None;
+            }
+            let keys: Vec<String> = series
+                .chapters
+                .iter()
+                .filter(|c| !i.excluded.contains(&c.key))
+                .map(|c| c.key.clone())
+                .collect();
+            (!keys.is_empty()).then_some((series, keys))
+        })
         .collect();
-    if keys.is_empty() {
-        state.error("Tick at least one chapter to export.");
+    if list.is_empty() {
+        state.error("Choose at least one chapter to export.");
         return;
     }
     let target = match logic::export_target(&opts.target, &settings, &paths().default_export_dir())
@@ -1358,40 +1744,63 @@ pub fn start_export(state: AppState) {
             return;
         }
     };
-    let mut export = ExportJob::new(
-        series.clone(),
-        keys.clone(),
-        settings.device,
-        target.clone(),
-        paths().spool_dir(),
-    );
-    export.language = settings.language.clone();
-    export.grouping = grouping_of(&opts);
-
-    let cancel = CancelFlag::new();
-    let mut job = state.job;
-    job.set(Some(JobView {
-        kind: JobKind::Export,
-        title: ws.title.clone(),
-        progress: JobProgress::default(),
-        result: None,
-        cancel: cancel.clone(),
-    }));
-    info!(
-        "Export started: \"{}\", {} chapter(s) as {}, {}, to {}",
-        series.title,
-        keys.len(),
-        series.settings.format.extension().to_uppercase(),
-        match export.grouping {
-            Grouping::Single => "one file".to_string(),
-            Grouping::PerChapter => "one file per chapter".to_string(),
-            Grouping::EveryN(n) => format!("one file per {n} chapters"),
-        },
-        describe_target(&target)
-    );
-
-    spawn_forever(run_export(state, series, export, target, cancel));
+    let grouping = grouping_of(&opts);
+    spawn_forever(async move {
+        let total = list.len();
+        for (n, (series, keys)) in list.into_iter().enumerate() {
+            let cancel = CancelFlag::new();
+            let mut export = ExportJob::new(
+                series.clone(),
+                keys.clone(),
+                settings.device_profile(),
+                target.clone(),
+                paths().spool_dir(),
+            );
+            export.language = settings.language.clone();
+            export.grouping = grouping;
+            let mut job = state.job;
+            job.set(Some(JobView {
+                kind: JobKind::Export,
+                title: if total > 1 {
+                    format!("{} ({} of {total})", series.title, n + 1)
+                } else {
+                    series.title.clone()
+                },
+                progress: JobProgress::default(),
+                result: None,
+                cancel: cancel.clone(),
+            }));
+            info!(
+                "Export started: \"{}\", {} chapter(s) as {}, {}, to {}",
+                series.title,
+                keys.len(),
+                series.settings.format.extension().to_uppercase(),
+                match grouping {
+                    Grouping::Single => "one file".to_string(),
+                    Grouping::PerChapter => "one file per chapter".to_string(),
+                    Grouping::EveryN(n) => format!("one file per {n} chapters"),
+                },
+                describe_target(&target)
+            );
+            run_export(state, series, export, target.clone(), cancel).await;
+            let failed = matches!(
+                job.peek().as_ref().and_then(|j| j.result.as_ref()),
+                Some(Err(_))
+            );
+            if failed {
+                return;
+            }
+        }
+        if total > 1 {
+            let mut job = state.job;
+            let mut guard = job.write();
+            if let Some(view) = guard.as_mut() {
+                view.result = Some(Ok(format!("Exported {total} series")));
+            }
+        }
+    });
 }
+
 /// Run one export, keeping the job bar up to date, and record the result.
 async fn run_export(
     state: AppState,
@@ -1479,78 +1888,6 @@ async fn run_export(
             }
         }
     }
-}
-
-/// Export every downloaded chapter of these series, one file each, to the
-/// export folder from Settings, one series after another.
-pub fn export_series_many(state: AppState, series_ids: Vec<String>) {
-    if job_running(state) {
-        state.error("Something is already running. Wait for it to finish, or cancel it.");
-        return;
-    }
-    let settings = state.settings.peek().clone();
-    let list: Vec<library::DownloadedSeries> = series_ids
-        .iter()
-        .filter_map(|id| state.library.peek().find(id).cloned())
-        .filter(|s| !s.chapters.is_empty())
-        .collect();
-    if list.is_empty() {
-        state.error("Nothing is downloaded for those series yet.");
-        return;
-    }
-    let target = match logic::export_target(
-        &crate::logic::TargetChoice::Folder,
-        &settings,
-        &paths().default_export_dir(),
-    ) {
-        Ok(t) => t,
-        Err(message) => {
-            state.error(message);
-            return;
-        }
-    };
-    spawn_forever(async move {
-        let total = list.len();
-        for (n, series) in list.into_iter().enumerate() {
-            let cancel = CancelFlag::new();
-            let keys: Vec<String> = series.chapters.iter().map(|c| c.key.clone()).collect();
-            let mut export = ExportJob::new(
-                series.clone(),
-                keys,
-                settings.device,
-                target.clone(),
-                paths().spool_dir(),
-            );
-            export.language = settings.language.clone();
-            export.grouping = Grouping::Single;
-            let mut job = state.job;
-            job.set(Some(JobView {
-                kind: JobKind::Export,
-                title: format!("{} ({} of {total})", series.title, n + 1),
-                progress: JobProgress::default(),
-                result: None,
-                cancel: cancel.clone(),
-            }));
-            info!(
-                "Export started: \"{}\" ({} of {total})",
-                series.title,
-                n + 1
-            );
-            run_export(state, series, export, target.clone(), cancel).await;
-            let failed = matches!(
-                job.peek().as_ref().and_then(|j| j.result.as_ref()),
-                Some(Err(_))
-            );
-            if failed {
-                return;
-            }
-        }
-        let mut job = state.job;
-        let mut guard = job.write();
-        if let Some(view) = guard.as_mut() {
-            view.result = Some(Ok(format!("Exported {total} series")));
-        }
-    });
 }
 
 pub fn describe_target(target: &ExportTarget) -> String {
@@ -1697,25 +2034,6 @@ pub fn delete_chapters(state: AppState, series_id: String, keys: Vec<String>) {
             return;
         }
         state.notify(format!("Deleted {}.", logic::plural(deleted, "chapter")));
-        // With nothing left to preview or export, go back to the overview.
-        let empty = state
-            .library
-            .peek()
-            .find(&series_id)
-            .is_none_or(|s| s.chapters.is_empty());
-        let open_here = state
-            .workspace
-            .peek()
-            .as_ref()
-            .is_some_and(|w| w.series_id == series_id);
-        if open_here && *state.page.peek() == Page::Series {
-            let tab = state.workspace.peek().as_ref().map(|w| w.tab);
-            if empty && matches!(tab, Some(SeriesTab::Preview | SeriesTab::Export)) {
-                state.open_tab(SeriesTab::Overview);
-            } else if tab == Some(SeriesTab::Preview) {
-                prepare_preview(state);
-            }
-        }
     });
 }
 
@@ -1770,4 +2088,93 @@ pub fn forget_exported_file(state: AppState, record_id: String, path: String) {
     let mut exports = state.exports;
     exports.write().forget_file(&record_id, &path);
     state.save_exports();
+}
+
+#[cfg(test)]
+mod page_editor_tests {
+    use super::*;
+
+    #[test]
+    fn selected_page_precedes_visible_thumbnails_without_rendering_the_whole_chapter() {
+        let order = preview_render_order(148, 100, 90, false, (99, 101));
+        assert_eq!(order[0], 100);
+        for i in 90..98 {
+            assert!(order.contains(&i));
+        }
+        assert!(order.contains(&99));
+        assert!(order.contains(&101));
+        assert!(order.len() <= 11, "{}", order.len());
+        let mut unique = order.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), order.len());
+        assert_eq!(
+            preview_render_order(0, 10, 0, false, (0, 0)),
+            Vec::<usize>::new()
+        );
+        assert_eq!(preview_render_order(3, 99, 0, true, (0, 0)), [2, 0, 1]);
+    }
+
+    #[test]
+    fn the_pages_on_screen_are_drawn_full_size_nearest_first_and_not_too_many() {
+        assert_eq!(full_size_pages(0, 0, (0, 5)), Vec::<usize>::new());
+        // The selected page is always drawn, even off screen.
+        assert_eq!(full_size_pages(50, 40, (3, 4))[0], 40);
+        // The window is drawn nearest the selected page first.
+        assert_eq!(full_size_pages(50, 4, (3, 5)), [4, 3, 5]);
+        // A tall window is capped.
+        assert_eq!(full_size_pages(50, 10, (0, 40)).len(), MAX_FULL_PAGES);
+        // A window past the end is clamped.
+        assert_eq!(full_size_pages(5, 4, (3, 99)), [4, 3]);
+    }
+
+    #[test]
+    fn appearance_changes_reuse_the_prepared_chapter_but_layout_changes_do_not() {
+        let opts = converter::ProcessOptions::manga_default(480, 800, converter::Depth::Two);
+        let mut changed = opts.clone();
+        changed.contrast = 90;
+        changed.auto_levels = !opts.auto_levels;
+        changed.dither = converter::Dither::Atkinson;
+        assert_eq!(shape_options(&opts), shape_options(&changed));
+        changed.layout = converter::process::Layout::Webtoon;
+        assert_ne!(shape_options(&opts), shape_options(&changed));
+    }
+
+    #[test]
+    fn preview_tokens_do_not_reset_between_workspaces() {
+        let first = next_preview_request();
+        let second = next_preview_request();
+        assert!(second > first);
+    }
+
+    #[tokio::test]
+    async fn preview_reloads_replaced_sources_with_the_same_page_count() {
+        let root = std::env::temp_dir().join(format!(
+            "mangapoint-preview-revision-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("00001.img");
+        fn image(value: u8) -> Vec<u8> {
+            use image::ImageEncoder;
+            let mut bytes = Vec::new();
+            image::codecs::png::PngEncoder::new(&mut bytes)
+                .write_image(&[value; 16], 4, 4, image::ExtendedColorType::L8)
+                .unwrap();
+            bytes
+        }
+        std::fs::write(&path, image(0)).unwrap();
+        let (old, first) = decode_chapter("revision-test".into(), vec![path.clone()])
+            .await
+            .unwrap();
+        std::fs::write(&path, image(255)).unwrap();
+        let (new, second) = decode_chapter("revision-test".into(), vec![path.clone()])
+            .await
+            .unwrap();
+        assert_ne!(old, new);
+        assert_eq!(first[0].pixels, [0; 16]);
+        assert_eq!(second[0].pixels, [255; 16]);
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_dir(root);
+    }
 }
