@@ -640,7 +640,7 @@ fn SendPanel() -> Element {
                     span { class: "grow folder-path", title: "{folder_text}", "{folder_text}" }
                     button { class: "btn small",
                         onclick: move |_| {
-                            let start = state.settings.peek().export.output_dir.clone();
+                            let start = Some(folder.clone());
                             spawn(async move {
                                 if let Some(dir) = pick_folder("Where should the files go?", start).await {
                                     let mut s = state.settings;

@@ -189,15 +189,21 @@ pub fn open_link(url: &str) {
     }
 }
 
+/// The folder itself if it exists, else the closest parent that does.
+fn nearest_existing(path: &std::path::Path) -> Option<&std::path::Path> {
+    path.ancestors().find(|a| a.is_dir())
+}
+
 /// Ask the user for a folder with the system's own dialog. `start` is where
-/// it opens. `None` if they cancel.
+/// it opens, or else its nearest parent that exists (a folder not made yet
+/// cannot be shown). `None` if they cancel.
 pub async fn pick_folder(
     title: &str,
     start: Option<std::path::PathBuf>,
 ) -> Option<std::path::PathBuf> {
     let mut dialog = rfd::AsyncFileDialog::new().set_title(title);
-    if let Some(dir) = start.filter(|d| d.is_dir()) {
-        dialog = dialog.set_directory(native_path(&dir));
+    if let Some(dir) = start.as_deref().and_then(nearest_existing) {
+        dialog = dialog.set_directory(native_path(dir));
     }
     dialog.pick_folder().await.map(|h| h.path().to_path_buf())
 }
@@ -206,6 +212,14 @@ pub async fn pick_folder(
 mod tests {
     use super::*;
     use std::path::Path;
+
+    #[test]
+    fn the_picker_opens_at_the_closest_folder_that_exists() {
+        let here = std::env::temp_dir();
+        assert_eq!(nearest_existing(&here), Some(here.as_path()));
+        let missing = here.join("mangapoint-not-made").join("deeper");
+        assert_eq!(nearest_existing(&missing), Some(here.as_path()));
+    }
 
     #[test]
     fn a_native_path_keeps_a_unix_path_and_unmixes_a_windows_one() {
