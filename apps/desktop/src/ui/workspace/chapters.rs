@@ -240,6 +240,7 @@ pub fn ChaptersTab() -> Element {
                     .options
                     .iter()
                     .filter_map(|o| loaded.member_names.get(o.member).cloned())
+                    .filter(|name| !name.is_empty())
                     .collect(),
                 date: logic::format_date(logic::latest_upload(ch)),
                 saved: copy.is_some(),
@@ -261,14 +262,19 @@ pub fn ChaptersTab() -> Element {
         .collect();
 
     let failed_count = grid_rows.iter().filter(|r| r.failed).count();
+    let total_chapters = loaded.merged.len();
+    let last_downloaded = series.as_ref().map_or(0, |s| s.updated_at);
     let mut selected = state.selected;
     let mut table = state.table;
     rsx! {
         div { class: "row wrap chapters-summary",
             div { class: "grow",
                 if saved_count > 0 {
-                    strong { "{saved_count} downloaded" }
+                    strong { "{saved_count} of {total_chapters} downloaded" }
                     span { class: "muted", " · {logic::human_bytes(saved_bytes)} on this computer" }
+                    if last_downloaded > 0 {
+                        span { class: "muted", " · last downloaded {logic::ago(crate::state::now_secs(), last_downloaded)}" }
+                    }
                 } else {
                     span { class: "muted", "Nothing downloaded yet. Tick chapters and add them to the downloads." }
                 }

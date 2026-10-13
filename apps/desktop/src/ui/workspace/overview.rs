@@ -1,8 +1,8 @@
 //! Tab 0: what the series is, and what you have of it.
 
-use crate::logic::{ago, describe_settings, human_bytes};
-use crate::state::{now_secs, AppState};
-use crate::ui::widgets::{Chip, Cover, EmptyState, Icon, ProgressBar};
+use crate::logic::describe_settings;
+use crate::state::AppState;
+use crate::ui::widgets::{Chip, Cover, EmptyState, Icon};
 use crate::ui::work::{ensure_series_info, load_saved_cover, saved_cover_key};
 use dioxus::prelude::*;
 
@@ -31,27 +31,6 @@ pub fn OverviewTab() -> Element {
         };
     };
 
-    // Chapters per source, most first.
-    let mut per_source: Vec<(String, usize)> = Vec::new();
-    for chapter in &series.chapters {
-        let name = series
-            .info
-            .as_ref()
-            .and_then(|i| i.source_name(&chapter.source_id))
-            .map(str::to_string)
-            .unwrap_or_else(|| "another source".to_string());
-        match per_source.iter_mut().find(|(n, _)| *n == name) {
-            Some((_, count)) => *count += 1,
-            None => per_source.push((name, 1)),
-        }
-    }
-    per_source.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-
-    // How many chapters the sources list, once their lists have loaded.
-    let total_chapters = match &*state.chapters.read() {
-        crate::state::ChaptersState::Ready(loaded) => Some(loaded.merged.len()),
-        _ => None,
-    };
     let info = series.info.clone();
     let loading = state.info_busy.read().contains(&ws.series_id);
     let cover_key = saved_cover_key(&series.id);
@@ -120,36 +99,6 @@ pub fn OverviewTab() -> Element {
                         "Not downloaded yet. Tick chapters below to download them."
                     }
                 }
-                // How much of the series is here, as a bar.
-                div { class: "coverage",
-                    div { class: "coverage-line",
-                        strong { "{series.chapters.len()}" }
-                        span { class: "muted",
-                            if let Some(total) = total_chapters { " of {total} chapters downloaded" } else { " chapters downloaded" }
-                        }
-                    }
-                    if let Some(total) = total_chapters.filter(|t| *t > 0) {
-                        ProgressBar { fraction: Some(series.chapters.len() as f32 / total as f32) }
-                    }
-                }
-                // The numbers, in one row.
-                div { class: "stat-strip",
-                    Stat { icon: "layers", value: series.page_count().to_string(), label: "pages" }
-                    Stat { icon: "hard-drive", value: human_bytes(series.bytes()), label: "on this computer" }
-                    if series.updated_at > 0 {
-                        Stat { icon: "clock", value: ago(now_secs(), series.updated_at), label: "last downloaded" }
-                    }
-                }
-                if !per_source.is_empty() {
-                    div { class: "meta-block",
-                        h3 { "Downloaded from" }
-                        div { class: "row wrap",
-                            for (name, n) in per_source.iter() {
-                                Chip { key: "{name}", text: format!("{name} · {n}"), kind: Some("ok".to_string()) }
-                            }
-                        }
-                    }
-                }
                 div { class: "meta-block",
                     h3 { "Converted as" }
                     div { class: "row wrap",
@@ -158,20 +107,6 @@ pub fn OverviewTab() -> Element {
                         }
                     }
                 }
-            }
-        }
-    }
-}
-
-/// One number about the series: an icon, the figure, and what it counts.
-#[component]
-fn Stat(icon: &'static str, value: String, label: &'static str) -> Element {
-    rsx! {
-        div { class: "stat",
-            Icon { name: icon, size: 20 }
-            div { class: "stat-text",
-                strong { "{value}" }
-                span { "{label}" }
             }
         }
     }
