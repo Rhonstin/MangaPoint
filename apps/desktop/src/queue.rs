@@ -8,9 +8,17 @@
 
 use crate::logic::JobProgress;
 use pipeline::{CancelFlag, ChapterRequest, SourceChoice};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::time::{SystemTime, UNIX_EPOCH};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BatchStatus {
     Waiting,
     Running,
@@ -28,7 +36,7 @@ impl BatchStatus {
 }
 
 /// How a finished batch went.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct BatchStats {
     /// How long it took.
     pub secs: u64,
@@ -61,8 +69,9 @@ pub struct Batch {
     /// The same chapters, by key.
     pub failed: Vec<String>,
     /// Seconds since the Unix epoch.
-    #[allow(dead_code)] // kept for the saved queue and for debugging
     pub added_at: u64,
+    /// When it finished, in the same seconds; 0 until it has.
+    pub finished_at: u64,
 }
 
 impl Batch {
@@ -92,6 +101,7 @@ impl Batch {
             skipped: Vec::new(),
             failed: Vec::new(),
             added_at,
+            finished_at: 0,
         }
     }
 
@@ -128,6 +138,35 @@ pub struct Added {
     pub joined_existing: bool,
 }
 
+/// A batch as it is kept on disk.
+#[derive(Clone, Serialize, Deserialize)]
+struct SavedBatch {
+    id: u64,
+    series_id: String,
+    title: String,
+    requests: Vec<ChapterRequest>,
+    plan: Vec<String>,
+    /// The one source it was limited to, if it was.
+    only_source: Option<String>,
+    source_names: HashMap<String, String>,
+    status: BatchStatus,
+    summary: Option<String>,
+    stats: Option<BatchStats>,
+    skipped: Vec<String>,
+    failed: Vec<String>,
+    added_at: u64,
+    finished_at: u64,
+}
+
+/// The queue as it is kept on disk, so a restart does not lose it.
+#[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SavedQueue {
+    batches: Vec<SavedBatch>,
+    next_id: u64,
+    paused: bool,
+}
+
 #[derive(Clone, Default)]
 pub struct DownloadQueue {
     pub batches: Vec<Batch>,
@@ -139,6 +178,83 @@ pub struct DownloadQueue {
 }
 
 impl DownloadQueue {
+    pub fn to_saved(&self) -> SavedQueue {
+        SavedQueue {
+            batches: self
+                .batches
+                .iter()
+                .map(|b| SavedBatch {
+                    id: b.id,
+                    series_id: b.series_id.clone(),
+                    title: b.title.clone(),
+                    requests: b.requests.clone(),
+                    plan: b.plan.clone(),
+                    only_source: match &b.choice {
+                        SourceChoice::Adaptive => None,
+                        SourceChoice::Only(id) => Some(id.clone()),
+                    },
+                    source_names: b.source_names.clone(),
+                    status: b.status.clone(),
+                    summary: b.summary.clone(),
+                    stats: b.stats,
+                    skipped: b.skipped.clone(),
+                    failed: b.failed.clone(),
+                    added_at: b.added_at,
+                    finished_at: b.finished_at,
+                })
+                .collect(),
+            next_id: self.next_id,
+            paused: self.paused,
+        }
+    }
+
+    /// Bring a saved queue back. A batch that was downloading when the app
+    /// closed waits to start again; what it had already saved is kept.
+    pub fn from_saved(saved: SavedQueue) -> Self {
+        let batches = saved
+            .batches
+            .into_iter()
+            .map(|mut b| {
+                // A file edited by hand must not bring the app down.
+                let n = b.requests.len().min(b.plan.len());
+                b.requests.truncate(n);
+                b.plan.truncate(n);
+                let mut batch = Batch::new(
+                    b.series_id,
+                    b.title,
+                    b.requests,
+                    b.plan,
+                    match b.only_source {
+                        Some(id) => SourceChoice::Only(id),
+                        None => SourceChoice::Adaptive,
+                    },
+                    b.source_names,
+                    b.added_at,
+                );
+                batch.id = b.id;
+                batch.status = match b.status {
+                    BatchStatus::Running => BatchStatus::Waiting,
+                    other => other,
+                };
+                batch.summary = b.summary;
+                batch.stats = b.stats;
+                batch.skipped = b.skipped;
+                batch.failed = b.failed;
+                batch.finished_at = b.finished_at;
+                batch
+            })
+            .collect::<Vec<_>>();
+        let next_id = saved
+            .next_id
+            .max(batches.iter().map(|b| b.id).max().unwrap_or(0));
+        Self {
+            batches,
+            next_id,
+            paused: saved.paused,
+            runner_active: false,
+        }
+    }
+
     /// Add a batch. Chapters of the same series that are already waiting or
     /// downloading are left out, and what is new joins the series' waiting
     /// batch if it has one.
@@ -229,6 +345,7 @@ impl DownloadQueue {
     ) {
         if let Some(b) = self.get_mut(id) {
             b.status = status;
+            b.finished_at = now_secs();
             b.summary = Some(summary);
             b.skipped = skipped;
             b.failed = failed;
@@ -285,6 +402,7 @@ impl DownloadQueue {
     }
 
     /// Take a finished batch out of the list.
+    #[cfg(test)]
     pub fn remove(&mut self, id: u64) -> bool {
         let before = self.batches.len();
         self.batches.retain(|b| b.id != id || b.status.is_active());
@@ -678,5 +796,59 @@ mod tests {
         q.finish(id, BatchStatus::Cancelled, String::new(), vec![], vec![]);
         assert!(!q.series_has_work("a"));
         assert_eq!(q.counts(), (0, 1, 2));
+    }
+
+    #[test]
+    fn a_saved_queue_comes_back_with_its_finished_batches_and_resumes_the_rest() {
+        let mut q = DownloadQueue::default();
+        for title in ["Done one", "Waits", "Was running"] {
+            q.add(Batch::new(
+                title.to_lowercase(),
+                title.into(),
+                vec![ChapterRequest {
+                    number: Some(1.0),
+                    name: "c".into(),
+                    key: Some(format!("{title}-1")),
+                    options: Vec::new(),
+                }],
+                vec![format!("{title}-1")],
+                SourceChoice::Only("src".into()),
+                HashMap::new(),
+                10,
+            ));
+        }
+        let (a, c) = (q.batches[0].id, q.batches[2].id);
+        q.finish(
+            a,
+            BatchStatus::Done,
+            "Downloaded 1 chapter".into(),
+            Vec::new(),
+            Vec::new(),
+        );
+        q.set_stats(a, BatchStats { secs: 9, pages: 40 });
+        q.start(c);
+
+        let json = serde_json::to_string(&q.to_saved()).unwrap();
+        let back = DownloadQueue::from_saved(serde_json::from_str(&json).unwrap());
+        assert_eq!(back.batches.len(), 3);
+        assert_eq!(back.batches[0].status, BatchStatus::Done);
+        assert_eq!(
+            back.batches[0].stats,
+            Some(BatchStats { secs: 9, pages: 40 })
+        );
+        assert!(back.batches[0].finished_at > 0);
+        assert_eq!(
+            back.batches[2].status,
+            BatchStatus::Waiting,
+            "it starts again"
+        );
+        assert_eq!(back.batches[1].choice, SourceChoice::Only("src".into()));
+        assert!(!back.runner_active);
+
+        // Lists that do not match are cut to the shorter, not trusted.
+        let mut odd = q.to_saved();
+        odd.batches[0].plan.push("extra".into());
+        let odd = DownloadQueue::from_saved(odd);
+        assert_eq!(odd.batches[0].plan.len(), odd.batches[0].requests.len());
     }
 }

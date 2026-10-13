@@ -523,7 +523,9 @@ impl AppState {
             presets: sig(JsonFile::<PresetsDb>::new(paths().presets_file()).load()),
             speeds: sig(JsonFile::<SpeedDb>::new(paths().speeds_file()).load()),
             download_source: sig(SourceChoice::Adaptive),
-            queue: sig(DownloadQueue::default()),
+            queue: sig(DownloadQueue::from_saved(
+                JsonFile::<crate::queue::SavedQueue>::new(paths().queue_file()).load(),
+            )),
             plan: sig(Vec::new()),
             download_dialog: sig(None),
             info_busy: sig(HashSet::new()),
@@ -622,7 +624,10 @@ impl AppState {
     pub fn edit_queue<R>(&self, edit: impl FnOnce(&mut DownloadQueue) -> R) -> R {
         let mut queue = self.queue;
         let mut guard = queue.write();
-        edit(&mut guard)
+        let result = edit(&mut guard);
+        // Kept on disk, so what is waiting and what has finished survive a restart.
+        let _ = JsonFile::new(paths().queue_file()).save(&guard.to_saved());
+        result
     }
 
     /// Change the saved source speeds.
