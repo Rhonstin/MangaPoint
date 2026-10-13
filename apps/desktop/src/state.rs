@@ -87,7 +87,6 @@ pub struct PresetLab {
 pub enum SeriesTab {
     Overview,
     Chapters,
-    Downloads,
     Preview,
     Export,
 }
@@ -269,9 +268,14 @@ pub enum Zoom {
     Fit,
     /// As wide as the space allows; scroll down for the rest.
     Width,
-    /// One screen pixel per device pixel.
-    Actual,
-    Double,
+    /// A percentage of the device's own size: 100 is one screen pixel for
+    /// each pixel of the reader.
+    Custom(u16),
+}
+
+impl Zoom {
+    pub const MIN_PERCENT: u16 = 25;
+    pub const MAX_PERCENT: u16 = 400;
 }
 
 /// Preview display choices that are not conversion settings.

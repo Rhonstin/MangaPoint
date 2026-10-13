@@ -105,6 +105,12 @@ fn PlanSection(series_id: String) -> Element {
         .and_then(|s| s.info.as_ref())
         .is_some_and(|i| i.has_cover);
     let have = downloaded_keys(state, &series_id);
+    let series_chapters = state
+        .library
+        .read()
+        .find(&series_id)
+        .map(|s| s.chapters.clone())
+        .unwrap_or_default();
     let queue = state.queue.read().clone();
 
     let loaded = match &entry.chapters {
@@ -138,6 +144,7 @@ fn PlanSection(series_id: String) -> Element {
                 .map(|i| {
                     let c = &l.merged[i];
                     let key = merged_key(c);
+                    let saved = series_chapters.iter().find(|c| c.key == key);
                     GridRow {
                         index: i,
                         number: c
@@ -145,17 +152,19 @@ fn PlanSection(series_id: String) -> Element {
                             .map(logic::format_number)
                             .unwrap_or_else(|| "–".into()),
                         name: c.name.clone(),
-                        sources: c.options.len(),
-                        tip: c
+                        source_names: c
                             .options
                             .iter()
                             .filter_map(|o| l.member_names.get(o.member).cloned())
-                            .collect::<Vec<_>>()
-                            .join(", "),
+                            .collect(),
                         date: logic::format_date(logic::latest_upload(c)),
                         saved: have.contains(&key),
                         queued: !have.contains(&key)
                             && queue.chapter_state(&series_id, &key).is_some(),
+                        size: saved
+                            .map(|c| logic::human_bytes(c.bytes))
+                            .unwrap_or_default(),
+                        ..Default::default()
                     }
                 })
                 .collect()

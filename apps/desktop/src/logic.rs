@@ -252,23 +252,14 @@ pub fn export_target(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Needs {
     Nothing,
-    /// Chapters ticked, or something already downloaded.
-    SelectionOrDownloads,
     /// At least one downloaded chapter.
     Downloads,
 }
 
 /// Why a tab cannot be opened yet, in words for a tooltip; `None` if it can.
-pub fn tab_blocked(
-    needs: Needs,
-    selected: usize,
-    downloaded: usize,
-    downloading: bool,
-) -> Option<&'static str> {
+pub fn tab_blocked(needs: Needs, downloaded: usize) -> Option<&'static str> {
     match needs {
         Needs::Nothing => None,
-        Needs::SelectionOrDownloads if selected > 0 || downloaded > 0 || downloading => None,
-        Needs::SelectionOrDownloads => Some("Tick some chapters first"),
         Needs::Downloads if downloaded > 0 => None,
         Needs::Downloads => Some("Download a chapter first"),
     }
@@ -874,18 +865,14 @@ mod tests {
     #[test]
     fn tabs_open_only_when_their_step_can_work() {
         // Chapters is always open.
-        assert_eq!(tab_blocked(Needs::Nothing, 0, 0, false), None);
+        assert_eq!(tab_blocked(Needs::Nothing, 0), None);
         // Downloads needs something ticked, something downloaded, or a download running.
-        assert!(tab_blocked(Needs::SelectionOrDownloads, 0, 0, false).is_some());
-        assert_eq!(tab_blocked(Needs::SelectionOrDownloads, 3, 0, false), None);
-        assert_eq!(tab_blocked(Needs::SelectionOrDownloads, 0, 2, false), None);
-        assert_eq!(tab_blocked(Needs::SelectionOrDownloads, 0, 0, true), None);
         // Preview and Export need a downloaded chapter, however many are ticked.
         assert_eq!(
-            tab_blocked(Needs::Downloads, 50, 0, true),
+            tab_blocked(Needs::Downloads, 0),
             Some("Download a chapter first")
         );
-        assert_eq!(tab_blocked(Needs::Downloads, 0, 1, false), None);
+        assert_eq!(tab_blocked(Needs::Downloads, 1), None);
     }
 
     fn member(source: &str, manga_id: i64, score: f32) -> ScoredMember {

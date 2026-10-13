@@ -36,7 +36,6 @@ pub fn WorkspacePage() -> Element {
         .map(|s| (s.chapters.len(), s.bytes()))
         .unwrap_or((0, 0));
     let selected = state.selected.read().len();
-    let downloading = state.queue.read().series_has_work(&ws.series_id);
     let in_library = state.library.read().find(&ws.series_id).is_some();
     let remove_body = if downloaded > 0 {
         format!(
@@ -138,21 +137,17 @@ pub fn WorkspacePage() -> Element {
             Tab { tab: SeriesTab::Overview, icon: "info", label: "Overview", active: ws.tab == SeriesTab::Overview,
                 blocked: if in_library { None } else { Some("Add this series to your library first") }, badge: None }
             Tab { tab: SeriesTab::Chapters, icon: "list-checks", label: "Chapters", active: ws.tab == SeriesTab::Chapters,
-                blocked: tab_blocked(Needs::Nothing, selected, downloaded, downloading),
-                badge: (selected > 0).then(|| selected.to_string()) }
-            Tab { tab: SeriesTab::Downloads, icon: "download", label: "Downloads", active: ws.tab == SeriesTab::Downloads,
-                blocked: tab_blocked(Needs::SelectionOrDownloads, selected, downloaded, downloading),
-                badge: (downloaded > 0).then(|| downloaded.to_string()) }
+                blocked: tab_blocked(Needs::Nothing, downloaded),
+                badge: (selected > 0).then(|| selected.to_string()).or_else(|| (downloaded > 0).then(|| downloaded.to_string())) }
             Tab { tab: SeriesTab::Preview, icon: "eye", label: "Preview", active: ws.tab == SeriesTab::Preview,
-                blocked: tab_blocked(Needs::Downloads, selected, downloaded, downloading), badge: None }
+                blocked: tab_blocked(Needs::Downloads, downloaded), badge: None }
             Tab { tab: SeriesTab::Export, icon: "file-down", label: "Export", active: ws.tab == SeriesTab::Export,
-                blocked: tab_blocked(Needs::Downloads, selected, downloaded, downloading), badge: None }
+                blocked: tab_blocked(Needs::Downloads, downloaded), badge: None }
         }
 
         {match ws.tab {
             SeriesTab::Overview => rsx! { overview::OverviewTab {} },
             SeriesTab::Chapters => rsx! { chapters::ChaptersTab {} },
-            SeriesTab::Downloads => rsx! { downloads::DownloadsTab {} },
             SeriesTab::Preview => rsx! { preview::PreviewTab {} },
             SeriesTab::Export => rsx! { export::ExportTab {} },
         }}

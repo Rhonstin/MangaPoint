@@ -55,14 +55,20 @@ const start = () => {
  if (root.dataset.bound) return;
  root.dataset.bound = '1';
  const scroller = root.querySelector('.editor-scroll');
+ const page = root.closest('.content') || document.documentElement;
  let frame = 0, last = '';
  const vars = {};
  const set = (name, value) => { if (vars[name] !== value) { vars[name] = value; root.style.setProperty(name, value); } };
- // The viewer is as tall as the window allows, and each page as tall as the
- // viewer, so a page fits the screen at any window size.
+ // The viewer is as tall as the space left under the series header, so the
+ // whole page does not scroll. Its position is measured inside the scrolling
+ // page: measured on the screen it would change as the page scrolls, and the
+ // viewer would grow every time it was scrolled.
  const fit = () => {
-  const top = scroller.getBoundingClientRect().top;
-  set('--canvas-height', Math.max(220, Math.round(window.innerHeight - top - 40)) + 'px');
+  const top = scroller.getBoundingClientRect().top - page.getBoundingClientRect().top + page.scrollTop;
+  const bar = root.querySelector('.editor-bottom');
+  const below = (bar ? bar.offsetHeight : 0) + (parseFloat(getComputedStyle(page).paddingBottom) || 0) + 8;
+  set('--canvas-height', Math.max(240, Math.round(page.clientHeight - top - below)) + 'px');
+  set('--bottom-height', (bar ? bar.offsetHeight : 52) + 'px');
   const style = getComputedStyle(scroller);
   const room = scroller.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom) - 96;
   set('--reader-page-height', Math.max(120, Math.round(room)) + 'px');
@@ -89,13 +95,13 @@ const start = () => {
  scroller.addEventListener('scroll', later, { passive: true });
  window.addEventListener('resize', later);
  new ResizeObserver(later).observe(scroller);
- new ResizeObserver(later).observe(root.querySelector('.editor-toolbar'));
+ new ResizeObserver(later).observe(page);
  new MutationObserver(later).observe(scroller, { childList: true, subtree: true });
  // Things above the viewer (the series header, a cover) can still be loading.
  const timer = setInterval(() => { if (!root.isConnected) clearInterval(timer); else later(); }, 400);
  root.addEventListener('keydown', e => {
   if (e.target.closest('input,select,textarea,[contenteditable=true]')) return;
-  const ids = { ArrowRight: 'editor-next', ArrowLeft: 'editor-previous', c: 'editor-crop-toggle', Escape: 'editor-close-overview' };
+  const ids = { ArrowRight: 'editor-next', ArrowLeft: 'editor-previous', Escape: 'editor-close-overview' };
   const id = ids[e.key];
   if (id) { const b = document.getElementById(id); if (b && !b.disabled) { e.preventDefault(); b.click(); } }
  });
@@ -113,8 +119,7 @@ fn row_height(zoom: Zoom, width: u32, height: u32) -> String {
             "min(var(--reader-page-height),calc(var(--reader-page-width) * {height} / {width}))"
         ),
         Zoom::Width => format!("calc(var(--reader-page-width) * {height} / {width})"),
-        Zoom::Actual => format!("{height}px"),
-        Zoom::Double => format!("{}px", height * 2),
+        Zoom::Custom(percent) => format!("{}px", height * percent as u32 / 100),
     }
 }
 
@@ -122,8 +127,11 @@ fn reader_style(zoom: Zoom, width: u32, height: u32) -> String {
     let size = match zoom {
         Zoom::Fit => format!("height:{};width:auto;", row_height(zoom, width, height)),
         Zoom::Width => "height:auto;width:100%;".to_string(),
-        Zoom::Actual => format!("height:{height}px;width:{width}px;"),
-        Zoom::Double => format!("height:{}px;width:{}px;", height * 2, width * 2),
+        Zoom::Custom(percent) => format!(
+            "height:{}px;width:{}px;",
+            height * percent as u32 / 100,
+            width * percent as u32 / 100
+        ),
     };
     format!("{size}aspect-ratio:{width}/{height};")
 }
@@ -221,6 +229,35 @@ fn EditorRow(
     }
 }
 
+/// The key of the chapter whose number is closest to `wanted`.
+fn nearest_chapter(numbered: &[(f64, String)], wanted: f64) -> Option<String> {
+    numbered
+        .iter()
+        .min_by(|a, b| (a.0 - wanted).abs().total_cmp(&(b.0 - wanted).abs()))
+        .map(|(_, key)| key.clone())
+}
+
+/// Preview another downloaded chapter, from its first page.
+fn switch_chapter(state: AppState, key: String) {
+    let mut pv = state.preview;
+    let mut w = pv.write();
+    if w.chapter_key.as_deref() == Some(key.as_str()) {
+        return;
+    }
+    w.chapter_key = Some(key);
+    w.selected = 0;
+    w.thumb_start = 0;
+    w.window = (0, 0);
+    w.pages.clear();
+    w.draft_crop = None;
+    w.shading_samples.clear();
+    drop(w);
+    spawn(async move {
+        let _ = document::eval("document.querySelector('.editor-scroll')?.scrollTo(0,0)").await;
+    });
+    schedule_preview(state, 0);
+}
+
 /// The pages now on screen changed: draw them, and follow the page at the top.
 fn track_scroll(state: AppState, first: i64, last: i64, current: i64) {
     if first < 0 || last < 0 {
@@ -263,6 +300,7 @@ pub fn PreviewTab() -> Element {
     let mut state = use_context::<AppState>();
     let mut draft = use_signal(CropRect::default);
     let mut identity = use_signal(String::new);
+    let mut seek = use_signal(|| None::<usize>);
     use_effect(move || prepare_preview(state));
     use_future(move || async move {
         let mut eval = document::eval(EDITOR_SCRIPT);
@@ -338,34 +376,34 @@ pub fn PreviewTab() -> Element {
     );
     let compare = view.show_original;
     let seams = seams(&p.pages, device.height);
+    let chapter_keys: Vec<String> = series.chapters.iter().map(|c| c.key.clone()).collect();
+    let (keys_prev, keys_slide, keys_next) = (
+        chapter_keys.clone(),
+        chapter_keys.clone(),
+        chapter_keys.clone(),
+    );
+    let chapter_position = chapter_keys.iter().position(|k| *k == chapter).unwrap_or(0);
+    let shown_position = seek().unwrap_or(chapter_position);
+    let label_of = |i: usize| {
+        series.chapters.get(i).map_or(String::new(), |c| {
+            format!("{} of {}", c.name, series.chapters.len())
+        })
+    };
+    let shown_label = label_of(shown_position);
+    let current_number = series
+        .chapters
+        .get(chapter_position)
+        .and_then(|c| c.number)
+        .map(crate::logic::format_number)
+        .unwrap_or_default();
+    let numbered: Vec<(f64, String)> = series
+        .chapters
+        .iter()
+        .filter_map(|c| c.number.map(|n| (n, c.key.clone())))
+        .collect();
     rsx! {
         div { id: "page-editor", class: "{classes}", tabindex: "0",
             div { class: "editor-toolbar",
-                div { class: "editor-chapter-picker",
-                    label { r#for: "editor-chapter", "Chapter" }
-                    select {
-                        id: "editor-chapter", value: "{chapter}",
-                        onchange: move |e| {
-                            let mut pv = state.preview;
-                            let mut w = pv.write();
-                            w.chapter_key = Some(e.value());
-                            w.selected = 0;
-                            w.thumb_start = 0;
-                            w.window = (0, 0);
-                            w.pages.clear();
-                            w.draft_crop = None;
-                            w.shading_samples.clear();
-                            drop(w);
-                            spawn(async move {
-                                let _ = document::eval("document.querySelector('.editor-scroll')?.scrollTo(0,0)").await;
-                            });
-                            schedule_preview(state, 0);
-                        },
-                        for c in &series.chapters {
-                            option { key: "{c.key}", value: "{c.key}", selected: c.key == chapter, "{c.name}" }
-                        }
-                    }
-                }
                 div { class: "editor-page-nav",
                     button {
                         id: "editor-previous", class: "btn small",
@@ -380,8 +418,6 @@ pub fn PreviewTab() -> Element {
                         onclick: move |_| select_preview_page(state, selected + 1),
                         span { class: "turn-arrow", Icon { name: "arrow-left", size: 15 } }
                     }
-                }
-                div { class: "editor-toolbar-actions",
                     button {
                         class: if compare { "btn small on" } else { "btn small" },
                         title: "Show the downloaded artwork beside each reader page",
@@ -391,48 +427,43 @@ pub fn PreviewTab() -> Element {
                         },
                         Icon { name: "eye", size: 14 } "Compare"
                     }
-                    button {
-                        id: "editor-crop-toggle",
-                        class: if view.editing_crop { "btn small on" } else { "btn small" },
-                        disabled: active.as_ref().and_then(|p| p.original.as_ref()).is_none(),
-                        title: "Drag crop handles · C",
-                        onclick: move |_| {
-                            let mut pv = state.preview;
-                            let mut w = pv.write();
-                            w.view.editing_crop = !view.editing_crop;
-                            w.view.show_original = true;
-                            w.view.source_focus = !view.editing_crop;
-                        },
-                        Icon { name: "crop", size: 14 } "Crop"
-                    }
-                    button {
-                        class: if view.show_crop { "btn small on" } else { "btn small" },
-                        title: "Show excluded artwork without editing",
-                        onclick: move |_| { state.preview.write().view.show_crop = !view.show_crop; },
-                        "Guide"
-                    }
+                }
+                div { class: "editor-toolbar-actions",
                     select {
                         class: "editor-zoom", "aria-label": "Preview zoom",
                         onchange: move |e| {
                             state.preview.write().view.zoom = match e.value().as_str() {
                                 "width" => Zoom::Width,
-                                "actual" => Zoom::Actual,
-                                "double" => Zoom::Double,
+                                "custom" => Zoom::Custom(match view.zoom { Zoom::Custom(p) => p, _ => 100 }),
                                 _ => Zoom::Fit,
                             };
                         },
                         option { value: "fit", selected: view.zoom == Zoom::Fit, "Fit page" }
                         option { value: "width", selected: view.zoom == Zoom::Width, "Fit width" }
-                        option { value: "actual", selected: view.zoom == Zoom::Actual, "100%" }
-                        option { value: "double", selected: view.zoom == Zoom::Double, "200%" }
+                        option { value: "custom", selected: matches!(view.zoom, Zoom::Custom(_)), "Custom zoom" }
                     }
-                    button {
-                        class: "btn small",
-                        onclick: move |_| {
-                            state.preview.write().overview = true;
-                            schedule_preview(state, 0);
-                        },
-                        "Overview"
+                    if let Zoom::Custom(percent) = view.zoom {
+                        div { class: "editor-custom-zoom",
+                            input {
+                                r#type: "range", min: "{Zoom::MIN_PERCENT}", max: "{Zoom::MAX_PERCENT}", step: "5",
+                                value: "{percent}", "aria-label": "Zoom percentage",
+                                oninput: move |e| {
+                                    if let Ok(v) = e.value().parse::<u16>() {
+                                        state.preview.write().view.zoom = Zoom::Custom(v.clamp(Zoom::MIN_PERCENT, Zoom::MAX_PERCENT));
+                                    }
+                                },
+                            }
+                            input {
+                                r#type: "number", min: "{Zoom::MIN_PERCENT}", max: "{Zoom::MAX_PERCENT}", step: "5",
+                                value: "{percent}", "aria-label": "Zoom percentage",
+                                onchange: move |e| {
+                                    if let Ok(v) = e.value().parse::<u16>() {
+                                        state.preview.write().view.zoom = Zoom::Custom(v.clamp(Zoom::MIN_PERCENT, Zoom::MAX_PERCENT));
+                                    }
+                                },
+                            }
+                            span { class: "muted", "%" }
+                        }
                     }
                     button {
                         class: if view.focus { "btn small" } else { "btn small on" },
@@ -472,6 +503,15 @@ pub fn PreviewTab() -> Element {
                             }
                             span { "{i + 1}" }
                         }
+                    }
+                    button {
+                        class: "btn small editor-overview-button",
+                        title: "See every page of the chapter at once",
+                        onclick: move |_| {
+                            state.preview.write().overview = true;
+                            schedule_preview(state, 0);
+                        },
+                        "Overview"
                     }
                 }
                 main { class: "editor-main",
@@ -524,19 +564,56 @@ pub fn PreviewTab() -> Element {
                             }
                         }
                     }
-                    div { class: "editor-status",
-                        span {
-                            if p.busy {
-                                span { class: "spin", Icon { name: "loader-circle", size: 13 } }
-                                " Updating visible pages…"
-                            } else {
-                                Icon { name: "check", size: 13 }
-                                " Preview ready"
+                    div { class: "editor-bottom",
+                        button {
+                            class: "btn small", title: "Previous chapter",
+                            disabled: chapter_position == 0,
+                            onclick: move |_| {
+                                if let Some(c) = keys_prev.get(chapter_position.saturating_sub(1)) { switch_chapter(state, c.clone()); }
+                            },
+                            Icon { name: "arrow-left", size: 15 }
+                        }
+                        div { class: "editor-chapter-slider",
+                            input {
+                                r#type: "range", min: "0", max: "{chapter_keys.len().saturating_sub(1)}", step: "1",
+                                value: "{shown_position}", "aria-label": "Seek through the chapters",
+                                disabled: chapter_keys.len() < 2,
+                                oninput: move |e| { if let Ok(v) = e.value().parse::<usize>() { seek.set(Some(v)); } },
+                                onchange: move |e| {
+                                    seek.set(None);
+                                    if let Some(c) = e.value().parse::<usize>().ok().and_then(|v| keys_slide.get(v)) { switch_chapter(state, c.clone()); }
+                                },
+                            }
+                            span { class: "editor-chapter-label", "{shown_label}" }
+                        }
+                        button {
+                            class: "btn small", title: "Next chapter",
+                            disabled: chapter_position + 1 >= chapter_keys.len(),
+                            onclick: move |_| {
+                                if let Some(c) = keys_next.get(chapter_position + 1) { switch_chapter(state, c.clone()); }
+                            },
+                            span { class: "turn-arrow", Icon { name: "arrow-left", size: 15 } }
+                        }
+                        label { class: "editor-chapter-jump",
+                            span { "Chapter" }
+                            input {
+                                r#type: "number", step: "any", placeholder: "No.",
+                                value: "{current_number}", "aria-label": "Go to chapter number",
+                                onchange: move |e| {
+                                    if let Some(c) = e.value().trim().parse::<f64>().ok().and_then(|n| nearest_chapter(&numbered, n)) {
+                                        switch_chapter(state, c);
+                                    }
+                                },
                             }
                         }
-                        span {
-                            if p.strip && total > 0 { "Section {number} of {total} of the joined strip · " }
-                            if p.draft_crop.is_some() { "Unsaved crop · Apply to include it in the export" } else { "Preview and export use the same saved settings" }
+                        span { class: "editor-status",
+                            if p.busy {
+                                span { class: "spin", Icon { name: "loader-circle", size: 13 } }
+                                " Updating…"
+                            } else {
+                                Icon { name: "check", size: 13 }
+                                " Ready"
+                            }
                         }
                     }
                 }

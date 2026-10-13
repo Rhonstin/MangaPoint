@@ -1,11 +1,13 @@
-//! Tab 1: pick the chapters you want.
+//! Tab 1: every chapter of the series: pick the ones you want, and see which
+//! are downloaded (and how big they are), on their way, or failed.
 
 use crate::logic::{self, plural};
+use crate::queue::QueuedChapter;
 use crate::state::{AppState, ChaptersState, Modal, ModalAction, Page, SeriesTab};
 use crate::ui::chapter_table::{ChapterGrid, GridRow};
 use crate::ui::search::run_search;
-use crate::ui::widgets::{Chip, EmptyState, Icon};
-use crate::ui::work::{downloaded_keys, merged_key, queue_download};
+use crate::ui::widgets::{Chip, EmptyState, Icon, ProgressBar};
+use crate::ui::work::{downloaded_keys, merged_key, prepare_preview, queue_download, retry_batch};
 use dioxus::prelude::*;
 use pipeline::SourceChoice;
 use search::missing_numbers;
@@ -19,6 +21,12 @@ pub fn ChaptersTab() -> Element {
     };
     let mut range_text = use_signal(String::new);
     let mut range_error = use_signal(|| None::<String>);
+    // What is downloaded can be shown even when the sources cannot be reached.
+    let has_downloads = state
+        .library
+        .read()
+        .find(&ws.series_id)
+        .is_some_and(|s| !s.chapters.is_empty());
 
     let loaded = match &*state.chapters.read() {
         ChaptersState::Idle => {
@@ -39,6 +47,7 @@ pub fn ChaptersTab() -> Element {
                         "Search for more chapters"
                     }
                 }
+                if has_downloads { super::downloads::DownloadsTab {} }
             };
         }
         ChaptersState::Loading => {
@@ -51,13 +60,50 @@ pub fn ChaptersTab() -> Element {
         }
         ChaptersState::Failed(message) => {
             let message = message.clone();
-            return rsx! { div { class: "banner bad", Icon { name: "circle-x" } "{message}" } };
+            return rsx! {
+                div { class: "banner bad", Icon { name: "circle-x" } "{message}" }
+                if has_downloads { super::downloads::DownloadsTab {} }
+            };
         }
         ChaptersState::Ready(loaded) => loaded.clone(),
     };
 
     let have = downloaded_keys(state, &ws.series_id);
+    let series = state.library.read().find(&ws.series_id).cloned();
+    let saved: std::collections::HashMap<String, (u64, String)> = series
+        .iter()
+        .flat_map(|s| s.chapters.iter())
+        .map(|c| (c.key.clone(), (c.bytes, c.source_id.clone())))
+        .collect();
+    let saved_count = saved.len();
+    let saved_bytes: u64 = saved.values().map(|(bytes, _)| *bytes).sum();
+    // Where a downloaded copy came from, by name.
+    let source_label = |source_id: &str| -> String {
+        series
+            .as_ref()
+            .and_then(|s| s.info.as_ref())
+            .and_then(|i| i.source_name(source_id).map(str::to_string))
+            .or_else(|| {
+                loaded
+                    .member_sources
+                    .iter()
+                    .position(|id| id == source_id)
+                    .and_then(|i| loaded.member_names.get(i).cloned())
+            })
+            .unwrap_or_default()
+    };
     let queue = state.queue.read().clone();
+    let running_here = queue
+        .running()
+        .filter(|b| b.series_id == ws.series_id)
+        .cloned();
+    let working = queue.series_has_work(&ws.series_id);
+    let retry_ids: Vec<u64> = queue
+        .batches
+        .iter()
+        .filter(|b| b.series_id == ws.series_id && !b.status.is_active() && !b.failed.is_empty())
+        .map(|b| b.id)
+        .collect();
     let queued =
         |key: &str| !have.contains(key) && queue.chapter_state(&ws.series_id, key).is_some();
     let total = loaded.merged.len();
@@ -175,6 +221,13 @@ pub fn ChaptersTab() -> Element {
         .iter()
         .map(|&i| {
             let ch = &loaded.merged[i];
+            let key = merged_key(ch);
+            let copy = saved.get(&key);
+            let in_queue = if copy.is_none() {
+                queue.chapter_state(&ws.series_id, &key)
+            } else {
+                None
+            };
             GridRow {
                 index: i,
                 number: ch
@@ -182,23 +235,69 @@ pub fn ChaptersTab() -> Element {
                     .map(logic::format_number)
                     .unwrap_or_else(|| "–".to_string()),
                 name: ch.name.clone(),
-                sources: ch.options.len(),
-                tip: ch
+                source_names: ch
                     .options
                     .iter()
                     .filter_map(|o| loaded.member_names.get(o.member).cloned())
-                    .collect::<Vec<_>>()
-                    .join(", "),
+                    .collect(),
                 date: logic::format_date(logic::latest_upload(ch)),
-                saved: have.contains(&merged_key(ch)),
-                queued: queued(&merged_key(ch)),
+                saved: copy.is_some(),
+                queued: matches!(in_queue, Some(QueuedChapter::Waiting)),
+                progress: match in_queue {
+                    Some(QueuedChapter::Downloading {
+                        pages_done,
+                        pages_total,
+                    }) => Some((pages_done, pages_total)),
+                    _ => None,
+                },
+                failed: matches!(in_queue, Some(QueuedChapter::Failed)),
+                size: copy
+                    .map(|(bytes, _)| logic::human_bytes(*bytes))
+                    .unwrap_or_default(),
+                from: copy.map(|(_, id)| source_label(id)).unwrap_or_default(),
             }
         })
         .collect();
 
+    let failed_count = grid_rows.iter().filter(|r| r.failed).count();
     let mut selected = state.selected;
     let mut table = state.table;
     rsx! {
+        div { class: "row wrap chapters-summary",
+            div { class: "grow",
+                if saved_count > 0 {
+                    strong { "{saved_count} downloaded" }
+                    span { class: "muted", " · {logic::human_bytes(saved_bytes)} on this computer" }
+                } else {
+                    span { class: "muted", "Nothing downloaded yet. Tick chapters and add them to the downloads." }
+                }
+            }
+            if saved_count > 0 {
+                button { class: "btn", onclick: move |_| { state.open_tab(SeriesTab::Preview); prepare_preview(state); },
+                    Icon { name: "eye", size: 16 } "Preview"
+                }
+            }
+            if working || failed_count > 0 {
+                button { class: "btn", onclick: move |_| state.go(Page::Downloads),
+                    Icon { name: "download", size: 16 } "All downloads"
+                }
+            }
+            if failed_count > 0 {
+                button { class: "btn", onclick: move |_| { for id in retry_ids.iter().copied() { retry_batch(state, id); } },
+                    Icon { name: "rotate-cw", size: 16 } "Try {plural(failed_count, \"chapter\")} again"
+                }
+            }
+        }
+        if let Some(batch) = running_here {
+            div { class: "chapters-progress",
+                ProgressBar { fraction: Some(batch.progress.fraction()) }
+                p { class: "muted small", style: "margin: 6px 0 0",
+                    "{batch.progress.label()}"
+                    if let Some(v) = batch.progress.pages_per_second() { " · about {v:.1} pages a second" }
+                    if let Some(n) = &batch.progress.note { " · {n}" }
+                }
+            }
+        }
         if loaded.unreachable > 0 {
             div { class: "banner warn small",
                 Icon { name: "triangle-alert", size: 16 }
@@ -267,7 +366,7 @@ pub fn ChaptersTab() -> Element {
             max_height: None,
         }
         p { class: "muted small", style: "margin: 8px 0 0",
-            "Showing {order.len()} of {total} chapters. Click a heading to sort, a row to tick it."
+            "Showing {order.len()} of {total} chapters. Click a heading to sort, a row to tick it. Hover a source count to see which sources have the chapter."
             if !missing.is_empty() { " Not available from any source: {missing_text}." }
         }
 

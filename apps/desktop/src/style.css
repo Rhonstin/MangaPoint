@@ -424,15 +424,15 @@ td.status, th.status { width: 170px; }
 .sort-pill select:hover { border-color: #5a74ab; color: #c5d3f0; }
 .sort-pill .chev { position: absolute; right: 11px; pointer-events: none; color: #7f93b5; display: inline-flex; }
 
-/* The sources are muted red: one dropdown, or a pill for each source. Either way
+/* The sources are muted green: one dropdown, or a pill for each source. Either way
    they are only as wide as their text. */
 .pill-btn, .src-pill {
   display: inline-flex; align-items: center; gap: 6px; padding: 5px 14px; font: inherit; font-size: 0.88rem; white-space: nowrap;
-  overflow: hidden; border: 1px solid #6b3a3f; border-radius: 999px; background: #1f1011; color: #e0a4a8;
+  overflow: hidden; border: 1px solid #3f6b46; border-radius: 999px; background: #0f1d12; color: #a4d6ac;
   transition: max-width 0.34s ease, opacity 0.22s ease, padding 0.34s ease, margin 0.34s ease, border-width 0.34s ease, border-color 0.15s, color 0.15s;
 }
 .pill-btn { cursor: pointer; padding-right: 12px; }
-.pill-btn:hover { border-color: #a05862; color: #f2c4c7; }
+.pill-btn:hover { border-color: #5f9c69; color: #c9ecce; }
 .pill-btn:disabled { opacity: 0.45; cursor: default; }
 .src-pill { max-width: 230px; }
 /* Folded: the pills shrink away, one after another reflowing into the first row,
@@ -666,3 +666,27 @@ table.chapters tbody tr.locked:hover { background: transparent; }
 .panel-toggle-arrow { display: inline-flex; transform: rotate(180deg); transition: transform 0.15s; }
 .panel-toggle.collapsed { right: 0; }
 .panel-toggle.collapsed .panel-toggle-arrow { transform: rotate(0deg); }
+
+/* ---- hover details in the chapter table ---- */
+.tip { position: relative; display: inline-block; }
+.tip.dotted { border-bottom: 1px dotted var(--muted); cursor: help; line-height: 1.1; }
+.tip::after {
+  content: attr(data-tip); position: absolute; right: calc(100% + 8px); top: 50%; transform: translateY(-50%);
+  white-space: pre; padding: 7px 11px; border-radius: 8px; background: var(--panel-3); border: 1px solid var(--line-strong);
+  color: var(--text); font-size: 0.82rem; font-weight: 400; text-align: left; pointer-events: none; opacity: 0; transition: opacity 0.12s; z-index: 30;
+}
+.tip[data-tip=""]::after { display: none; }
+.tip:hover::after { opacity: 1; }
+table.chapters th.status, table.chapters td.status { width: 150px; }
+table.chapters th.size, table.chapters td.size { width: 90px; text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); }
+.chapters-summary { margin-bottom: 12px; }
+.chapters-progress { margin-bottom: 14px; }
+
+/* ---- the reader page: the name is the heading, edited in place ---- */
+.sx-eyebrow { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); font-weight: 600; margin: 4px 0 6px; }
+.reader-title { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; color: var(--muted); }
+.title-input { font: inherit; font-size: 1.5rem; font-weight: 650; letter-spacing: -0.01em; color: var(--text); width: min(100%, 460px); padding: 3px 10px; margin-left: -10px; background: transparent; border: 1px solid transparent; border-radius: 8px; }
+.title-input:hover { border-color: var(--line-strong); }
+.title-input:focus { border-color: var(--accent); background: var(--panel); outline: none; }
+.sx-control.sx-inline { gap: 8px; }
+.sx-control.sx-inline input[type="number"] { width: 110px; }

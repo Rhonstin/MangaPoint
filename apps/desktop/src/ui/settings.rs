@@ -71,8 +71,6 @@ pub fn SettingsPage() -> Element {
             div { class: "settings-content",
                 {match section {
                     SettingsSection::Reader => rsx! {
-                        h1 { class: "sx-title", "Your reader" }
-                        Group { title: "Device" }
                         DevicesEditor {}
                         Group { title: "Firmware" }
                         Row { label: "Firmware", desc: "What the reader runs. It decides which file types it can open.",
