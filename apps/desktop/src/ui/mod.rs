@@ -11,6 +11,7 @@ mod hang;
 mod icons;
 mod library_page;
 mod ocean;
+mod placeholder;
 mod plan_page;
 mod presets;
 mod scenes;

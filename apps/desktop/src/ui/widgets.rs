@@ -120,8 +120,14 @@ pub fn Cover(key_id: String) -> Element {
     let url = state.covers.read().get(&key_id).cloned();
     match url {
         Some(src) => rsx! { img { class: "cover", src: "{src}", loading: "lazy" } },
-        None => rsx! { div { class: "cover empty", "📖" } },
+        None => rsx! { NoCover {} },
     }
+}
+
+/// The picture for a cover that is missing or has not loaded yet.
+#[component]
+pub fn NoCover() -> Element {
+    rsx! { div { class: "cover empty art", dangerous_inner_html: super::placeholder::svg() } }
 }
 
 /// Fetch a cover through the catalog server (it needs the password, so the

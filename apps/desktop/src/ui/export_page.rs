@@ -7,7 +7,7 @@
 use super::conversion::ConversionControls;
 use super::devices::DeviceSelect;
 use super::presets::{apply_to_series, delete_preset};
-use super::widgets::{pick_folder, Chip, Cover, Icon};
+use super::widgets::{pick_folder, Chip, Cover, Icon, NoCover};
 use super::work::{
     activate_export_series, add_export_series, load_saved_cover, open_sample, remove_export_series,
     saved_cover_key, schedule_preview, start_export_plan,
@@ -125,7 +125,6 @@ pub fn ExportPage() -> Element {
     if plan.items.is_empty() {
         return rsx! { p { class: "muted", style: "padding: 24px", "Opening the sample pages…" } };
     }
-    let sample = active_series(state).is_some_and(|s| s.is_sample());
 
     let mut close = move || {
         if closing() {
@@ -142,15 +141,6 @@ pub fn ExportPage() -> Element {
     rsx! {
         div { class: "export-screen",
             onmounted: move |_| { spawn(async move { let _ = document::eval(SPLIT_SCRIPT).await; }); },
-            div { class: "export-top",
-                h1 { "Export" }
-                if sample {
-                    Chip { text: "Sample pages", kind: Some("accent".to_string()) }
-                    span { class: "muted small", "Try the controls and presets here. To export your own series, pick them in the Library and choose Export…" }
-                } else {
-                    span { class: "muted", "{plural(plan.items.len(), \"series\")}" }
-                }
-            }
             div { class: "export-body",
                 aside { class: "export-side left",
                     PresetsPanel {}
@@ -466,7 +456,7 @@ fn SeriesPanel(on_add: EventHandler<()>) -> Element {
                                     },
                                 }
                                 div { class: "px-layer-cover",
-                                    if has_cover { Cover { key_id: saved_cover_key(&series.id) } } else { div { class: "cover empty", "📖" } }
+                                    if has_cover { Cover { key_id: saved_cover_key(&series.id) } } else { NoCover {} }
                                 }
                                 div { class: "grow px-layer-text",
                                     strong { title: "{series.title}", "{series.title}" }
@@ -768,7 +758,7 @@ fn AddSeries(on_close: EventHandler<()>) -> Element {
                     button { key: "{s.id}", class: "px-add-row",
                         onclick: move |_| add_export_series(state, id.clone()),
                         div { class: "px-layer-cover",
-                            if has_cover { Cover { key_id: saved_cover_key(&s.id) } } else { div { class: "cover empty", "📖" } }
+                            if has_cover { Cover { key_id: saved_cover_key(&s.id) } } else { NoCover {} }
                         }
                         div { class: "grow px-layer-text",
                             strong { "{s.title}" }

@@ -1,7 +1,7 @@
 //! The Library: the series you keep (downloaded or saved for later). Exported
 //! files are listed on the Downloads page.
 
-use super::widgets::{open_folder, Cover, EmptyState, Icon};
+use super::widgets::{open_folder, Cover, EmptyState, Icon, NoCover};
 use super::work::{
     ensure_series_info, load_saved_cover, open_export, open_plan, open_series_from_library,
     saved_cover_key,
@@ -264,7 +264,7 @@ pub fn LibraryPage() -> Element {
                                             if !p.remove(&open_id) { p.insert(open_id.clone()); }
                                         }
                                     },
-                                    if has_cover { Cover { key_id: cover_key } } else { div { class: "cover empty", "📖" } }
+                                    if has_cover { Cover { key_id: cover_key } } else { NoCover {} }
                                     span { class: if chapters == 0 { "poster-badge saved" } else { "poster-badge" },
                                         if chapters == 0 { "Saved" } else { "{chapters} ch" }
                                     }
