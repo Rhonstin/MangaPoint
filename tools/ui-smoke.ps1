@@ -40,6 +40,13 @@ try {
         $after = Eval "document.querySelectorAll('.px-panel.collapsed').length"
         if ($after -le $before) { throw "still $before collapsed panels" }
     }
+    Check 'a built-in reader is copied when its size changes, and the lock keeps the shape' {
+        Mouse-Click '.size-boxes .btn.icon'
+        Eval "(() => { const el = document.querySelector('.size-boxes input'); const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set; set.call(el, '240'); el.dispatchEvent(new Event('change', { bubbles: true })); return true; })()" | Out-Null
+        Wait-Until "[...document.querySelectorAll('.size-boxes input')].map(i => i.value).join('x') === '240x400'" 15 'the boxes to read 240x400'
+        $reader = Eval "document.querySelector('.panel-section select').selectedOptions[0].textContent"
+        if ($reader -notmatch 'My reader') { throw "the chosen reader is '$reader'" }
+    }
     Check 'a column bar can be dragged' {
         $w0 = Eval "document.querySelector('.export-side.left').getBoundingClientRect().width"
         $pt = Eval "(() => { const r = document.querySelector('.px-split-v[data-split=left]').getBoundingClientRect(); return [r.left + 1.5, r.top + 200]; })()"

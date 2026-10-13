@@ -15,7 +15,7 @@ use super::work::{
 use super::workspace::crop_editor::CropInspector;
 use super::workspace::preview::{switch_chapter, PreviewTab};
 use crate::logic::{self, plural, TargetChoice};
-use crate::state::{AppState, GroupingChoice, JobKind, Modal, ModalAction, Page};
+use crate::state::{AppState, GroupingChoice, JobKind, Modal, ModalAction};
 use dioxus::prelude::*;
 use library::{CropRect, DownloadedSeries};
 use pipeline::export::removable_drives;
@@ -147,10 +147,6 @@ pub fn ExportPage() -> Element {
                 if sample {
                     Chip { text: "Sample pages", kind: Some("accent".to_string()) }
                     span { class: "muted small", "Try the controls and presets here. To export your own series, pick them in the Library and choose Export…" }
-                    span { class: "grow" }
-                    button { class: "btn small", onclick: move |_| state.go(Page::Library),
-                        Icon { name: "book-open", size: 15 } "Choose series"
-                    }
                 } else {
                     span { class: "muted", "{plural(plan.items.len(), \"series\")}" }
                 }
@@ -339,8 +335,6 @@ fn PresetsPanel() -> Element {
                         }
                     }
                 }
-            } else {
-                p { class: "px-note", "Custom settings for this series. Pick a preset to start from." }
             }
             div { class: "px-buttons",
                 button { class: "btn small", title: "Keep this series' settings as a preset of your own",
@@ -391,18 +385,11 @@ fn EditPanel() -> Element {
         .as_ref()
         .and_then(|id| state.presets.read().find(id))
         .map(|e| e.preset.settings);
-    let overridden = series.overridden.len();
 
     rsx! {
         Panel { title: "Edit", icon: "sliders-horizontal", id: "edit",
             DeviceSelect {}
-            p { class: "px-note",
-                if preset_base.is_none() { "Custom settings for this series." }
-                else if overridden == 0 { "Following the preset." }
-                else { "{overridden} settings changed from the preset." }
-            }
             CropSection { identity: "{chapter}/{key}", draft, crop_key: key.clone(), saved }
-            div { class: "px-label", style: "margin-top: 14px", "Layout and appearance apply to this series" }
             ConversionControls {
                 value: series.settings.clone(),
                 compact: true,

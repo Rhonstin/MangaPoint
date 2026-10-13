@@ -166,8 +166,13 @@ fn ChapterRow(row: GridRow, on: bool, locked: bool, on_toggle: EventHandler<usiz
                 }
             }
             td { class: "size", "{row.size}" }
-            td { class: "src",
-                span { class: "tip dotted", "data-tip": "{sources_tip}", "{row.source_names.len()}" }
+            td { class: "src", title: "{sources_tip}",
+                for name in row.source_names.iter().take(3) {
+                    span { key: "{name}", class: if *name == row.from { "src-tag used" } else { "src-tag" }, "{name}" }
+                }
+                if row.source_names.len() > 3 {
+                    span { class: "src-tag", "+{row.source_names.len() - 3}" }
+                }
             }
             td { class: "date", "{row.date}" }
         }

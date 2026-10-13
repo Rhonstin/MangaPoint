@@ -83,6 +83,16 @@ pub fn ProgressBar(fraction: Option<f32>) -> Element {
     }
 }
 
+/// A small question mark that explains a setting when the pointer is on it.
+#[component]
+pub fn Help(text: String) -> Element {
+    rsx! {
+        span { class: "help", tabindex: "0", "data-tip": "{text}", "aria-label": "{text}",
+            Icon { name: "circle-help", size: 15 }
+        }
+    }
+}
+
 #[component]
 pub fn Chip(text: String, kind: Option<String>) -> Element {
     let class = format!("chip {}", kind.unwrap_or_default());

@@ -1,6 +1,6 @@
 //! Choosing the reader pages are made for, and adding your own.
 
-use super::widgets::{Chip, Icon};
+use super::widgets::{Chip, Help, Icon};
 use crate::state::AppState;
 use device_profiles::{DeviceProfile, Firmware, Support};
 use dioxus::prelude::*;
@@ -29,21 +29,34 @@ fn unused_name(existing: &[DeviceProfile]) -> String {
     name
 }
 
-/// Change the chosen custom reader, if the result is allowed. A refused change
-/// says why and puts the old value back on the screen.
+/// Change the chosen reader, if the result is allowed. Changing a built-in
+/// reader makes a reader of your own with the change, and chooses it. A
+/// refused change says why and puts the old value back on the screen.
 fn edit_current(state: AppState, mut nonce: Signal<u32>, edit: impl FnOnce(&mut DeviceProfile)) {
     let mut settings = state.settings;
     let result = {
         let mut st = settings.write();
-        let id = st.device.clone();
         let others = st.devices();
-        let mut updated = st.device_profile();
-        edit(&mut updated);
-        updated.validate(&others).map(|()| {
-            if let Some(slot) = st.custom_devices.iter_mut().find(|d| d.id == id) {
-                *slot = updated;
-            }
-        })
+        let base = st.device_profile();
+        if base.builtin {
+            DeviceProfile::custom(&others, &unused_name(&others), base.width, base.height).and_then(
+                |mut copy| {
+                    edit(&mut copy);
+                    copy.validate(&others)?;
+                    st.device = copy.id.clone();
+                    st.custom_devices.push(copy);
+                    Ok(())
+                },
+            )
+        } else {
+            let mut updated = base;
+            edit(&mut updated);
+            updated.validate(&others).map(|()| {
+                if let Some(slot) = st.custom_devices.iter_mut().find(|d| d.id == updated.id) {
+                    *slot = updated;
+                }
+            })
+        }
     };
     match result {
         Ok(()) => state.save_settings(),
@@ -51,6 +64,69 @@ fn edit_current(state: AppState, mut nonce: Signal<u32>, edit: impl FnOnce(&mut 
             state.error(e.to_string());
             let again = *nonce.peek() + 1;
             nonce.set(again);
+        }
+    }
+}
+
+/// The other edge of a screen when one edge is typed and the shape is kept.
+fn keep_shape(typed: u32, old_typed: u32, old_other: u32) -> u32 {
+    if old_typed == 0 {
+        return old_other;
+    }
+    (typed as f64 * old_other as f64 / old_typed as f64).round() as u32
+}
+
+/// The width and height of the chosen reader as two boxes, and a lock that
+/// keeps the shape while one of them changes.
+#[component]
+fn ReaderSize(nonce: Signal<u32>, on_change: Option<EventHandler<()>>) -> Element {
+    let state = use_context::<AppState>();
+    let mut locked = use_signal(|| false);
+    let current = state.settings.read().device_profile();
+    let key = format!("{}-{}", current.id, nonce());
+    let (w0, h0) = (current.width, current.height);
+    let changed = move || {
+        if let Some(handler) = on_change {
+            handler.call(());
+        }
+    };
+    let lock_class = if locked() { "btn icon on" } else { "btn icon" };
+    let lock_icon = if locked() { "lock" } else { "lock-open" };
+    let lock_title = if locked() {
+        "The shape is kept while you change a size. Click to unlock."
+    } else {
+        "Lock the shape, so changing one size changes the other"
+    };
+    let pressed = if locked() { "true" } else { "false" };
+    rsx! {
+        div { class: "size-boxes",
+            input {
+                key: "w-{key}",
+                r#type: "number", min: "{device_profiles::MIN_EDGE}", max: "{device_profiles::MAX_EDGE}",
+                value: "{current.width}", title: "Width in pixels", "aria-label": "Width in pixels",
+                onchange: move |e| {
+                    let w = e.value().trim().parse::<u32>().unwrap_or(0);
+                    let h = if locked() { keep_shape(w, w0, h0) } else { h0 };
+                    edit_current(state, nonce, |d| { d.width = w; d.height = h; });
+                    changed();
+                },
+            }
+            span { class: "muted", "\u{d7}" }
+            input {
+                key: "h-{key}",
+                r#type: "number", min: "{device_profiles::MIN_EDGE}", max: "{device_profiles::MAX_EDGE}",
+                value: "{current.height}", title: "Height in pixels", "aria-label": "Height in pixels",
+                onchange: move |e| {
+                    let h = e.value().trim().parse::<u32>().unwrap_or(0);
+                    let w = if locked() { keep_shape(h, h0, w0) } else { w0 };
+                    edit_current(state, nonce, |d| { d.width = w; d.height = h; });
+                    changed();
+                },
+            }
+            button { class: "{lock_class}", title: "{lock_title}", "aria-pressed": "{pressed}",
+                onclick: move |_| locked.set(!locked()),
+                Icon { name: lock_icon, size: 16 }
+            }
         }
     }
 }
@@ -118,8 +194,7 @@ pub fn DevicesEditor() -> Element {
             }
         }
 
-        div { class: "sx-eyebrow", "Your reader" }
-        div { class: "reader-title",
+        div { class: "reader-line",
             if editable {
                 input {
                     key: "{key}",
@@ -130,49 +205,17 @@ pub fn DevicesEditor() -> Element {
                 Icon { name: "pencil", size: 16 }
             } else {
                 h1 { class: "sx-title", style: "margin: 0", "{current.name}" }
+                Chip { text: "built in" }
             }
-            Chip { text: current.size_label() }
-            if current.builtin { Chip { text: "built in" } }
-        }
-        p { class: "muted small", style: "margin: 6px 0 4px",
-            "Pages are made exactly this size, so nothing is scaled again on the reader."
+            span { class: "grow" }
+            ReaderSize { nonce }
+            Help { text: "Pages are made exactly this size, so nothing is scaled again on the reader. Changing the size of a built-in reader makes a reader of your own." }
         }
 
-        if editable {
-            div { class: "sx-row",
-                div { class: "sx-text",
-                    div { class: "sx-label", "Screen size" }
-                    div { class: "sx-desc", "Pixels as the reader shows the page upright: width, then height." }
-                }
-                div { class: "sx-control sx-inline",
-                    input {
-                        key: "w-{key}",
-                        r#type: "number", min: "{device_profiles::MIN_EDGE}", max: "{device_profiles::MAX_EDGE}",
-                        value: "{current.width}", title: "Width in pixels", "aria-label": "Width in pixels",
-                        onchange: move |e| {
-                            let w = e.value().trim().parse::<u32>().unwrap_or(0);
-                            edit_current(state, nonce, |d| d.width = w);
-                        },
-                    }
-                    span { class: "muted", style: "align-self: center", "\u{d7}" }
-                    input {
-                        key: "h-{key}",
-                        r#type: "number", min: "{device_profiles::MIN_EDGE}", max: "{device_profiles::MAX_EDGE}",
-                        value: "{current.height}", title: "Height in pixels", "aria-label": "Height in pixels",
-                        onchange: move |e| {
-                            let h = e.value().trim().parse::<u32>().unwrap_or(0);
-                            edit_current(state, nonce, |d| d.height = h);
-                        },
-                    }
-                }
-            }
-        }
         div { class: "sx-row",
             div { class: "sx-text",
-                div { class: "sx-label", "Opens XTC files" }
-                div { class: "sx-desc",
-                    if editable { "A custom reader counts as untested until you try a file on it." }
-                    else { "What we know about this reader and each firmware." }
+                div { class: "sx-label", "Opens XTC files"
+                    Help { text: if editable { "A custom reader counts as untested until you try a file on it." } else { "What we know about this reader and each firmware." } }
                 }
             }
             div { class: "sx-control sx-inline", style: "flex-wrap: wrap; justify-content: flex-end",
@@ -184,8 +227,9 @@ pub fn DevicesEditor() -> Element {
         }
         div { class: "sx-row",
             div { class: "sx-text",
-                div { class: "sx-label", "Preset for this reader" }
-                div { class: "sx-desc", "New series made for {current.name} start from this preset." }
+                div { class: "sx-label", "Preset for this reader"
+                    Help { text: format!("New series made for {} start from this preset.", current.name) }
+                }
             }
             div { class: "sx-control",
                 select {
@@ -212,8 +256,9 @@ pub fn DevicesEditor() -> Element {
         if editable {
             div { class: "sx-row",
                 div { class: "sx-text",
-                    div { class: "sx-label", "Remove this reader" }
-                    div { class: "sx-desc", "Series made for it keep their settings. Your Xteink X4 Pro is chosen instead." }
+                    div { class: "sx-label", "Remove this reader"
+                        Help { text: "Series made for it keep their settings. Your Xteink X4 Pro is chosen instead." }
+                    }
                 }
                 div { class: "sx-control",
                     button { class: "btn danger",
@@ -236,12 +281,14 @@ pub fn DevicesEditor() -> Element {
     }
 }
 
-/// A dropdown to choose the reader pages are made for, with its page size.
+/// A dropdown to choose the reader pages are made for, and its page size as
+/// boxes that can be changed.
 #[component]
 pub fn DeviceSelect() -> Element {
     let state = use_context::<AppState>();
     let s = state.settings.read().clone();
     let current = s.device_profile();
+    let nonce = use_signal(|| 0u32);
     rsx! {
         div { class: "panel-section",
             label { class: "panel-label", "Reader" }
@@ -256,7 +303,10 @@ pub fn DeviceSelect() -> Element {
                     option { key: "{d.id}", value: "{d.id}", selected: d.id == current.id, "{d.name}" }
                 }
             }
-            p { class: "muted small panel-note", "Pages are made {current.size_label()} pixels, the full screen." }
+            ReaderSize {
+                nonce,
+                on_change: move |_| crate::ui::work::schedule_preview(state, 0),
+            }
         }
     }
 }
@@ -280,6 +330,13 @@ mod tests {
             "My reader 3",
             "case and spaces do not make a name different"
         );
+    }
+
+    #[test]
+    fn a_locked_shape_follows_the_size_typed() {
+        assert_eq!(keep_shape(240, 480, 800), 400);
+        assert_eq!(keep_shape(500, 480, 800), 833);
+        assert_eq!(keep_shape(100, 0, 800), 800, "no old size to follow");
     }
 
     #[test]

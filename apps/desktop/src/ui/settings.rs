@@ -86,7 +86,7 @@ pub fn SettingsPage() -> Element {
                         Row {
                             label: "Download speed",
                             desc: format!(
-                                "{} Right now: {} at a time, {} pages in flight.",
+                                "{} Right now: {} at a time, {} pages in flight. If a source starts refusing requests, MangaPoint slows down by itself and speeds up again later.",
                                 match s.download.speed {
                                     DownloadSpeed::Gentle => "Slow and careful.",
                                     DownloadSpeed::Normal => "A good balance.",
@@ -132,22 +132,20 @@ pub fn SettingsPage() -> Element {
                                 "High numbers can get your address blocked by a source."
                             }
                         }
-                        p { class: "sx-note", "If a source starts refusing requests, MangaPoint slows down by itself and speeds up again later." }
 
                         Group { title: "Mixing sources" }
-                        Row { label: "Share chapters between sources", desc: "Different chapters come from different sources at once, which adds their speeds together.",
+                        Row { label: "Share chapters between sources", desc: "Different chapters come from different sources at once, which adds their speeds together. Can mix translations within one series; leave it off for a consistent read.",
                             input {
                                 r#type: "checkbox", checked: s.download.spread_sources,
                                 onchange: move |e| update(|s, v| s.download.spread_sources = v == "true", e.checked().to_string()),
                             }
                         }
-                        Row { label: "Race every source", desc: "Asks every source for each chapter and keeps the first to finish. Fastest, but sends the most requests.",
+                        Row { label: "Race every source", desc: "Asks every source for each chapter and keeps the first to finish. Fastest, but sends the most requests. Can mix translations within one series.",
                             input {
                                 r#type: "checkbox", checked: s.download.race_sources,
                                 onchange: move |e| update(|s, v| s.download.race_sources = v == "true", e.checked().to_string()),
                             }
                         }
-                        p { class: "sx-note", "Both can mix translations within one series. Leave them off for a consistent read." }
 
                         Group { title: "Saved pages" }
                         Row {
@@ -172,7 +170,7 @@ pub fn SettingsPage() -> Element {
                         }
                         Row {
                             label: "Your library",
-                            desc: format!("{}, {}, {}", plural(series_count, "series"), plural(chapter_count, "chapter"), human_bytes(library_bytes)),
+                            note: format!("{}, {}, {}", plural(series_count, "series"), plural(chapter_count, "chapter"), human_bytes(library_bytes)),
                             button { class: "btn", onclick: move |_| state.go(Page::Library), Icon { name: "book-open", size: 15 } "Open Library" }
                         }
                     },
@@ -213,7 +211,8 @@ pub fn SettingsPage() -> Element {
                         Group { title: "Downloaded chapters" }
                         Row {
                             label: "Download folder",
-                            desc: format!("New downloads are kept in {}. Series you already have stay where they are.", crate::state::library_files().root().display()),
+                            desc: "New downloads are kept in this folder. Series you already have stay where they are.",
+                            note: crate::state::library_files().root().display().to_string(),
                             button { class: "btn", title: "Choose where new downloads are kept",
                                 onclick: move |_| {
                                     spawn(async move {
@@ -278,12 +277,12 @@ pub fn SettingsPage() -> Element {
                         h1 { class: "sx-title", "About" }
                         Row {
                             label: "Catalog engine",
-                            desc: match &services {
+                            note: match &services {
                                 Some(sv) => format!("Suwayomi {}, running on this computer only (port {}).", catalog::release::VERSION_TAG, sv.port),
                                 None => format!("Suwayomi {}", catalog::release::VERSION_TAG),
                             },
                         }
-                        Row { label: "Your data", desc: "{paths().root().display()}",
+                        Row { label: "Your data", note: paths().root().display().to_string(),
                             button { class: "btn", title: "Open this folder",
                                 onclick: move |_| {
                                     let dir = paths().root().to_path_buf();
@@ -308,12 +307,22 @@ fn Group(title: String) -> Element {
 
 /// One setting: what it is on the left, how to change it on the right.
 #[component]
-fn Row(label: String, desc: Option<String>, children: Element) -> Element {
+fn Row(
+    label: String,
+    /// Explains the setting, behind a question mark.
+    desc: Option<String>,
+    /// What is true right now, shown under the label.
+    note: Option<String>,
+    children: Element,
+) -> Element {
     rsx! {
         div { class: "sx-row",
             div { class: "sx-text",
-                div { class: "sx-label", "{label}" }
-                if let Some(text) = desc { div { class: "sx-desc", "{text}" } }
+                div { class: "sx-label",
+                    "{label}"
+                    if let Some(text) = desc { super::widgets::Help { text } }
+                }
+                if let Some(text) = note { div { class: "sx-desc", "{text}" } }
             }
             div { class: "sx-control", {children} }
         }
