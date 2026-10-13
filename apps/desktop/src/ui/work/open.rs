@@ -266,9 +266,21 @@ pub fn load_saved_cover(state: AppState, series_id: &str) {
     }
     let path = library_files().cover_path(series_id);
     spawn_forever(async move {
-        let Ok(bytes) = tokio::fs::read(&path).await else {
+        let Ok(mut bytes) = tokio::fs::read(&path).await else {
             return;
         };
+        // A cover saved before they were kept small is shrunk once, on disk.
+        if bytes.len() > logic::COVER_KEEP_BYTES {
+            let big = bytes.clone();
+            let small = tokio::task::spawn_blocking(move || logic::small_cover(&big))
+                .await
+                .ok()
+                .flatten();
+            if let Some(small) = small.filter(|s| s.len() < bytes.len()) {
+                let _ = tokio::fs::write(&path, &small).await;
+                bytes = small;
+            }
+        }
         let mime = match bytes.first() {
             Some(0x89) => "image/png",
             Some(b'R') => "image/webp",
@@ -344,12 +356,12 @@ pub fn ensure_series_info(state: AppState, series_id: &str) {
                 .or_else(|| series.sources.iter().find_map(|s| s.thumbnail.clone()));
             if let Some(path) = cover_path.as_deref() {
                 if let Ok(bytes) = client.get_bytes(path).await {
-                    if converter::decode::image_dimensions(&bytes).is_ok() {
+                    if let Some(small) = logic::small_cover(&bytes) {
                         let target = files.cover_path(&id);
                         if let Some(dir) = target.parent() {
                             let _ = std::fs::create_dir_all(dir);
                         }
-                        has_cover = std::fs::write(&target, &bytes).is_ok();
+                        has_cover = std::fs::write(&target, &small).is_ok();
                     }
                 }
             }

@@ -405,6 +405,32 @@ pub fn verdict_label(v: Verdict) -> &'static str {
     }
 }
 
+/// The biggest a saved cover is kept: posters are shown at most 200 px wide, so
+/// this is sharp even on a high-density screen and takes a few kilobytes.
+const COVER_MAX: (u32, u32) = (360, 540);
+/// Covers larger than this are shrunk when they are next read.
+pub const COVER_KEEP_BYTES: usize = 48 * 1024;
+
+/// A cover as a small JPEG, to keep on disk instead of what the source sent.
+/// `None` if the bytes are not an image.
+pub fn small_cover(bytes: &[u8]) -> Option<Vec<u8>> {
+    let img = image::load_from_memory(bytes).ok()?;
+    let img = if img.width() > COVER_MAX.0 || img.height() > COVER_MAX.1 {
+        img.resize(
+            COVER_MAX.0,
+            COVER_MAX.1,
+            image::imageops::FilterType::Triangle,
+        )
+    } else {
+        img
+    };
+    let mut out = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 72)
+        .encode_image(&img.to_rgb8())
+        .ok()?;
+    Some(out)
+}
+
 pub fn human_bytes(n: u64) -> String {
     const UNITS: [&str; 4] = ["bytes", "KB", "MB", "GB"];
     let mut value = n as f64;
@@ -1380,5 +1406,27 @@ mod library_view_tests {
             assert_eq!(LibrarySort::from_key(sort.key()), sort);
         }
         assert_eq!(LibrarySort::from_key("???"), LibrarySort::Recent);
+    }
+
+    #[test]
+    fn a_cover_is_kept_small() {
+        let mut big = image::RgbImage::new(1200, 1800);
+        for (x, y, p) in big.enumerate_pixels_mut() {
+            *p = image::Rgb([(x % 251) as u8, (y % 241) as u8, ((x + y) % 239) as u8]);
+        }
+        let mut png = Vec::new();
+        big.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        let small = small_cover(&png).expect("an image shrinks");
+        let decoded = image::load_from_memory(&small).unwrap();
+        assert!(decoded.width() <= 360 && decoded.height() <= 540);
+        assert_eq!(decoded.width() * 3, decoded.height() * 2, "shape kept");
+        assert!(
+            small.len() < png.len() / 5,
+            "{} vs {}",
+            small.len(),
+            png.len()
+        );
+        assert!(small_cover(b"not an image").is_none());
     }
 }
