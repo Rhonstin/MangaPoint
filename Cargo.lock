@@ -3419,6 +3419,7 @@ dependencies = [
  "search",
  "serde",
  "serde_json",
+ "sha2",
  "sources",
  "sysinfo",
  "thiserror 2.0.21",

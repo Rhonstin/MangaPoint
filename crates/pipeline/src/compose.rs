@@ -5,13 +5,14 @@
 //! assembled in a temporary file rather than in memory, so one file holding
 //! a whole series is fine.
 
+use crate::conversion_cache;
 use crate::error::{PipelineError, Result};
 use crate::export::{output_file_name, sanitize_component, ExportTarget, ExportedFile};
 use crate::options::process_options_for;
 use crate::preview::decode_page;
 use crate::types::{CancelFlag, JobEvent};
 use converter::xtc::{Chapter as XtcChapter, Metadata, WriteError, XtcBuilder};
-use converter::{GrayImage, LevelImage, ProcessOptions};
+use converter::{GrayImage, ProcessOptions};
 use device_profiles::DeviceProfile;
 use futures_util::stream::{self, StreamExt};
 use library::{DownloadedChapter, DownloadedSeries, LibraryFiles};
@@ -88,6 +89,8 @@ pub struct ExportOutcome {
     pub files: Vec<ExportedFile>,
     pub pages: usize,
     pub chapters: usize,
+    /// Chapters reused without decoding, rendering or packing their pages.
+    pub cached_chapters: usize,
 }
 
 /// A finished book waiting in the scratch folder to be sent.
@@ -163,6 +166,7 @@ pub async fn export_series(
     let mut scratch = Scratch::default();
     let mut volumes: Vec<Volume> = Vec::new();
     let mut total_pages = 0usize;
+    let mut cached_chapters = 0usize;
     let total = chapters.len();
 
     // Chapters are converted a little ahead of the one being written, so the
@@ -176,7 +180,7 @@ pub async fn export_series(
     let mut converted = stream::iter(order)
         .map(|(group, ci)| {
             let chapter = chapters[ci];
-            let (series_id, opts, events) = (&job.series.id, &opts, &events);
+            let (series_id, opts, events, settings) = (&job.series.id, &opts, &events, settings);
             async move {
                 if cancel.is_cancelled() {
                     return (group, ci, Err(PipelineError::Cancelled));
@@ -188,8 +192,10 @@ pub async fn export_series(
                         name: chapter.name.clone(),
                     });
                 }
-                let images =
-                    convert_chapter(files, series_id, chapter, opts, ci, events, cancel).await;
+                let images = convert_chapter(
+                    files, series_id, chapter, opts, settings, ci, events, cancel,
+                )
+                .await;
                 if images.is_ok() {
                     if let Some(tx) = events {
                         let _ = tx.send(JobEvent::ChapterDone { index: ci });
@@ -203,7 +209,8 @@ pub async fn export_series(
     let mut open: Option<(XtcBuilder, Volume)> = None;
     let mut open_group = usize::MAX;
     while let Some((group, ci, images)) = converted.next().await {
-        let images = images?;
+        let (images, cached) = images?;
+        cached_chapters += usize::from(cached);
         if cancel.is_cancelled() {
             return Err(PipelineError::Cancelled);
         }
@@ -250,7 +257,7 @@ pub async fn export_series(
         let (builder, volume) = open.as_mut().expect("opened above");
         let start = builder.page_count();
         for image in &images {
-            builder.add_page(image)?;
+            builder.add_encoded_page(image)?;
         }
         builder.push_chapter(XtcChapter {
             name: chapter.name.clone(),
@@ -282,6 +289,7 @@ pub async fn export_series(
         files: sent,
         pages: total_pages,
         chapters: total,
+        cached_chapters,
     })
 }
 
@@ -355,10 +363,11 @@ async fn convert_chapter(
     series_id: &str,
     chapter: &DownloadedChapter,
     opts: &ProcessOptions,
+    settings: &library::ConversionSettings,
     chapter_index: usize,
     events: &Option<UnboundedSender<JobEvent>>,
     cancel: &CancelFlag,
-) -> Result<Vec<LevelImage>> {
+) -> Result<(Vec<Vec<u8>>, bool)> {
     let pages = files.page_files(series_id, &chapter.key);
     if pages.is_empty() {
         return Err(PipelineError::Decode(format!(
@@ -367,11 +376,40 @@ async fn convert_chapter(
         )));
     }
     let total = pages.len();
+    let cache_path = files
+        .chapter_dir(series_id, &chapter.key)
+        .join(conversion_cache::FILE_NAME);
+    let (source_pages, saved_settings, cache, flag) = (
+        pages.clone(),
+        settings.clone(),
+        cache_path.clone(),
+        cancel.clone(),
+    );
+    let (width, height, format) = (opts.width, opts.height, settings.format);
+    let cached = tokio::task::spawn_blocking(move || {
+        let fingerprint =
+            conversion_cache::fingerprint(&source_pages, &saved_settings, width, height, &flag)?;
+        Ok::<_, PipelineError>(conversion_cache::load(
+            &cache,
+            &fingerprint,
+            width,
+            height,
+            format,
+        ))
+    })
+    .await
+    .map_err(|e| PipelineError::Decode(e.to_string()))??;
+    if cancel.is_cancelled() {
+        return Err(PipelineError::Cancelled);
+    }
+    if let Some(cached) = cached {
+        return Ok((cached, true));
+    }
     let done = std::sync::atomic::AtomicUsize::new(0);
     let done = &done;
     let name = chapter.name.as_str();
 
-    let decoded: Vec<Result<GrayImage>> = stream::iter(pages.into_iter().enumerate())
+    let decoded: Vec<Result<(GrayImage, Vec<u8>)>> = stream::iter(pages.into_iter().enumerate())
         .map(|(index, path)| async move {
             if cancel.is_cancelled() {
                 return Err(PipelineError::Cancelled);
@@ -379,7 +417,7 @@ async fn convert_chapter(
             let bytes = tokio::fs::read(&path)
                 .await
                 .map_err(|e| PipelineError::Io(path.clone(), e))?;
-            let gray = tokio::task::spawn_blocking(move || decode_page(&bytes))
+            let gray = tokio::task::spawn_blocking(move || decode_page(&bytes).map(|gray| (gray, bytes)))
                 .await
                 .map_err(|e| PipelineError::Decode(e.to_string()))?
                 .map_err(|e| {
@@ -402,14 +440,35 @@ async fn convert_chapter(
         .collect()
         .await;
 
-    let grays = decoded.into_iter().collect::<Result<Vec<_>>>()?;
+    let decoded = decoded.into_iter().collect::<Result<Vec<_>>>()?;
     if cancel.is_cancelled() {
         return Err(PipelineError::Cancelled);
     }
     let opts = opts.clone();
-    tokio::task::spawn_blocking(move || converter::plan::convert_chapter(&grays, &opts))
-        .await
-        .map_err(|e| PipelineError::Decode(e.to_string()))
+    let cancel = cancel.clone();
+    let settings = settings.clone();
+    let packed = tokio::task::spawn_blocking(move || {
+        let fingerprint = conversion_cache::fingerprint_bytes(
+            decoded.iter().map(|(_, bytes)| bytes.as_slice()),
+            &settings,
+            opts.width,
+            opts.height,
+        );
+        let grays: Vec<_> = decoded.into_iter().map(|(gray, _)| gray).collect();
+        let images = converter::plan::convert_chapter(&grays, &opts);
+        let mut packed = Vec::with_capacity(images.len());
+        for image in images {
+            if cancel.is_cancelled() {
+                return Err(PipelineError::Cancelled);
+            }
+            packed.push(converter::xtc::encode_page(&image)?);
+        }
+        conversion_cache::save(&cache_path, &fingerprint, &packed);
+        Ok::<_, PipelineError>(packed)
+    })
+    .await
+    .map_err(|e| PipelineError::Decode(e.to_string()))??;
+    Ok((packed, false))
 }
 
 fn now_secs() -> u64 {
