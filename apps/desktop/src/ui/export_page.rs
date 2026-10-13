@@ -554,7 +554,13 @@ fn ChaptersPanel() -> Element {
                         let on = !excluded.contains(&c.key);
                         let showing = shown.as_deref() == Some(c.key.as_str());
                         rsx! {
-                            div { key: "{c.key}", class: match (on, showing) { (true, true) => "px-chapter on showing", (true, false) => "px-chapter on", (false, true) => "px-chapter showing", _ => "px-chapter" },
+                            div { key: "{c.key}",
+                                class: match (on, showing) {
+                                    (true, true) => "px-chapter on showing",
+                                    (true, false) => "px-chapter on",
+                                    (false, true) => "px-chapter showing",
+                                    _ => "px-chapter",
+                                },
                                 input {
                                     r#type: "checkbox", checked: on, title: "Include this chapter in the export",
                                     onchange: move |_| {

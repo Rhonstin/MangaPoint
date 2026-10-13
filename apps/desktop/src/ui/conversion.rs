@@ -273,13 +273,27 @@ pub fn ConversionControls(
             h3 { class: "group", "Cropping" }
             div { class: "mp-choice-grid", role: "group", aria_label: "Cropping",
                 VisualChoice { label: "Keep whole", hint: "All original artwork", diagram: "whole", selected: !trimming && !manual,
-                    onclick: move |_| { manual_local.set(false); if let Some(on_mode) = on_crop_mode { on_mode.call(CropMode::Full); } keep(|s,_| { s.crop = CropMode::Full; s.margins = Margins::default(); }, String::new()); } }
+                    onclick: move |_| {
+                        manual_local.set(false);
+                        if let Some(on_mode) = on_crop_mode { on_mode.call(CropMode::Full); }
+                        keep(|s, _| { s.crop = CropMode::Full; s.margins = Margins::default(); }, String::new());
+                    } }
                 VisualChoice { label: "Trim margins", hint: "Find blank borders", diagram: "trim", selected: trimming && !manual,
-                    onclick: move |_| { manual_local.set(false); if let Some(on_mode) = on_crop_mode { on_mode.call(CropMode::Margins); } trim(|s,_| { s.crop = CropMode::Margins; s.margins = Margins::default(); }, String::new()); } }
-                VisualChoice { label: "Manual", hint: if on_manual_crop.is_some() { "Edit on the canvas" } else { "Set edge percentages" }, diagram: "manual", selected: manual,
-                    onclick: move |_| { manual_local.set(true); if let Some(open) = on_manual_crop { open.call(()); } } }
+                    onclick: move |_| {
+                        manual_local.set(false);
+                        if let Some(on_mode) = on_crop_mode { on_mode.call(CropMode::Margins); }
+                        trim(|s, _| { s.crop = CropMode::Margins; s.margins = Margins::default(); }, String::new());
+                    } }
+                VisualChoice { label: "Manual", diagram: "manual", selected: manual,
+                    hint: if on_manual_crop.is_some() { "Edit on the canvas" } else { "Set edge percentages" },
+                    onclick: move |_| {
+                        manual_local.set(true);
+                        if let Some(open) = on_manual_crop { open.call(()); }
+                    } }
             }
-            if manual && on_manual_crop.is_none() { p { class: "mp-control-note", "Set the edge cuts below. The page editor also provides draggable crop handles and a choice of page, chapter or series scope." } }
+            if manual && on_manual_crop.is_none() {
+                p { class: "mp-control-note", "Set the edge cuts below. The page editor also provides draggable crop handles and a choice of page, chapter or series scope." }
+            }
             if advanced && trimming {
                 details { class: "mp-tuning",
                 summary { "Automatic trim tuning" }
@@ -327,7 +341,10 @@ pub fn ConversionControls(
             }
             div { class: "field",
                 label { "Contrast ({c.contrast})" }
-                div { class: "mp-contrast-track", input { aria_label: "Contrast", r#type: "range", min: "0", max: "100", value: "{c.contrast}", oninput: on_contrast } span { class: "mp-neutral-marker", title: "Neutral: 50" } }
+                div { class: "mp-contrast-track",
+                    input { aria_label: "Contrast", r#type: "range", min: "0", max: "100", value: "{c.contrast}", oninput: on_contrast }
+                    span { class: "mp-neutral-marker", title: "Neutral: 50" }
+                }
                 div { class: "mp-contrast-labels", span { "Softer" } span { "50 neutral" } span { "Stronger" } }
                 button { class: "btn ghost small", disabled: c.contrast == 50, onclick: move |_| reset(|s,_| s.contrast = 50, String::new()), "Reset to neutral" }
                 span { class: "hint muted small", "50 leaves the page as it is. A little higher (55) usually looks better on e-paper." }
