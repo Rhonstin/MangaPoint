@@ -59,7 +59,6 @@ pub fn App() -> Element {
         style { "{CSS}" }
         style { {include_str!("../page-editor.css")} }
         style { {include_str!("../editor-controls.css")} }
-        style { {include_str!("../download-ui.css")} }
         div { class: "app",
             {match boot {
                 BootState::Starting { message, percent } => rsx! { Splash { message, percent } },
