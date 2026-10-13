@@ -168,7 +168,7 @@ pub fn CropInspector(
             div { class: "editor-section-heading",
                 strong { Icon { name: "crop", size: 15 } "Manual crop" }
                 button { class: if editing {"btn small on"} else {"btn small"},
-                    onclick: move |_| { let mut p=state.preview; let mut p=p.write(); p.view.editing_crop=!p.view.editing_crop; p.view.show_original=true; p.view.source_focus=p.view.editing_crop; },
+                    onclick: move |_| { let mut p=state.preview; let mut p=p.write(); p.view.editing_crop = !p.view.editing_crop; p.view.show_original=true; p.view.source_focus=p.view.editing_crop; },
                     if editing { "Editing" } else { "Edit crop" }
                 }
             }

@@ -571,11 +571,11 @@ async fn conversion_cache_recovers_from_corruption_and_failed_cache_writes() {
     fs::create_dir(&cache).unwrap(); // Writing a file here fails, but export must work.
     assert_eq!(export(&lib, &j).await.unwrap().cached_chapters, 2);
     assert!(fs::read_dir(cache.parent().unwrap()).unwrap().all(|entry| {
-        !entry
+        entry
             .unwrap()
             .path()
             .extension()
-            .is_some_and(|ext| ext == "part")
+            .is_none_or(|ext| ext != "part")
     }));
     let _ = fs::remove_dir_all(lib.root);
 }

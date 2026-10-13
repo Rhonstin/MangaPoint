@@ -525,7 +525,7 @@ mod crop_tests {
         o.layout = converter::Layout::Manga;
         o.crop = converter::CropMode::Full;
         let gray = GrayImage::from_fn(80, 120, |x, _| (x * 3) as u8).unwrap();
-        let chapter = prepare_chapter(&[gray.clone()], &o);
+        let chapter = prepare_chapter(std::slice::from_ref(&gray), &o);
         let p = &chapter.plan.pages[0];
         let crop = CropRect {
             left: 0.25,
