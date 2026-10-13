@@ -83,6 +83,20 @@ pub fn ProgressBar(fraction: Option<f32>) -> Element {
     }
 }
 
+/// A switch that slides between off and on.
+#[component]
+pub fn Toggle(on: bool, onchange: EventHandler<bool>) -> Element {
+    let checked = if on { "true" } else { "false" };
+    rsx! {
+        button {
+            r#type: "button", role: "switch", "aria-checked": "{checked}",
+            class: if on { "toggle on" } else { "toggle" },
+            onclick: move |_| onchange.call(!on),
+            span { class: "knob" }
+        }
+    }
+}
+
 /// A small question mark that explains a setting when the pointer is on it.
 #[component]
 pub fn Help(text: String) -> Element {

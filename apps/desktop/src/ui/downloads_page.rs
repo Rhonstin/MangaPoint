@@ -123,34 +123,36 @@ fn ExportedFiles() -> Element {
             }
         }
         for r in records.iter() {
-            div { class: "list-row", key: "{r.id}", style: "align-items: flex-start",
-                div { class: "grow",
-                    div { class: "row wrap",
-                        strong { "{r.title}" }
-                        Chip { text: r.format.to_uppercase() }
-                        span { class: "muted small", "{r.chapters} chapters · {ago(now, r.at)} · {r.target}" }
-                    }
-                    for f in r.files.iter() {
-                        {
-                            let path = f.path.clone();
-                            let is_url = path.starts_with("http");
-                            let missing = !is_url && !std::path::Path::new(&path).is_file();
-                            let size = human_bytes(f.bytes);
-                            let record_id = r.id.clone();
-                            let (p_show, p_delete, p_forget) = (path.clone(), path.clone(), path.clone());
-                            let (id_delete, id_forget) = (record_id.clone(), record_id.clone());
-                            rsx! {
-                                div { class: "row small", style: "margin-top: 4px",
-                                    span { class: "grow muted", style: "word-break: break-all", "{path}" }
-                                    if missing { Chip { text: "missing", kind: Some("warn".to_string()) } } else { span { class: "muted", "{size}" } }
+            div { class: "exp-card", key: "{r.id}",
+                div { class: "exp-head",
+                    strong { "{r.title}" }
+                    Chip { text: r.format.to_uppercase() }
+                    span { class: "muted small", "{r.chapters} chapters · {ago(now, r.at)} · {r.target}" }
+                }
+                for f in r.files.iter() {
+                    {
+                        let path = f.path.clone();
+                        let is_url = path.starts_with("http");
+                        let missing = !is_url && !std::path::Path::new(&path).is_file();
+                        let size = human_bytes(f.bytes);
+                        let record_id = r.id.clone();
+                        let (p_show, p_delete, p_forget) = (path.clone(), path.clone(), path.clone());
+                        let (id_delete, id_forget) = (record_id.clone(), record_id.clone());
+                        rsx! {
+                            div { class: "exp-file",
+                                span { class: "exp-path", title: "{path}", "{path}" }
+                                if missing { Chip { text: "missing", kind: Some("warn".to_string()) } } else { span { class: "muted small", "{size}" } }
+                                div { class: "exp-actions",
                                     if missing {
-                                        button { class: "btn small", onclick: move |_| forget_exported_file(state, id_forget.clone(), p_forget.clone()), "Forget" }
+                                        button { class: "btn ghost small", onclick: move |_| forget_exported_file(state, id_forget.clone(), p_forget.clone()),
+                                            Icon { name: "x", size: 14 } "Forget"
+                                        }
                                     } else if !is_url {
-                                        button { class: "btn small", title: "Show in its folder", onclick: move |_| show_in_folder(&p_show),
-                                            Icon { name: "folder-open", size: 14 }
+                                        button { class: "btn ghost small", onclick: move |_| show_in_folder(&p_show),
+                                            Icon { name: "folder-open", size: 14 } "Show in folder"
                                         }
                                         button {
-                                            class: "btn small danger", title: "Delete this file",
+                                            class: "btn ghost small danger",
                                             onclick: move |_| state.ask(Modal {
                                                 title: "Delete this file?".into(),
                                                 body: format!("{p_delete} will be deleted from your computer. Your downloaded chapters are not affected."),
@@ -159,7 +161,7 @@ fn ExportedFiles() -> Element {
                                                 danger: true,
                                                 action: ModalAction::DeleteExportedFile { record_id: id_delete.clone(), path: p_delete.clone() },
                                             }),
-                                            Icon { name: "trash", size: 14 }
+                                            Icon { name: "trash", size: 14 } "Delete"
                                         }
                                     }
                                 }

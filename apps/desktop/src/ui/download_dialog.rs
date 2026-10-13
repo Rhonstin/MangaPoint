@@ -1,7 +1,7 @@
 //! The dialog that asks where downloaded files should go, before a download
 //! starts.
 
-use super::widgets::{pick_folder, Icon};
+use super::widgets::{pick_folder, Icon, Toggle};
 use super::work::{set_download_folder, start_pending};
 use crate::state::{library_files, AppState};
 use dioxus::prelude::*;
@@ -41,11 +41,8 @@ pub fn DownloadDialogHost() -> Element {
                         "Choose folder…"
                     }
                 }
-                label { class: "check-line", style: "margin-top: 14px",
-                    input {
-                        r#type: "checkbox", checked: dont_ask(),
-                        onchange: move |e| dont_ask.set(e.checked()),
-                    }
+                div { class: "check-line", style: "margin-top: 14px",
+                    Toggle { on: dont_ask(), onchange: move |on: bool| dont_ask.set(on) }
                     span { "Don't ask again. You can change it in Settings → Files." }
                 }
                 div { class: "actions",
