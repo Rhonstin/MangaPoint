@@ -2,15 +2,14 @@
 //! Chapters are added from any series; they download in turn, so there is
 //! nothing to start by hand.
 
-use super::widgets::{show_in_folder, Chip, Cover, Icon, ProgressBar};
+use super::widgets::{show_in_folder, Chip, Cover, EmptyState, Icon, ProgressBar};
 use super::work::{
     cancel_all_downloads, cancel_batch, forget_exported_file, load_saved_cover,
-    open_series_from_library, prepare_preview, prioritize_batch, retry_batch, saved_cover_key,
-    set_queue_paused,
+    open_series_from_library, prioritize_batch, retry_batch, saved_cover_key, set_queue_paused,
 };
 use crate::logic::{ago, human_bytes, plural};
 use crate::queue::BatchStatus;
-use crate::state::{now_secs, AppState, Modal, ModalAction, SeriesTab};
+use crate::state::{now_secs, AppState, Modal, ModalAction, Page};
 use dioxus::prelude::*;
 
 #[component]
@@ -60,7 +59,7 @@ pub fn DownloadsPage() -> Element {
                         if waiting_batches > 0 { " · {waiting_batches} more in line" }
                         if paused { " · paused" }
                     } else {
-                        "Download chapters, open them in the editor, and find files exported for your reader."
+                        "Downloads go on here one series after another, and the files you export are listed below."
                     }
                 }
             }
@@ -74,14 +73,22 @@ pub fn DownloadsPage() -> Element {
             }
             if !finished.is_empty() {
                 button { class: "btn ghost", onclick: move |_| state.edit_queue(|q| q.clear_finished()),
-                    "Clear history"
+                    "Clear finished"
                 }
             }
         }
 
-        section { class: "mp-download-section",
-        h2 { class: "mp-download-section-title", "Active downloads" }
-        if !busy { p { class: "mp-download-empty", "No active downloads. Add chapters from a series to download them in the background." } }
+        if !busy && finished.is_empty() && state.exports.read().records.is_empty() {
+            EmptyState {
+                title: "Nothing downloading",
+                message: "Pick chapters in any series and add them to the downloads. They go on in the background while you carry on.",
+                scene: "waiting",
+            }
+            div { style: "text-align: center",
+                button { class: "btn primary", onclick: move |_| state.go(Page::Search), Icon { name: "search", size: 16 } "Find a series" }
+            }
+        }
+
         if let Some(id) = running {
             h2 { class: "q-title", "Downloading now" }
             BatchRow { id }
@@ -92,15 +99,11 @@ pub fn DownloadsPage() -> Element {
                 BatchRow { key: "{id}", id }
             }
         }
-        }
-        DownloadedChapters {}
         if !finished.is_empty() {
-            details { class: "mp-download-section mp-download-history",
-            summary { "Download history" }
+            h2 { class: "q-title", "Finished" }
             for id in finished.iter().copied() {
                 BatchRow { key: "{id}", id }
             }
-        }
         }
         ExportedFiles {}
     }
@@ -114,15 +117,14 @@ fn ExportedFiles() -> Element {
     records.reverse();
     let now = now_secs();
     rsx! {
-        section { class: "mp-download-section",
-        h2 { class: "mp-download-section-title", "Exported files" }
+        h2 { class: "q-title", "Exported files" }
         if records.is_empty() {
             p { class: "muted small", style: "margin: 4px 0 0",
                 "Files you export for your reader are listed here, so you can find or delete them later."
             }
         }
         for r in records.iter() {
-            div { class: "mp-export-record", key: "{r.id}",
+            div { class: "list-row", key: "{r.id}", style: "align-items: flex-start",
                 div { class: "grow",
                     div { class: "row wrap",
                         strong { "{r.title}" }
@@ -139,7 +141,7 @@ fn ExportedFiles() -> Element {
                             let (p_show, p_delete, p_forget) = (path.clone(), path.clone(), path.clone());
                             let (id_delete, id_forget) = (record_id.clone(), record_id.clone());
                             rsx! {
-                                div { class: "mp-export-file",
+                                div { class: "row small", style: "margin-top: 4px",
                                     span { class: "grow muted", style: "word-break: break-all", "{path}" }
                                     if missing { Chip { text: "missing", kind: Some("warn".to_string()) } } else { span { class: "muted", "{size}" } }
                                     if missing {
@@ -167,7 +169,6 @@ fn ExportedFiles() -> Element {
                     }
                 }
             }
-        }
         }
     }
 }
@@ -210,17 +211,17 @@ fn BatchRow(id: u64) -> Element {
     let failed = batch.failed.len();
     let skipped_lines: Vec<String> = batch.skipped.iter().take(3).cloned().collect();
     let status_chip = match &batch.status {
-        BatchStatus::Done if failed == 0 => Some(("Downloaded", "ok")),
-        BatchStatus::Done => Some(("Partly downloaded", "warn")),
-        BatchStatus::Failed(_) => Some(("Failed", "bad")),
-        BatchStatus::Cancelled => Some(("Cancelled", "warn")),
+        BatchStatus::Done if failed == 0 => Some(("done", "ok")),
+        BatchStatus::Done => Some(("partly done", "warn")),
+        BatchStatus::Failed(_) => Some(("failed", "bad")),
+        BatchStatus::Cancelled => Some(("stopped", "warn")),
         _ => None,
     };
     let cover_key = saved_cover_key(&batch.series_id);
     let open_id = series_id.clone();
 
     rsx! {
-        div { class: if running { "q-row running mp-download-row" } else { "q-row mp-download-row" },
+        div { class: if running { "q-row running" } else { "q-row" },
             div { class: "q-cover",
                 if has_cover { Cover { key_id: cover_key } } else { div { class: "cover empty", "📖" } }
             }
@@ -274,55 +275,12 @@ fn BatchRow(id: u64) -> Element {
                         }
                     }
                     if in_library {
-                        button { class: "btn small ghost", onclick: move |_| open_editor(state, &open_id),
-                            "Open in editor"
+                        button { class: "btn small ghost", onclick: move |_| open_series_from_library(state, &open_id),
+                            "Open"
                         }
                     }
                     button { class: "btn small ghost", title: "Dismiss", onclick: move |_| { state.edit_queue(|q| { q.remove(id); }); },
                         Icon { name: "x", size: 14 }
-                    }
-                }
-            }
-        }
-    }
-}
-
-fn open_editor(state: AppState, id: &str) {
-    open_series_from_library(state, id);
-    state.open_tab(SeriesTab::Preview);
-    prepare_preview(state);
-}
-
-#[component]
-fn DownloadedChapters() -> Element {
-    let state = use_context::<AppState>();
-    let mut series: Vec<_> = state
-        .library
-        .read()
-        .series
-        .iter()
-        .filter(|s| !s.chapters.is_empty())
-        .cloned()
-        .collect();
-    series.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
-    rsx! {
-        section { class: "mp-download-section",
-            h2 { class: "mp-download-section-title", "Downloaded chapters" }
-            if series.is_empty() { p { class: "mp-download-empty", "Completed chapters appear here, ready to edit and export for your reader." } }
-            for s in series {
-                {
-                    let id = s.id.clone();
-                    let chapters = plural(s.chapters.len(), "chapter");
-                    let pages = plural(s.page_count(), "page");
-                    let size = human_bytes(s.bytes());
-                    rsx! {
-                        div { class: "mp-saved-download mp-download-row", key: "{s.id}",
-                            div { class: "mp-download-symbol", Icon { name: "book-open", size: 22 } }
-                            div { class: "grow", strong { "{s.title}" } div { class: "mp-download-meta", "{chapters} · {pages}" } }
-                            Chip { text: "Downloaded", kind: Some("ok".into()) }
-                            span { class: "mp-download-size", "{size}" }
-                            button { class: "btn", onclick: move |_| open_editor(state, &id), Icon { name: "eye", size: 15 } "Open in editor" }
-                        }
                     }
                 }
             }
