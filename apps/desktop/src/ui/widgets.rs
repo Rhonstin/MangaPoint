@@ -35,12 +35,17 @@ pub fn EmptyState(
     title: String,
     message: String,
     compact: Option<bool>,
+    /// The cat beside the words, in a card, rather than above them.
+    side: Option<bool>,
     /// Show the cat asleep on an empty bookshelf instead of on its own.
     shelf: Option<bool>,
     /// Or another scene: "search", "ocean" or "waiting".
     scene: Option<&'static str>,
+    children: Element,
 ) -> Element {
-    let class = if compact.unwrap_or(false) {
+    let class = if side.unwrap_or(false) {
+        "empty side"
+    } else if compact.unwrap_or(false) {
         "empty compact"
     } else {
         "empty"
@@ -58,8 +63,11 @@ pub fn EmptyState(
             } else {
                 super::cat::RestingCat {}
             }
-            h2 { "{title}" }
-            p { "{message}" }
+            div { class: "empty-words",
+                h2 { "{title}" }
+                p { "{message}" }
+                {children}
+            }
         }
     }
 }

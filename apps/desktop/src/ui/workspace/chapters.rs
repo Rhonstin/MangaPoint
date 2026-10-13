@@ -69,6 +69,7 @@ pub fn ChaptersTab() -> Element {
     };
 
     let have = downloaded_keys(state, &ws.series_id);
+    let has_downloads = !have.is_empty();
     let series = state.library.read().find(&ws.series_id).cloned();
     let saved: std::collections::HashMap<String, (u64, String)> = series
         .iter()
@@ -327,6 +328,15 @@ pub fn ChaptersTab() -> Element {
                     oninput: move |e| range_text.set(e.value()),
                 }
                 button { class: "btn small", r#type: "submit", "Select" }
+            }
+            if has_downloads {
+                button { class: "btn primary small", title: "Edit and export the chapters you have downloaded",
+                    onclick: {
+                        let id = ws.series_id.clone();
+                        move |_| open_export(state, vec![id.clone()])
+                    },
+                    Icon { name: "file-down", size: 16 } "Export…"
+                }
             }
         }
         if let Some(msg) = range_error() {

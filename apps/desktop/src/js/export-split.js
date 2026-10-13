@@ -28,6 +28,7 @@ if (root && !root.dataset.dragBound) {
    drag = { kind, bar, from: e.clientX, start: side.getBoundingClientRect().width };
   }
   bar.classList.add('active');
+  root.classList.add('resizing');
  });
  root.addEventListener('pointermove', e => {
   if (!drag) return;
@@ -45,6 +46,7 @@ if (root && !root.dataset.dragBound) {
  const stop = () => {
   if (!drag) return;
   drag.bar.classList.remove('active');
+  root.classList.remove('resizing');
   drag = null;
   try { localStorage.setItem(KEY, JSON.stringify(saved)); } catch (e) {}
  };

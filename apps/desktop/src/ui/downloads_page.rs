@@ -78,13 +78,12 @@ pub fn DownloadsPage() -> Element {
             }
         }
 
-        if !busy && finished.is_empty() && state.exports.read().records.is_empty() {
+        if !busy {
             EmptyState {
                 title: "Nothing downloading",
                 message: "Pick chapters in any series and add them to the downloads. They go on in the background while you carry on.",
                 scene: "waiting",
-            }
-            div { style: "text-align: center",
+                side: true,
                 button { class: "btn primary", onclick: move |_| state.go(Page::Search), Icon { name: "search", size: 16 } "Find a series" }
             }
         }

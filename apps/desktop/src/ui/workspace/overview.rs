@@ -2,7 +2,7 @@
 
 use crate::logic::{ago, describe_settings, human_bytes};
 use crate::state::{now_secs, AppState};
-use crate::ui::widgets::{Chip, Cover, EmptyState, Icon};
+use crate::ui::widgets::{Chip, Cover, EmptyState, Icon, ProgressBar};
 use crate::ui::work::{ensure_series_info, load_saved_cover, saved_cover_key};
 use dioxus::prelude::*;
 
@@ -46,11 +46,6 @@ pub fn OverviewTab() -> Element {
         }
     }
     per_source.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-    let sources_text = per_source
-        .iter()
-        .map(|(name, n)| format!("{name} ({n})"))
-        .collect::<Vec<_>>()
-        .join(" · ");
 
     // How many chapters the sources list, once their lists have loaded.
     let total_chapters = match &*state.chapters.read() {
@@ -125,35 +120,59 @@ pub fn OverviewTab() -> Element {
                         "Not downloaded yet. Tick chapters below to download them."
                     }
                 }
-                div { class: "facts",
-                    Fact { label: "Downloaded",
-                        value: match total_chapters {
-                            Some(total) => format!("{} of {total} chapters", series.chapters.len()),
-                            None => format!("{} chapters", series.chapters.len()),
-                        },
+                // How much of the series is here, as a bar.
+                div { class: "coverage",
+                    div { class: "coverage-line",
+                        strong { "{series.chapters.len()}" }
+                        span { class: "muted",
+                            if let Some(total) = total_chapters { " of {total} chapters downloaded" } else { " chapters downloaded" }
+                        }
                     }
-                    Fact { label: "Pages", value: series.page_count().to_string() }
-                    Fact { label: "On this computer", value: human_bytes(series.bytes()) }
+                    if let Some(total) = total_chapters.filter(|t| *t > 0) {
+                        ProgressBar { fraction: Some(series.chapters.len() as f32 / total as f32) }
+                    }
+                }
+                // The numbers, in one row.
+                div { class: "stat-strip",
+                    Stat { icon: "layers", value: series.page_count().to_string(), label: "pages" }
+                    Stat { icon: "hard-drive", value: human_bytes(series.bytes()), label: "on this computer" }
                     if series.updated_at > 0 {
-                        Fact { label: "Last downloaded", value: ago(now_secs(), series.updated_at) }
+                        Stat { icon: "clock", value: ago(now_secs(), series.updated_at), label: "last downloaded" }
                     }
-                    if !sources_text.is_empty() {
-                        Fact { label: "From", value: sources_text.clone(), wide: true }
+                }
+                if !per_source.is_empty() {
+                    div { class: "meta-block",
+                        h3 { "Downloaded from" }
+                        div { class: "row wrap",
+                            for (name, n) in per_source.iter() {
+                                Chip { key: "{name}", text: format!("{name} · {n}"), kind: Some("ok".to_string()) }
+                            }
+                        }
                     }
-                    Fact { label: "Converted as", value: describe_settings(&series.settings), wide: true }
+                }
+                div { class: "meta-block",
+                    h3 { "Converted as" }
+                    div { class: "row wrap",
+                        for part in describe_settings(&series.settings).split(" · ").map(str::to_string) {
+                            Chip { key: "{part}", text: part.clone() }
+                        }
+                    }
                 }
             }
         }
     }
 }
 
-/// One fact about the series: a small label over its value.
+/// One number about the series: an icon, the figure, and what it counts.
 #[component]
-fn Fact(label: String, value: String, #[props(default)] wide: bool) -> Element {
+fn Stat(icon: &'static str, value: String, label: &'static str) -> Element {
     rsx! {
-        div { class: if wide { "fact wide" } else { "fact" },
-            span { class: "fact-label", "{label}" }
-            span { class: "fact-value", "{value}" }
+        div { class: "stat",
+            Icon { name: icon, size: 20 }
+            div { class: "stat-text",
+                strong { "{value}" }
+                span { "{label}" }
+            }
         }
     }
 }

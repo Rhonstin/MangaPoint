@@ -158,8 +158,6 @@ pub fn LibraryPage() -> Element {
                 title: "Your library is empty",
                 message: "Find a series and add it to your library. You can download its chapters now or whenever you like.",
                 shelf: true,
-            }
-            div { style: "text-align: center",
                 button { class: "btn primary", onclick: move |_| state.go(Page::Search), Icon { name: "search", size: 16 } "Find a series" }
             }
         } else {
@@ -187,7 +185,25 @@ pub fn LibraryPage() -> Element {
                 }
             }
             if order.is_empty() {
-                p { class: "muted", style: "margin: 28px 0", "Nothing here matches. Try another filter." }
+                if !filter.read().trim().is_empty() {
+                    EmptyState {
+                        title: "Nothing matches",
+                        message: "No series in this view has that in its name. Try fewer letters.",
+                        compact: true,
+                    }
+                } else if view() == LibraryView::Saved {
+                    EmptyState {
+                        title: "Nothing saved for later",
+                        message: "Everything in your library is already downloaded. Add a series from Search without downloading it and it waits here.",
+                        shelf: true,
+                    }
+                } else {
+                    EmptyState {
+                        title: "Nothing downloaded yet",
+                        message: "Open a series and download chapters; they will be listed here.",
+                        shelf: true,
+                    }
+                }
             }
             div { class: if selecting { "poster-grid selecting" } else { "poster-grid" },
                 for &i in order.iter() {

@@ -7,7 +7,7 @@ mod overview;
 pub(super) mod preview;
 
 use super::widgets::{cover_key, Chip, Cover, EmptyState, Icon};
-use super::work::{add_open_series_to_library, load_saved_cover, open_export, saved_cover_key};
+use super::work::{add_open_series_to_library, load_saved_cover, saved_cover_key};
 use crate::state::{AppState, Modal, ModalAction, Page};
 use dioxus::prelude::*;
 
@@ -136,15 +136,6 @@ fn SeriesActions(series_id: String, title: String) -> Element {
     };
     rsx! {
         div { class: "row wrap series-actions",
-            if downloaded > 0 {
-                button { class: "btn primary", title: "Edit and export the chapters you have downloaded",
-                    onclick: {
-                        let id = series_id.clone();
-                        move |_| open_export(state, vec![id.clone()])
-                    },
-                    Icon { name: "file-down", size: 16 } "Export…"
-                }
-            }
             if in_library {
                 button { class: "btn", title: "Remove it from your library",
                     onclick: move |_| state.ask(remove_modal.clone()),
