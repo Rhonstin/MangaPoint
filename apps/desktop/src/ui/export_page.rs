@@ -145,10 +145,6 @@ pub fn ExportPage() -> Element {
         div { class: "export-screen",
             onmounted: move |_| { spawn(async move { let _ = document::eval(SPLIT_SCRIPT).await; }); },
             div { class: "export-top",
-                button { class: "btn ghost small", onclick: move |_| state.go(Page::Library),
-                    Icon { name: "arrow-left", size: 15 }
-                    "Library"
-                }
                 h1 { "Export" }
                 if sample {
                     Chip { text: "Sample pages", kind: Some("accent".to_string()) }
@@ -204,8 +200,9 @@ fn Split(target: &'static str, dir: i32) -> Element {
 /// The sizes are remembered between visits.
 const SPLIT_SCRIPT: &str = r#"
 const root = document.querySelector('.export-screen');
-if (root && !root.dataset.split) {
- root.dataset.split = '1';
+// (Not `data-split`: that names the bars, and the screen itself must not match them.)
+if (root && !root.dataset.dragBound) {
+ root.dataset.dragBound = '1';
  const KEY = 'mp-export-layout';
  let saved = {};
  try { saved = JSON.parse(localStorage.getItem(KEY) || '{}'); } catch (e) {}
@@ -218,8 +215,8 @@ if (root && !root.dataset.split) {
  }
  let drag = null;
  root.addEventListener('pointerdown', e => {
-  const bar = e.target.closest('[data-split]');
-  if (!bar) return;
+  const bar = e.target.closest('.px-split, .px-split-v');
+  if (!bar || !root.contains(bar)) return;
   e.preventDefault();
   try { bar.setPointerCapture(e.pointerId); } catch (err) {}
   const kind = bar.dataset.split;
