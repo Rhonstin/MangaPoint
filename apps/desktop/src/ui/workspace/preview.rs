@@ -480,3 +480,33 @@ pub fn PreviewTab() -> Element {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_page_is_sized_by_its_zoom() {
+        assert_eq!(
+            row_height(Zoom::Custom(50), 480, 800),
+            "400px",
+            "half of the screen's own height"
+        );
+        assert!(row_height(Zoom::Fit, 480, 800).starts_with("min("));
+        assert_eq!(
+            row_height(Zoom::Width, 480, 800),
+            "calc(var(--reader-page-width) * 800 / 480)"
+        );
+    }
+
+    #[test]
+    fn the_reader_style_keeps_the_page_shape() {
+        let fit = reader_style(Zoom::Fit, 480, 800);
+        assert!(fit.contains("width:auto;") && fit.ends_with("aspect-ratio:480/800;"));
+        assert_eq!(
+            reader_style(Zoom::Custom(100), 480, 800),
+            "height:800px;width:480px;aspect-ratio:480/800;"
+        );
+        assert!(reader_style(Zoom::Width, 480, 800).starts_with("height:auto;width:100%;"));
+    }
+}

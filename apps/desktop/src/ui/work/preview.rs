@@ -53,9 +53,15 @@ pub fn prepare_preview(state: AppState) {
 /// not read and decode every page again.
 type DecodedChapter = (String, Arc<Vec<converter::GrayImage>>);
 pub(super) static DECODED: Mutex<Option<DecodedChapter>> = Mutex::new(None);
+
+/// The preview the background thread has finished for a chapter and options,
+/// waiting for the screen to take it.
 pub(super) static PREPARED_PREVIEW: Mutex<
     Option<(String, converter::ProcessOptions, pipeline::ChapterPreview)>,
 > = Mutex::new(None);
+
+/// Counts preview requests. A worker whose number is no longer the newest has
+/// been overtaken by a later change and drops its result.
 pub(super) static PREVIEW_REQUEST: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(1);
 

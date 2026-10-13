@@ -201,3 +201,19 @@ pub async fn pick_folder(
     }
     dialog.pick_folder().await.map(|h| h.path().to_path_buf())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn a_native_path_keeps_a_unix_path_and_unmixes_a_windows_one() {
+        let mixed = native_path(Path::new(r"C:\Data/Series/c1/1.png"));
+        if cfg!(target_os = "windows") {
+            assert_eq!(mixed, Path::new(r"C:\Data\Series\c1\1.png"));
+        } else {
+            assert_eq!(mixed, Path::new(r"C:\Data/Series/c1/1.png"));
+        }
+    }
+}

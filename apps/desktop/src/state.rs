@@ -29,6 +29,9 @@ pub fn paths() -> &'static AppPaths {
 }
 
 /// The folders downloads are kept in: where new ones go, and the others.
+/// Process-wide because background tasks build `LibraryFiles` from anywhere,
+/// without an `AppState` to hand; `apply_library_dirs` keeps it in step with the
+/// settings.
 static LIBRARY_DIRS: std::sync::RwLock<Option<(PathBuf, Vec<PathBuf>)>> =
     std::sync::RwLock::new(None);
 

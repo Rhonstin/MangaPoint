@@ -260,3 +260,31 @@ pub fn DeviceSelect() -> Element {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn custom(name: &str) -> DeviceProfile {
+        let mut device = device_profiles::x4();
+        device.name = name.to_string();
+        device
+    }
+
+    #[test]
+    fn a_new_reader_is_named_after_the_first_free_number() {
+        assert_eq!(unused_name(&[]), "My reader");
+        assert_eq!(unused_name(&[custom("My reader")]), "My reader 2");
+        assert_eq!(
+            unused_name(&[custom("my reader"), custom(" My reader 2 ")]),
+            "My reader 3",
+            "case and spaces do not make a name different"
+        );
+    }
+
+    #[test]
+    fn support_is_shown_with_a_colour() {
+        assert_eq!(support_chip(Support::Unverified), ("not tried yet", "warn"));
+        assert_eq!(support_chip(Support::Documented).1, "ok");
+    }
+}
