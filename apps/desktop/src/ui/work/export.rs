@@ -343,7 +343,7 @@ fn run_saved_export(state: AppState, saved: SavedExport) {
                 "Export started: \"{}\", {} chapter(s) as {}, {}, to {}",
                 series.title,
                 keys.len(),
-                series.settings.format.extension().to_uppercase(),
+                series.settings.output().extension().to_uppercase(),
                 match grouping {
                     Grouping::Single => "one file".to_string(),
                     Grouping::PerChapter => "one file per chapter".to_string(),
@@ -489,7 +489,7 @@ pub(super) async fn run_export(
                 title: series.title.clone(),
                 chapters: outcome.chapters,
                 pages: outcome.pages,
-                format: series.settings.format.extension().to_string(),
+                format: series.settings.output().extension().to_string(),
                 files: outcome
                     .files
                     .iter()
@@ -533,6 +533,7 @@ pub(super) async fn run_export(
             }
             if !cancelled {
                 crate::notify::finished(state, "Export failed", &format!("{}: {message}", series.title));
+                state.error(format!("{}: {message}", series.title));
             }
             if let Some(view) = job.write().as_mut() {
                 if cancelled && view.paused {

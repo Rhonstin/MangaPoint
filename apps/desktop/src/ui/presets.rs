@@ -23,6 +23,56 @@ pub fn apply_to_series(
     schedule_preview(state, 0);
 }
 
+/// Make every series of the export as `output` (XTC, XTCH or EPUB), and draw
+/// the preview again.
+pub fn set_output(state: AppState, output: library::OutputFormat) {
+    let ids: Vec<String> = state
+        .export_plan
+        .peek()
+        .items
+        .iter()
+        .map(|i| i.series_id.clone())
+        .collect();
+    let mut library = state.library;
+    for id in ids {
+        let Some(series) = state.library.peek().find(&id).cloned() else {
+            continue;
+        };
+        let mut settings = series.settings.clone();
+        settings.set_output(output);
+        let preset = series
+            .preset_id
+            .as_ref()
+            .and_then(|p| state.presets.peek().find(p))
+            .map(|e| e.preset.settings);
+        library.write().set_settings(&id, settings, preset.as_ref());
+    }
+    state.save_library();
+    schedule_preview(state, 0);
+}
+
+/// After another reader is chosen: if the export is made as something it does
+/// not open (an EPUB for an Xteink that lists only XTC, say), switch to the
+/// first thing it does.
+pub fn fit_output_to_reader(state: AppState) {
+    let setup = state.settings.peek().reader_setup();
+    let listed = |o: library::OutputFormat| setup.formats.iter().any(|f| f.eq_ignore_ascii_case(o.label()));
+    let current = state
+        .export_plan
+        .peek()
+        .items
+        .first()
+        .and_then(|i| state.library.peek().find(&i.series_id).map(|s| s.settings.output()));
+    let Some(current) = current else {
+        return;
+    };
+    if !listed(current) {
+        if let Some(first) = library::OutputFormat::ALL.into_iter().find(|o| listed(*o)) {
+            set_output(state, first);
+        }
+    }
+}
+
 /// Replace one of the user's presets with some settings.
 pub fn save_to_preset(state: AppState, id: &str, settings: ConversionSettings) {
     let result = state.edit_presets(|p| p.overwrite(id, settings));

@@ -8,7 +8,7 @@ use crate::state::{Page, SettingsSection};
 use library::ReaderSetup;
 
 /// The file types a reader can be said to open.
-const FORMAT_OPTIONS: [&str; 2] = ["XTC", "XTCH"];
+const FORMAT_OPTIONS: [&str; 3] = ["XTC", "XTCH", "EPUB"];
 
 /// The formats as a row of pills inside a box: type one and press Enter, or
 /// pick from the list that opens under the box.
@@ -114,6 +114,23 @@ fn MultiSeg(items: Vec<(String, bool)>, on_toggle: EventHandler<usize>) -> Eleme
     }
 }
 
+/// How a reader starts out: the file types it opens and the firmware it runs,
+/// from what is known of it. A reader of your own opens what MangaPoint makes
+/// and runs its own firmware until you say otherwise.
+pub(super) fn default_setup_for(id: &str) -> ReaderSetup {
+    match device_profiles::known_info(id) {
+        Some(info) => ReaderSetup {
+            formats: info.formats.iter().map(|f| f.to_string()).collect(),
+            firmware: if info.crosspoint { Firmware::CrossPoint } else { Firmware::Stock },
+            ..ReaderSetup::default()
+        },
+        None => ReaderSetup {
+            firmware: Firmware::Stock,
+            ..ReaderSetup::default()
+        },
+    }
+}
+
 /// Add a known reader to the user's own and choose it. One already added is
 /// just chosen.
 fn add_known(settings: &mut library::Settings, known: DeviceProfile) -> Result<String, DeviceError> {
@@ -123,6 +140,7 @@ fn add_known(settings: &mut library::Settings, known: DeviceProfile) -> Result<S
         reader.builtin = false;
         reader.validate(&others)?;
         settings.custom_devices.push(reader);
+        settings.reader_setups.insert(known.id.clone(), default_setup_for(&known.id));
     }
     settings.device = known.id.clone();
     Ok(known.id)
@@ -134,6 +152,7 @@ fn add_custom(settings: &mut library::Settings, name: &str) -> Result<String, De
     let reader = DeviceProfile::custom(&settings.devices(), name, 480, 800)?;
     let id = reader.id.clone();
     settings.custom_devices.push(reader);
+    settings.reader_setups.insert(id.clone(), default_setup_for(&id));
     settings.device = id.clone();
     Ok(id)
 }
@@ -144,7 +163,11 @@ fn known_matches(query: &str, have: &[DeviceProfile]) -> Vec<DeviceProfile> {
     let mut found: Vec<(usize, DeviceProfile)> = device_profiles::builtin()
         .into_iter()
         .filter(|k| !have.iter().any(|d| d.id == k.id))
-        .filter_map(|k| device_profiles::match_rank(query, &k.name).map(|r| (r, k)))
+        .filter_map(|k| {
+            // The maker counts too: "kindle", "amazon" and "boox" all find theirs.
+            let named = format!("{} {}", k.maker, k.name);
+            device_profiles::match_rank(query, &named).map(|r| (r, k))
+        })
         .collect();
     found.sort_by_key(|(rank, _)| *rank);
     found.into_iter().map(|(_, k)| k).collect()
@@ -170,6 +193,16 @@ pub fn DeviceAdder(
     // The row that Enter would take: moved with the arrows or Tab, and back to
     // the first whenever the text changes.
     let mut active = use_signal(|| 0usize);
+    // Keep the row Enter would take in view when the list is long.
+    use_effect(move || {
+        let _ = active();
+        spawn(async move {
+            let _ = document::eval(
+                "document.querySelector('.adder-opt.active')?.scrollIntoView({block: 'nearest'})",
+            )
+            .await;
+        });
+    });
     let have = state.settings.read().devices();
     let query = text().trim().to_string();
     let matches = known_matches(&query, &have);
@@ -316,8 +349,7 @@ struct ReaderDraft {
     height: u32,
     /// Pixels per inch: pages are made at the screen's size in inches times this.
     ppi: u32,
-    firmware: Firmware,
-    /// How the reader receives files, and the file types it opens.
+    /// How the reader receives files, the file types it opens, and its firmware.
     setup: ReaderSetup,
 }
 
@@ -335,7 +367,6 @@ fn apply_reader(settings: &mut library::Settings, draft: &ReaderDraft) -> Result
     if let Some(slot) = settings.custom_devices.iter_mut().find(|d| d.id == base.id) {
         *slot = updated;
     }
-    settings.firmware = draft.firmware;
     settings.reader_setups.insert(base.id, draft.setup.clone());
     Ok(())
 }
@@ -409,11 +440,9 @@ fn ReaderForm(revision: Signal<u32>) -> Element {
         width: current.width,
         height: current.height,
         ppi: current.ppi,
-        firmware: s.firmware,
         setup: s.reader_setup(),
     };
     let mut setup = use_signal(|| saved.setup.clone());
-    let mut wifi_test = use_signal(|| None::<Result<(), String>>);
     let mut testing = use_signal(|| false);
     let mut name = use_signal(|| saved.name.clone());
     // The size is typed in inches. Until it is touched, the pixels stay exactly
@@ -422,7 +451,6 @@ fn ReaderForm(revision: Signal<u32>) -> Element {
     let mut height = use_signal(|| inches_text(saved.height, saved.ppi));
     let mut ppi = use_signal(|| saved.ppi.to_string());
     let mut touched = use_signal(|| false);
-    let mut firmware = use_signal(|| saved.firmware);
     let mut locked = use_signal(|| false);
 
     let draft_ppi = ppi().trim().parse::<u32>().unwrap_or(0);
@@ -436,7 +464,6 @@ fn ReaderForm(revision: Signal<u32>) -> Element {
         width: draft_w,
         height: draft_h,
         ppi: draft_ppi,
-        firmware: firmware(),
         setup: setup(),
     };
     let dirty = draft != saved;
@@ -449,6 +476,12 @@ fn ReaderForm(revision: Signal<u32>) -> Element {
     let pixels_now = format!("{draft_w} \u{d7} {draft_h} px");
     let remove_id = current.id.clone();
     let known = device_profiles::known(&current.id);
+    let info = device_profiles::known_info(&current.id);
+    // CrossPoint runs on the Xteink readers; the others (and any reader that
+    // is not on the list, which might be anything) are offered what they came with.
+    let crosspoint_runs = info.is_none_or(|i| i.crosspoint);
+    let note = info.map(|i| i.note).unwrap_or("");
+    let reset_id = current.id.clone();
     let lock_class = if locked() { "btn icon on" } else { "btn icon" };
     let lock_icon = if locked() { "lock" } else { "lock-open" };
     let lock_title = if locked() {
@@ -532,6 +565,9 @@ fn ReaderForm(revision: Signal<u32>) -> Element {
                 }
             }
         }
+        if !note.is_empty() {
+            p { class: "sx-note", "{note}" }
+        }
         div { class: "sx-row",
             div { class: "sx-text",
                 div { class: "sx-label", "Firmware"
@@ -540,9 +576,11 @@ fn ReaderForm(revision: Signal<u32>) -> Element {
             }
             div { class: "sx-control",
                 select {
-                    onchange: move |e| firmware.set(if e.value() == "cross" { Firmware::CrossPoint } else { Firmware::Stock }),
-                    option { value: "cross", selected: firmware() == Firmware::CrossPoint, "CrossPoint" }
-                    option { value: "stock", selected: firmware() == Firmware::Stock, "Stock (the one it came with)" }
+                    onchange: move |e| setup.write().firmware = if e.value() == "cross" { Firmware::CrossPoint } else { Firmware::Stock },
+                    if crosspoint_runs {
+                        option { value: "cross", selected: setup().firmware == Firmware::CrossPoint, "CrossPoint" }
+                    }
+                    option { value: "stock", selected: setup().firmware == Firmware::Stock || !crosspoint_runs, "Stock (the one it came with)" }
                 }
             }
         }
@@ -550,7 +588,7 @@ fn ReaderForm(revision: Signal<u32>) -> Element {
         div { class: "sx-row",
             div { class: "sx-text",
                 div { class: "sx-label", "Export method"
-                    Help { text: "How files can get to this reader. Pick every way that works for it; when you export you choose which one to use." }
+                    Help { text: "How files can get to this reader. Pick every way that works for it; when you export you choose which one to use. For USB, plug the reader in (drive mode) or put its SD card in this computer, and pick the drive on the Export screen." }
                 }
             }
             div { class: "sx-control",
@@ -582,7 +620,6 @@ fn ReaderForm(revision: Signal<u32>) -> Element {
                         oninput: move |e| {
                             let v = e.value();
                             setup.write().wifi_url = (!v.trim().is_empty()).then(|| v.trim().to_string());
-                            wifi_test.set(None);
                         },
                     }
                     button { class: "btn", disabled: testing() || wifi_url_now.trim().is_empty(),
@@ -590,9 +627,10 @@ fn ReaderForm(revision: Signal<u32>) -> Element {
                             let url = wifi_url_to_test.clone();
                             spawn(async move {
                                 testing.set(true);
-                                wifi_test.set(None);
-                                let result = pipeline::export::check_webdav(&url).await;
-                                wifi_test.set(Some(result));
+                                match pipeline::export::check_webdav(&url).await {
+                                    Ok(()) => state.notify("The reader answered."),
+                                    Err(message) => state.error(message),
+                                }
                                 testing.set(false);
                             });
                         },
@@ -600,14 +638,6 @@ fn ReaderForm(revision: Signal<u32>) -> Element {
                     }
                 }
             }
-            {match &*wifi_test.read() {
-                Some(Ok(())) => rsx! { p { class: "sx-note", style: "color: var(--ok)", "The reader answered." } },
-                Some(Err(message)) => rsx! { p { class: "sx-note", style: "color: var(--bad)", "{message}" } },
-                None => rsx! {},
-            }}
-        }
-        if setup().usb {
-            p { class: "sx-note", "For USB, plug the reader in (drive mode) or put its SD card in this computer. You pick the drive on the Export screen." }
         }
         div { class: "sx-row",
             div { class: "sx-text",
@@ -649,9 +679,7 @@ fn ReaderForm(revision: Signal<u32>) -> Element {
                         height.set(inches_text(known.height, known.ppi));
                         ppi.set(known.ppi.to_string());
                         touched.set(false);
-                        firmware.set(Firmware::CrossPoint);
-                        setup.set(ReaderSetup::default());
-                        wifi_test.set(None);
+                        setup.set(default_setup_for(&reset_id));
                     },
                     Icon { name: "rotate-ccw", size: 15 }
                     "Reset to default"
@@ -707,6 +735,7 @@ fn ReaderItem(id: String, on: bool) -> Element {
                     let mut settings = state.settings;
                     settings.write().device = id.clone();
                     state.save_settings();
+                    crate::ui::presets::fit_output_to_reader(state);
                     crate::ui::work::schedule_preview(state, 0);
                 }
             },
@@ -748,7 +777,6 @@ mod tests {
             width,
             height,
             ppi: 220,
-            firmware: Firmware::CrossPoint,
             setup: ReaderSetup::default(),
         }
     }
@@ -773,6 +801,22 @@ mod tests {
     }
 
     #[test]
+    fn a_reader_starts_out_with_what_is_known_of_it() {
+        let x4 = default_setup_for("xteink-x4");
+        assert_eq!(x4.formats, ["XTC", "XTCH", "EPUB"]);
+        assert_eq!(x4.firmware, Firmware::CrossPoint);
+        let kindle = default_setup_for("kindle-paperwhite-12");
+        assert_eq!(kindle.formats, ["EPUB"]);
+        assert_eq!(kindle.firmware, Firmware::Stock, "CrossPoint does not run on it");
+        let mut s = library::Settings::default();
+        add_known(&mut s, device_profiles::known("kobo-libra-2").unwrap()).unwrap();
+        assert_eq!(s.reader_setup().formats, ["EPUB"]);
+        assert_eq!(s.reader_setup().firmware, Firmware::Stock);
+        add_custom(&mut s, "My own").unwrap();
+        assert_eq!(s.reader_setup().firmware, Firmware::Stock);
+    }
+
+    #[test]
     fn a_known_reader_is_added_once_and_chosen() {
         let mut s = library::Settings::default();
         let id = add_known(&mut s, device_profiles::x4()).unwrap();
@@ -787,13 +831,18 @@ mod tests {
     #[test]
     fn typing_lists_the_known_readers_not_yet_added_closest_first() {
         let mut s = library::Settings::default();
-        assert_eq!(known_matches("", &s.devices()).len(), 3);
+        assert_eq!(known_matches("", &s.devices()).len(), device_profiles::builtin().len());
         let names: Vec<_> = known_matches("x4", &s.devices()).into_iter().map(|k| k.name).collect();
         assert_eq!(names, ["Xteink X4 Pro", "Xteink X4"]);
         add_known(&mut s, device_profiles::x4()).unwrap();
         let names: Vec<_> = known_matches("x4", &s.devices()).into_iter().map(|k| k.name).collect();
         assert_eq!(names, ["Xteink X4 Pro"]);
-        assert!(known_matches("kobo", &s.devices()).is_empty());
+        // The maker is part of the name for searching.
+        let kindles = known_matches("kindle", &s.devices());
+        assert!(kindles.len() >= 5 && kindles.iter().all(|k| k.maker == "Amazon"));
+        assert!(known_matches("amazon", &s.devices()).len() == kindles.len());
+        assert!(known_matches("boox palma", &s.devices()).iter().any(|k| k.id == "boox-palma"));
+        assert!(known_matches("zzzz", &s.devices()).is_empty());
     }
 
     #[test]

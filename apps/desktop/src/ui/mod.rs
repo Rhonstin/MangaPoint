@@ -30,7 +30,7 @@ mod workspace;
 
 use crate::backend;
 use crate::state::spawn_forever;
-use crate::state::{AppState, BootState, Modal, ModalAction, Page};
+use crate::state::{AppState, BootState, Modal, ModalAction, Page, ToastKind};
 use dioxus::desktop::tao::event::{Event, WindowEvent};
 use dioxus::desktop::use_wry_event_handler;
 use dioxus::prelude::*;
@@ -52,6 +52,14 @@ pub fn App() -> Element {
     let state = AppState::init();
     use_context_provider(|| state);
 
+    // Dev flag: `-- --toast-demo` shows one of each kind of toast.
+    use_hook(|| {
+        if std::env::args().any(|a| a == "--toast-demo") {
+            state.notify("Reader saved.");
+            state.warn("That drive is almost full: 300 MB left.");
+            state.error("Nothing answered at http://192.168.3.3. Is the reader on?");
+        }
+    });
     // Start the catalog server once, when the app opens.
     use_hook(|| {
         spawn_forever(backend::boot(state, false));
@@ -347,19 +355,39 @@ pub fn ask_enable_browser(state: AppState, then_install: Option<String>) {
 #[component]
 fn ToastHost() -> Element {
     let state = use_context::<AppState>();
-    let notice = state.notice.read().clone();
-    let Some(notice) = notice else { return rsx! {} };
-    let class = if notice.error { "toast error" } else { "toast" };
+    let toasts = state.toasts.read().clone();
+    if toasts.is_empty() {
+        return rsx! {};
+    }
     rsx! {
-        div { class: "{class}",
-            div { class: "grow", "{notice.text}" }
-            button {
-                class: "btn small",
-                onclick: move |_| {
-                    let mut n = state.notice;
-                    n.set(None);
-                },
-                "OK"
+        // The newest sits at the bottom with the older ones stacked behind it;
+        // pointing at the stack spreads them out to read.
+        div {
+            class: "toasts",
+            onmouseenter: move |_| { let mut h = state.toasts_hovered; h.set(true); },
+            onmouseleave: move |_| { let mut h = state.toasts_hovered; h.set(false); },
+            for (i, toast) in toasts.iter().rev().enumerate() {
+                {
+                    let id = toast.id;
+                    let look = match toast.kind {
+                        ToastKind::Success => "success",
+                        ToastKind::Warning => "warning",
+                        ToastKind::Error => "error",
+                    };
+                    rsx! {
+                        div {
+                            key: "{toast.id}",
+                            class: if toast.leaving { "toast {look} leaving" } else { "toast {look}" },
+                            style: "--i: {i}",
+                            role: "status",
+                            cat::ToastCat { look: look.to_string() }
+                            div { class: "toast-text", "{toast.text}" }
+                            button { class: "toast-x", title: "Dismiss", onclick: move |_| state.dismiss_toast(id),
+                                Icon { name: "x", size: 14 }
+                            }
+                        }
+                    }
+                }
             }
         }
     }

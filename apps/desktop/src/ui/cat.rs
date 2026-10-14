@@ -25,6 +25,12 @@ fn color(c: u8) -> &'static str {
         LIGHT => "#e8e8e8",
         PINK => "#f0a3b3",
         EYE => "#050505",
+        b'o' => "#7fd18b",
+        b'w' => "#e3b341",
+        b'x' => "#f08585",
+        b'd' => "#1a1a1a",
+        b'h' => "#f5f5f5",
+        b't' => "#8fb8e8",
         _ => "none",
     }
 }
@@ -456,6 +462,85 @@ fn rects(g: &Grid) -> String {
     out
 }
 
+/// The cat for a toast: pleased with a green tick when it worked, wary with an
+/// amber warning sign, and teary with a red cross when it went wrong. The same
+/// cat as the logo, with a badge by its side.
+pub(super) fn toast_markup(look: &str) -> &'static str {
+    static MARKUPS: OnceLock<[String; 3]> = OnceLock::new();
+    let all = MARKUPS.get_or_init(|| {
+        let make = |closed: bool, badge: fn(&mut Grid), tears: bool| {
+            let mut g: Grid = [[CLEAR; SIZE]; SIZE];
+            badge(&mut g);
+            if tears {
+                for (x, y) in [(11, 15), (11, 16), (20, 15)] {
+                    px(&mut g, x, y, b't');
+                }
+            }
+            format!("{}{}", body_markup(closed), rects(&g))
+        };
+        [
+            make(true, tick_badge, false),
+            make(false, warning_badge, false),
+            make(true, cross_badge, true),
+        ]
+    });
+    match look {
+        "success" => &all[0],
+        "warning" => &all[1],
+        _ => &all[2],
+    }
+}
+
+/// A badge in the bottom right corner, 9 by 9 pixels from (22, 21).
+fn badge(g: &mut Grid, set: impl Fn(i32, i32) -> Option<u8>) {
+    for by in 0..9 {
+        for bx in 0..9 {
+            if let Some(c) = set(bx, by) {
+                px(g, 22 + bx as usize, 21 + by as usize, c);
+            }
+        }
+    }
+}
+
+fn disk(bx: i32, by: i32) -> bool {
+    let (dx, dy) = (bx as f32 - 4.0, by as f32 - 4.0);
+    dx * dx + dy * dy <= 4.6 * 4.6
+}
+
+fn tick_badge(g: &mut Grid) {
+    const TICK: [(i32, i32); 6] = [(2, 4), (3, 5), (4, 6), (5, 5), (6, 4), (7, 3)];
+    badge(g, |x, y| {
+        if TICK.contains(&(x, y)) || TICK.contains(&(x, y - 1)) && x < 6 {
+            Some(b'd')
+        } else {
+            disk(x, y).then_some(b'o')
+        }
+    });
+}
+
+fn warning_badge(g: &mut Grid) {
+    badge(g, |x, y| {
+        let half = y / 2;
+        if (x - 4).abs() > half {
+            return None;
+        }
+        // The exclamation mark.
+        if x == 4 && ((3..=5).contains(&y) || y == 7) {
+            return Some(b'd');
+        }
+        Some(b'w')
+    });
+}
+
+fn cross_badge(g: &mut Grid) {
+    badge(g, |x, y| {
+        if (x == y || x + y == 8) && (2..=6).contains(&x) {
+            return Some(b'h');
+        }
+        disk(x, y).then_some(b'x')
+    });
+}
+
 fn markup() -> &'static str {
     static MARKUP: OnceLock<String> = OnceLock::new();
     MARKUP.get_or_init(|| {
@@ -465,6 +550,21 @@ fn markup() -> &'static str {
         }
         s
     })
+}
+
+/// The cat on a toast: `look` is "success", "warning" or "error".
+#[component]
+pub fn ToastCat(look: String) -> Element {
+    rsx! {
+        svg {
+            class: "toast-cat",
+            width: "52",
+            height: "56",
+            view_box: "6 3 26 28",
+            "aria-hidden": "true",
+            dangerous_inner_html: "{toast_markup(&look)}",
+        }
+    }
 }
 
 #[component]

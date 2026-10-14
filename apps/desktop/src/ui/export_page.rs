@@ -7,7 +7,7 @@
 use super::conversion::ConversionControls;
 use super::devices::ReaderPicker;
 use super::presets;
-use super::widgets::{pick_folder, Chip, Cover, Icon, NoCover};
+use super::widgets::{pick_folder, Chip, Cover, Help, Icon, NoCover};
 use super::work::{
     activate_export_series, add_export_series, load_saved_cover, open_sample, remove_export_series,
     saved_cover_key, schedule_preview, start_export_plan,
@@ -17,7 +17,7 @@ use super::workspace::preview::{switch_chapter, PreviewTab};
 use crate::logic::{self, plural, TargetChoice};
 use crate::state::{AppState, GroupingChoice, JobKind, Modal, ModalAction};
 use dioxus::prelude::*;
-use library::{ConversionSettings, CropRect, DownloadedSeries};
+use library::{ConversionSettings, CropRect, DownloadedSeries, OutputFormat};
 use pipeline::export::removable_drives;
 use std::time::Duration;
 
@@ -628,6 +628,40 @@ fn ChaptersPanel() -> Element {
 
 // ---- right: where it goes and how it is split ------------------------
 
+/// A drive that was found goes into the box that says where the reader is, but
+/// only when the place chosen is not there (nothing chosen yet, or it was
+/// unplugged): a drive picked by hand is never replaced by what turns up.
+fn adopt_found(state: AppState, found: &[pipeline::export::Drive]) {
+    let chosen_is_there = state
+        .settings
+        .peek()
+        .reader_setup()
+        .reader_dir
+        .as_ref()
+        .is_some_and(|d| d.exists());
+    if chosen_is_there {
+        return;
+    }
+    if let Some(drive) = found.first() {
+        let mount = drive.mount.clone();
+        let mut settings = state.settings;
+        settings.write().update_reader_setup(|r| r.reader_dir = Some(mount));
+        state.save_settings();
+    }
+}
+
+const USB_HELP: &str = "Plug the reader in with USB (drive mode), or put its SD card in this computer. It shows up in the box by itself. With more than one drive, Choose picks the one to use.";
+const WIFI_HELP: &str = "Switch on the reader's Wi-Fi file transfer, then type the address it shows. Test checks that it answers.";
+
+/// What a format is, shown behind its question mark.
+fn format_help(output: OutputFormat) -> &'static str {
+    match output {
+        OutputFormat::Xtc => "Black and white pages, made for the Xteink readers. The smallest files, and the quickest to open and turn. The one to pick if you are not sure.",
+        OutputFormat::Xtch => "Four grays instead of two, also for the Xteink readers. Files are twice the size, and the reader is slower and laggier with them, so it is the less recommended choice.",
+        OutputFormat::Epub => "An ordinary e-book that nearly every reader opens: Kindle (through Send to Kindle), Kobo, Boox, PocketBook, and the Xteink too. Each page is a picture the size of the reader's screen, made as small as it can be. Long series are cut into parts of 800 pages.",
+    }
+}
+
 #[component]
 fn SendPanel() -> Element {
     let state = use_context::<AppState>();
@@ -642,14 +676,17 @@ fn SendPanel() -> Element {
                 continue;
             }
             if let Ok(now) = tokio::task::spawn_blocking(removable_drives).await {
+                adopt_found(state, &now);
                 if *drives.peek() != now {
                     drives.set(now);
                 }
             }
         }
     });
-    let mut wifi_test = use_signal(|| None::<Result<(), String>>);
+    // A drive that is already plugged in when the screen opens is taken at once.
+    use_hook(move || adopt_found(state, &drives.peek()));
     let mut testing = use_signal(|| false);
+    let mut choosing = use_signal(|| false);
     let opts = state.export_opts.read().clone();
     let settings = state.settings.read().clone();
     let mut export_opts = state.export_opts;
@@ -689,9 +726,12 @@ fn SendPanel() -> Element {
     let wifi_url = setup.wifi_url.clone().unwrap_or_default();
     let wifi_url_to_test = wifi_url.clone();
     let every_n_valid = opts.every_n.trim().parse::<usize>().is_ok_and(|n| n >= 1);
+    // What the book is made as, and which of the three the reader lists.
+    let current_output = active_series(state).map_or(OutputFormat::Xtc, |s| s.settings.output());
+    let reader_formats = setup.formats.clone();
 
     rsx! {
-        Panel { title: "Send to", icon: "file-down", id: "send", height: 560,
+        Panel { title: "Send to", icon: "file-down", id: "send", height: 740,
             div { class: "px-label", "Reader" }
             ReaderPicker {}
             div { class: "px-label", style: "margin-top: 16px", "Send to" }
@@ -708,6 +748,7 @@ fn SendPanel() -> Element {
                             export_opts.write().target = if setup.usb { TargetChoice::Usb } else { TargetChoice::WiFi };
                             spawn(async move {
                                 if let Ok(now) = tokio::task::spawn_blocking(removable_drives).await {
+                                    adopt_found(state, &now);
                                     drives.set(now);
                                 }
                             });
@@ -740,66 +781,80 @@ fn SendPanel() -> Element {
                         div { class: "seg",
                             button {
                                 class: if via == library::ExportMethod::Usb { "on" } else { "" },
-                                onclick: move |_| export_opts.write().target = TargetChoice::Usb, "USB"
+                                onclick: move |_| export_opts.write().target = TargetChoice::Usb,
+                                "USB"
+                                Help { text: USB_HELP }
                             }
                             button {
                                 class: if via == library::ExportMethod::WiFi { "on" } else { "" },
-                                onclick: move |_| export_opts.write().target = TargetChoice::WiFi, "Wi-Fi"
+                                onclick: move |_| export_opts.write().target = TargetChoice::WiFi,
+                                "Wi-Fi"
+                                Help { text: WIFI_HELP }
                             }
+                        }
+                    } else {
+                        div { class: "px-label way-label",
+                            if via == library::ExportMethod::Usb { "USB" } else { "Wi-Fi" }
+                            Help { text: if via == library::ExportMethod::Usb { USB_HELP } else { WIFI_HELP } }
                         }
                     }
                     {match via {
                         library::ExportMethod::Usb => rsx! {
-                            div { class: "folder-pick",
-                                span { class: "grow folder-path", title: "{reader_text.clone().unwrap_or_default()}",
-                                    if let Some(text) = &reader_text { "{text}" } else { "No place chosen yet" }
+                            div { class: "menu-anchor",
+                                div { class: "folder-pick",
+                                    span { class: "grow folder-path", title: "{reader_text.clone().unwrap_or_default()}",
+                                        if let Some(text) = &reader_text { "{text}" } else { "No drive found yet" }
+                                    }
+                                    button { class: "btn small", onclick: move |_| choosing.set(!choosing()), "Choose…" }
                                 }
-                                button { class: "btn small",
-                                    onclick: move |_| {
-                                        let start = reader_dir.clone();
-                                        spawn(async move {
-                                            if let Some(dir) = pick_folder("Where is your reader?", start).await {
-                                                let mut s = state.settings;
-                                                s.write().update_reader_setup(|r| r.reader_dir = Some(dir));
-                                                state.save_settings();
+                                if choosing() {
+                                    div { class: "menu-scrim", onclick: move |_| choosing.set(false) }
+                                    div { class: "menu down",
+                                        for d in drives.read().iter() {
+                                            {
+                                                let mount = d.mount.clone();
+                                                let on = reader_text.as_deref() == Some(mount.display().to_string().as_str());
+                                                let name = if d.name.trim().is_empty() { "Drive".to_string() } else { d.name.clone() };
+                                                let label = format!("{} · {name} · {} free", mount.display(), logic::human_bytes(d.available_bytes));
+                                                rsx! {
+                                                    button {
+                                                        key: "{label}", class: "menu-item",
+                                                        onclick: move |_| {
+                                                            let mut s = state.settings;
+                                                            s.write().update_reader_setup(|r| r.reader_dir = Some(mount.clone()));
+                                                            state.save_settings();
+                                                            choosing.set(false);
+                                                        },
+                                                        Icon { name: "hard-drive", size: 15 }
+                                                        span { class: "grow", "{label}" }
+                                                        if on { Icon { name: "check", size: 14 } }
+                                                    }
+                                                }
                                             }
-                                        });
-                                    },
-                                    "Choose…"
+                                        }
+                                        if drives.read().is_empty() {
+                                            div { class: "menu-empty", "No drive found yet" }
+                                        }
+                                        button { class: "menu-item",
+                                            onclick: move |_| {
+                                                choosing.set(false);
+                                                let start = reader_dir.clone();
+                                                spawn(async move {
+                                                    if let Some(dir) = pick_folder("Where is your reader?", start).await {
+                                                        let mut s = state.settings;
+                                                        s.write().update_reader_setup(|r| r.reader_dir = Some(dir));
+                                                        state.save_settings();
+                                                    }
+                                                });
+                                            },
+                                            Icon { name: "folder-open", size: 15 }
+                                            "Browse for a folder…"
+                                        }
+                                    }
                                 }
                             }
                             if reader_text.is_some() && !reader_there {
                                 div { class: "reader-note bad", "That place is not there now. Plug the reader in, or choose another." }
-                            }
-                            if drives.read().is_empty() {
-                                div { class: "reader-note", "Plug the reader in with USB (drive mode), or put its SD card in this computer, and it shows up here." }
-                            } else {
-                                div { class: "px-label", style: "margin-top: 10px", "Found" }
-                                div { class: "drive-list",
-                                    for d in drives.read().iter() {
-                                        {
-                                            let mount = d.mount.clone();
-                                            let on = reader_text.as_deref() == Some(mount.display().to_string().as_str());
-                                            let name = if d.name.trim().is_empty() { "Drive".to_string() } else { d.name.clone() };
-                                            let label = format!("{} · {name} · {} free", mount.display(), logic::human_bytes(d.available_bytes));
-                                            rsx! {
-                                                button {
-                                                    key: "{label}",
-                                                    class: if on { "drive on" } else { "drive" },
-                                                    title: "Send files to this drive",
-                                                    onclick: move |_| {
-                                                        let mut s = state.settings;
-                                                        s.write().update_reader_setup(|r| r.reader_dir = Some(mount.clone()));
-                                                        state.save_settings();
-                                                    },
-                                                    Icon { name: "hard-drive", size: 15 }
-                                                    span { class: "grow", "{label}" }
-                                                    if on { Icon { name: "check", size: 14 } }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
                             }
                         },
                         library::ExportMethod::WiFi => rsx! {
@@ -813,7 +868,6 @@ fn SendPanel() -> Element {
                                             let mut settings = state.settings;
                                             settings.write().update_reader_setup(|r| r.wifi_url = (!v.is_empty()).then_some(v));
                                             state.save_settings();
-                                            wifi_test.set(None);
                                         },
                                     }
                                     button { class: "btn small", disabled: testing() || wifi_url.trim().is_empty(),
@@ -821,9 +875,10 @@ fn SendPanel() -> Element {
                                             let url = wifi_url_to_test.clone();
                                             spawn(async move {
                                                 testing.set(true);
-                                                wifi_test.set(None);
-                                                let result = pipeline::export::check_webdav(&url).await;
-                                                wifi_test.set(Some(result));
+                                                match pipeline::export::check_webdav(&url).await {
+                                                    Ok(()) => state.notify("The reader answered."),
+                                                    Err(message) => state.error(message),
+                                                }
                                                 testing.set(false);
                                             });
                                         },
@@ -835,11 +890,6 @@ fn SendPanel() -> Element {
                                 Icon { name: "triangle-alert", size: 14 }
                                 " Wi-Fi is slow: a whole series can take an hour or more to send. We recommend USB, or Wi-Fi for a few chapters at a time."
                             }
-                            {match &*wifi_test.read() {
-                                Some(Ok(())) => rsx! { div { class: "reader-note good", "The reader answered." } },
-                                Some(Err(message)) => rsx! { div { class: "reader-note bad", "{message}" } },
-                                None => rsx! { div { class: "reader-note", "Switch on the reader's Wi-Fi file transfer first." } },
-                            }}
                         },
                     }}
                     label { class: "px-field",
@@ -854,6 +904,31 @@ fn SendPanel() -> Element {
                                     state.save_settings();
                                 }
                             },
+                        }
+                    }
+                }
+            }
+
+            // What the book is made as. One of three; each has its explanation
+            // behind a question mark. The ones the reader does not list are dim.
+            div { class: "px-label", style: "margin-top: 16px", "Format" }
+            div { class: "seg",
+                for output in OutputFormat::ALL {
+                    {
+                        let listed = reader_formats.iter().any(|f| f.eq_ignore_ascii_case(output.label()));
+                        let class = match (output == current_output, listed) {
+                            (true, _) => "on",
+                            (false, true) => "",
+                            (false, false) => "dim",
+                        };
+                        rsx! {
+                            button {
+                                key: "{output.label()}", class,
+                                title: if listed { "" } else { "This reader does not list this format" },
+                                onclick: move |_| presets::set_output(state, output),
+                                "{output.label()}"
+                                Help { text: format_help(output) }
+                            }
                         }
                     }
                 }
@@ -926,7 +1001,7 @@ fn ExportFooter() -> Element {
         chapters += included.len();
         let p: usize = included.iter().map(|c| c.pages).sum();
         pages += p;
-        bytes += logic::estimate_export_bytes(p, series.settings.format);
+        bytes += logic::estimate_output_bytes(p, series.settings.output());
     }
     let every_n_valid = opts.every_n.trim().parse::<usize>().is_ok_and(|n| n >= 1);
 

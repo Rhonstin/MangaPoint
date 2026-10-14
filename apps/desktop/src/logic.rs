@@ -403,6 +403,17 @@ pub fn estimate_export_bytes(pages: usize, format: converter::xtc::Format) -> u6
     pages as u64 * per_page
 }
 
+/// A rough size of a book as `output`: the XTC and XTCH figures are exact for a
+/// 480 x 800 screen; a page of an EPUB depends on the drawing, and about 24 KB
+/// is what manga comes to.
+pub fn estimate_output_bytes(pages: usize, output: library::OutputFormat) -> u64 {
+    match output {
+        library::OutputFormat::Xtc => estimate_export_bytes(pages, converter::xtc::Format::Xtc),
+        library::OutputFormat::Xtch => estimate_export_bytes(pages, converter::xtc::Format::Xtch),
+        library::OutputFormat::Epub => pages as u64 * 24_000,
+    }
+}
+
 // ---- Wording ---------------------------------------------------------------
 
 pub fn verdict_label(v: Verdict) -> &'static str {
