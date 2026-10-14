@@ -10,7 +10,7 @@ use library::Choice;
 use sources::{Requires, SourceManager};
 
 #[component]
-pub fn Setup() -> Element {
+pub fn Setup(#[props(default = false)] onboarding: bool) -> Element {
     let state = use_context::<AppState>();
 
     let offers = use_resource(move || async move {
@@ -53,7 +53,11 @@ pub fn Setup() -> Element {
         s.set(sources_state);
         state.save_sources();
         tracing::info!("First-run setup finished: {installed} source(s) installed");
-        state.go(Page::Search);
+        if onboarding {
+            super::onboarding::set_step(state, library::SetupStep::Reader);
+        } else {
+            state.go(Page::Search);
+        }
     };
 
     let rows = match &*offers.read() {
@@ -139,6 +143,13 @@ pub fn Setup() -> Element {
                 if busy { "Installing…" } else { "Install all recommended" }
             }
             div { class: "grow" }
+            if onboarding {
+                button {
+                    class: "btn ghost onboard-skip",
+                    onclick: move |_| super::onboarding::set_step(state, library::SetupStep::Reader),
+                    "Skip this step"
+                }
+            }
             button {
                 class: "btn primary",
                 disabled: !installed_any,

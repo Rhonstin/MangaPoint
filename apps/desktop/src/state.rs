@@ -523,11 +523,8 @@ impl AppState {
             Signal::new_in_scope(value, ScopeId::ROOT)
         }
         let sources: SourceState = JsonFile::new(paths().sources_file()).load();
-        let first_page = if sources.onboarding_done {
-            Page::Search
-        } else {
-            Page::Setup
-        };
+        // The first run is walked through before the app shows; see `onboarding`.
+        let first_page = Page::Search;
         Self {
             engine_installed: catalog::provision::locate_install(
                 &paths()
@@ -541,7 +538,8 @@ impl AppState {
             }),
             services: sig(None),
             settings: sig({
-                let settings = JsonFile::<Settings>::new(paths().settings_file()).load();
+                let mut settings = JsonFile::<Settings>::new(paths().settings_file()).load();
+                settings.list_old_readers();
                 apply_library_dirs(&settings);
                 settings
             }),

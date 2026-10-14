@@ -114,20 +114,162 @@ fn MultiSeg(items: Vec<(String, bool)>, on_toggle: EventHandler<usize>) -> Eleme
     }
 }
 
-/// A name for a new reader that no other reader has.
-fn unused_name(existing: &[DeviceProfile]) -> String {
-    let taken = |name: &str| {
-        existing
-            .iter()
-            .any(|d| d.name.trim().eq_ignore_ascii_case(name))
-    };
-    let mut name = "My reader".to_string();
-    let mut n = 2;
-    while taken(&name) {
-        name = format!("My reader {n}");
-        n += 1;
+/// Add a known reader to the user's own and choose it. One already added is
+/// just chosen.
+fn add_known(settings: &mut library::Settings, known: DeviceProfile) -> Result<String, DeviceError> {
+    let others = settings.devices();
+    if !others.iter().any(|d| d.id == known.id) {
+        let mut reader = known.clone();
+        reader.builtin = false;
+        reader.validate(&others)?;
+        settings.custom_devices.push(reader);
     }
-    name
+    settings.device = known.id.clone();
+    Ok(known.id)
+}
+
+/// Make a reader of the user's own, with a size to be set afterwards, and
+/// choose it.
+fn add_custom(settings: &mut library::Settings, name: &str) -> Result<String, DeviceError> {
+    let reader = DeviceProfile::custom(&settings.devices(), name, 480, 800)?;
+    let id = reader.id.clone();
+    settings.custom_devices.push(reader);
+    settings.device = id.clone();
+    Ok(id)
+}
+
+/// What the typed text points at: the known readers not yet added that answer
+/// it, the closest first.
+fn known_matches(query: &str, have: &[DeviceProfile]) -> Vec<DeviceProfile> {
+    let mut found: Vec<(usize, DeviceProfile)> = device_profiles::builtin()
+        .into_iter()
+        .filter(|k| !have.iter().any(|d| d.id == k.id))
+        .filter_map(|k| device_profiles::match_rank(query, &k.name).map(|r| (r, k)))
+        .collect();
+    found.sort_by_key(|(rank, _)| *rank);
+    found.into_iter().map(|(_, k)| k).collect()
+}
+
+/// A search box for adding a reader. The known readers that answer what is
+/// typed are listed under it; Enter takes the closest, and when nothing
+/// answers it makes a reader of your own with the typed name (shown in the
+/// list as a row with a plus).
+#[component]
+pub fn DeviceAdder(
+    on_added: EventHandler<String>,
+    /// Called when the box is left empty, so the caller can put its button back.
+    #[props(default)]
+    on_close: Option<EventHandler<()>>,
+    /// Keep the list open (the first-run setup), instead of while the box has focus.
+    #[props(default = false)]
+    always_open: bool,
+) -> Element {
+    let state = use_context::<AppState>();
+    let mut text = use_signal(String::new);
+    let mut focused = use_signal(|| false);
+    let have = state.settings.read().devices();
+    let query = text().trim().to_string();
+    let matches = known_matches(&query, &have);
+    let same_as_known = device_profiles::builtin()
+        .iter()
+        .any(|k| k.name.trim().eq_ignore_ascii_case(&query));
+    let can_create = !query.is_empty() && !same_as_known && matches.is_empty();
+    let show_create = !query.is_empty() && !same_as_known;
+    let open = focused() || always_open;
+
+    let mut finish = move |result: Result<String, DeviceError>| match result {
+        Ok(id) => {
+            state.save_settings();
+            text.set(String::new());
+            on_added.call(id);
+        }
+        Err(e) => state.error(e.to_string()),
+    };
+    let mut add_known_now = move |k: DeviceProfile| {
+        let mut settings = state.settings;
+        let result = add_known(&mut settings.write(), k);
+        finish(result);
+    };
+    let mut add_custom_now = move |name: String| {
+        let mut settings = state.settings;
+        let result = add_custom(&mut settings.write(), &name);
+        finish(result);
+    };
+    let first = matches.first().cloned();
+    let typed = query.clone();
+    let typed_for_row = query.clone();
+
+    rsx! {
+        div { class: "adder",
+            div { class: if focused() { "adder-box focused" } else { "adder-box" },
+                Icon { name: "search", size: 15 }
+                input {
+                    r#type: "text", value: "{text}", maxlength: "40", spellcheck: "false",
+                    placeholder: "Search readers, or type a name",
+                    "aria-label": "Add a reader",
+                    onmounted: move |e| {
+                        if !always_open {
+                            spawn(async move { let _ = e.set_focus(true).await; });
+                        }
+                    },
+                    onfocus: move |_| focused.set(true),
+                    onblur: move |_| {
+                        focused.set(false);
+                        if text.peek().trim().is_empty() {
+                            if let Some(close) = on_close { close.call(()); }
+                        }
+                    },
+                    oninput: move |e| { text.set(e.value()); focused.set(true); },
+                    onkeydown: move |e| {
+                        if e.key() == Key::Enter {
+                            e.prevent_default();
+                            if let Some(k) = first.clone() {
+                                add_known_now(k);
+                            } else if !typed.is_empty() {
+                                add_custom_now(typed.clone());
+                            }
+                        } else if e.key() == Key::Escape {
+                            text.set(String::new());
+                            focused.set(false);
+                            if let Some(close) = on_close { close.call(()); }
+                        }
+                    },
+                }
+            }
+            if open {
+                div { class: "adder-list",
+                    for k in matches.iter().cloned() {
+                        button {
+                            key: "{k.id}", class: "adder-opt", r#type: "button",
+                            // Pressed before the box loses focus, so the list stays until it is used.
+                            onmousedown: {
+                                let k = k.clone();
+                                move |e| { e.prevent_default(); add_known_now(k.clone()); }
+                            },
+                            Icon { name: "hard-drive", size: 15 }
+                            span { class: "grow", "{k.name}" }
+                            span { class: "px-size", "{k.width} \u{d7} {k.height} px" }
+                        }
+                    }
+                    if show_create {
+                        button {
+                            class: "adder-opt create", r#type: "button",
+                            onmousedown: {
+                                let name = typed_for_row.clone();
+                                move |e| { e.prevent_default(); add_custom_now(name.clone()); }
+                            },
+                            Icon { name: "plus", size: 15 }
+                            span { class: "grow", "Create \u{201c}{typed_for_row}\u{201d} as your own reader" }
+                            if can_create { span { class: "px-size", "Enter" } }
+                        }
+                    }
+                    if matches.is_empty() && !show_create {
+                        div { class: "adder-empty", "Every known reader is added. Type a name to make your own." }
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// The other edge of a screen when one edge is typed and the shape is kept.
@@ -149,36 +291,21 @@ struct ReaderDraft {
     setup: ReaderSetup,
 }
 
-/// Save a draft over the chosen reader. A built-in reader whose size changes
-/// is copied into a reader of your own, which is then chosen. Nothing changes
-/// if the result is not allowed.
+/// Save a draft over the chosen reader. Nothing changes if the result is not
+/// allowed.
 fn apply_reader(settings: &mut library::Settings, draft: &ReaderDraft) -> Result<(), DeviceError> {
     let others = settings.devices();
     let base = settings.device_profile();
-    let id = if base.builtin {
-        if (draft.width, draft.height) == (base.width, base.height) {
-            base.id.clone()
-        } else {
-            let copy =
-                DeviceProfile::custom(&others, &unused_name(&others), draft.width, draft.height)?;
-            let id = copy.id.clone();
-            settings.device = id.clone();
-            settings.custom_devices.push(copy);
-            id
-        }
-    } else {
-        let mut updated = base.clone();
-        updated.name = draft.name.trim().to_string();
-        updated.width = draft.width;
-        updated.height = draft.height;
-        updated.validate(&others)?;
-        if let Some(slot) = settings.custom_devices.iter_mut().find(|d| d.id == base.id) {
-            *slot = updated;
-        }
-        base.id.clone()
-    };
+    let mut updated = base.clone();
+    updated.name = draft.name.trim().to_string();
+    updated.width = draft.width;
+    updated.height = draft.height;
+    updated.validate(&others)?;
+    if let Some(slot) = settings.custom_devices.iter_mut().find(|d| d.id == base.id) {
+        *slot = updated;
+    }
     settings.firmware = draft.firmware;
-    settings.reader_setups.insert(id, draft.setup.clone());
+    settings.reader_setups.insert(base.id, draft.setup.clone());
     Ok(())
 }
 
@@ -191,13 +318,16 @@ pub fn DevicesEditor() -> Element {
     let devices = s.devices();
     let current = s.device_profile();
     let form_key = format!("{}-{}", current.id, revision());
+    let mut adding = use_signal(|| false);
+    let devices_empty = s.devices().is_empty();
+    let chosen = current.id.clone();
 
     rsx! {
         div { class: "pills", style: "margin-bottom: 18px",
             for d in devices {
                 {
                     let id = d.id.clone();
-                    let on = d.id == s.device;
+                    let on = d.id == chosen;
                     rsx! {
                         button {
                             key: "{d.id}",
@@ -212,29 +342,27 @@ pub fn DevicesEditor() -> Element {
                     }
                 }
             }
-            button { class: "pill add", title: "Add a reader with a different screen",
-                onclick: move |_| {
-                    // A new reader appears at once, a copy of this one; rename it
-                    // and set its size below.
-                    let mut settings = state.settings;
-                    {
-                        let mut st = settings.write();
-                        let all = st.devices();
-                        let base = st.device_profile();
-                        if let Ok(d) = DeviceProfile::custom(&all, &unused_name(&all), base.width, base.height) {
-                            st.device = d.id.clone();
-                            st.custom_devices.push(d);
-                        }
-                    }
-                    state.save_settings();
-                },
-                Icon { name: "plus", size: 14 }
-                "Add device"
+            if adding() {
+                DeviceAdder {
+                    on_added: move |_| adding.set(false),
+                    on_close: move |_| adding.set(false),
+                }
+            } else {
+                button { class: "pill add", title: "Add a reader",
+                    onclick: move |_| adding.set(true),
+                    Icon { name: "plus", size: 14 }
+                    "Add device"
+                }
             }
         }
+        if devices_empty {
+            p { class: "sx-note", "No reader yet. Add one so pages are made at the right size for it." }
+        }
         // Keyed, so choosing another reader (or saving) starts the form afresh.
-        for key in [form_key] {
-            ReaderForm { key: "{key}", revision }
+        if !devices_empty {
+            for key in [form_key] {
+                ReaderForm { key: "{key}", revision }
+            }
         }
     }
 }
@@ -245,7 +373,6 @@ fn ReaderForm(revision: Signal<u32>) -> Element {
     let state = use_context::<AppState>();
     let s = state.settings.read().clone();
     let current = s.device_profile();
-    let editable = !current.builtin;
     let saved = ReaderDraft {
         name: current.name.clone(),
         width: current.width,
@@ -274,6 +401,7 @@ fn ReaderForm(revision: Signal<u32>) -> Element {
     let wifi_url_to_test = wifi_url_now.clone();
     let (w0, h0) = (saved.width, saved.height);
     let remove_id = current.id.clone();
+    let known = device_profiles::known(&current.id);
     let lock_class = if locked() { "btn icon on" } else { "btn icon" };
     let lock_icon = if locked() { "lock" } else { "lock-open" };
     let lock_title = if locked() {
@@ -285,21 +413,17 @@ fn ReaderForm(revision: Signal<u32>) -> Element {
 
     rsx! {
         div { class: "reader-line",
-            if editable {
-                input {
-                    class: "title-input", r#type: "text", maxlength: "40", value: "{name}",
-                    title: "Click to rename this reader", "aria-label": "Reader name",
-                    oninput: move |e| name.set(e.value()),
-                }
-            } else {
-                div { class: "title-input fixed", title: "A built-in reader keeps its name", "{current.name}" }
+            input {
+                class: "title-input", r#type: "text", maxlength: "40", value: "{name}",
+                title: "Click to rename this reader", "aria-label": "Reader name",
+                oninput: move |e| name.set(e.value()),
             }
         }
 
         div { class: "sx-row",
             div { class: "sx-text",
                 div { class: "sx-label", "Screen size"
-                    Help { text: "The size of the reader's screen in pixels (dots), as its maker lists it. Pages are made exactly this size, so nothing is scaled again on the reader. Changing the size of a built-in reader saves a reader of your own." }
+                    Help { text: "The size of the reader's screen in pixels (dots), as its maker lists it. Pages are made exactly this size, so nothing is scaled again on the reader." }
                 }
             }
             div { class: "sx-control",
@@ -454,21 +578,35 @@ fn ReaderForm(revision: Signal<u32>) -> Element {
         }
 
         div { class: "form-footer",
-            if editable {
-                button { class: "btn danger",
-                    title: "Series made for it keep their settings. Your Xteink X4 Pro is chosen instead.",
+            button { class: "btn danger",
+                title: "Series made for it keep their settings.",
+                onclick: move |_| {
+                    let mut settings = state.settings;
+                    {
+                        let mut st = settings.write();
+                        st.custom_devices.retain(|d| d.id != remove_id);
+                        st.device_presets.remove(&remove_id);
+                        st.reader_setups.remove(&remove_id);
+                        st.device = st.custom_devices.first().map(|d| d.id.clone()).unwrap_or_default();
+                    }
+                    state.save_settings();
+                },
+                Icon { name: "trash", size: 15 }
+                "Remove this reader"
+            }
+            if let Some(known) = known {
+                button { class: "btn",
+                    title: "Put the name, size and file settings back to how this reader comes. Nothing is kept until you press Save.",
                     onclick: move |_| {
-                        let mut settings = state.settings;
-                        {
-                            let mut st = settings.write();
-                            st.custom_devices.retain(|d| d.id != remove_id);
-                            st.device_presets.remove(&remove_id);
-                            st.device = device_profiles::X4_PRO_ID.into();
-                        }
-                        state.save_settings();
+                        name.set(known.name.clone());
+                        width.set(known.width.to_string());
+                        height.set(known.height.to_string());
+                        firmware.set(Firmware::CrossPoint);
+                        setup.set(ReaderSetup::default());
+                        wifi_test.set(None);
                     },
-                    Icon { name: "trash", size: 15 }
-                    "Remove this reader"
+                    Icon { name: "rotate-ccw", size: 15 }
+                    "Reset to default"
                 }
             }
             span { class: "grow" }
@@ -538,10 +676,11 @@ fn ReaderItem(id: String, on: bool) -> Element {
 pub fn ReaderPicker() -> Element {
     let state = use_context::<AppState>();
     let s = state.settings.read().clone();
+    let chosen = s.device_profile().id;
     rsx! {
         div { class: "px-list px-scroll",
             for d in s.devices() {
-                ReaderItem { key: "{d.id}", id: d.id.clone(), on: d.id == s.device }
+                ReaderItem { key: "{d.id}", id: d.id.clone(), on: d.id == chosen }
             }
         }
         button { class: "px-new", style: "margin-top: 6px; width: 100%", title: "Readers are added in Settings",
@@ -555,30 +694,6 @@ pub fn ReaderPicker() -> Element {
 mod tests {
     use super::*;
 
-    fn custom(name: &str) -> DeviceProfile {
-        let mut device = device_profiles::x4();
-        device.name = name.to_string();
-        device
-    }
-
-    #[test]
-    fn a_new_reader_is_named_after_the_first_free_number() {
-        assert_eq!(unused_name(&[]), "My reader");
-        assert_eq!(unused_name(&[custom("My reader")]), "My reader 2");
-        assert_eq!(
-            unused_name(&[custom("my reader"), custom(" My reader 2 ")]),
-            "My reader 3",
-            "case and spaces do not make a name different"
-        );
-    }
-
-    #[test]
-    fn a_locked_shape_follows_the_size_typed() {
-        assert_eq!(keep_shape(240, 480, 800), 400);
-        assert_eq!(keep_shape(500, 480, 800), 833);
-        assert_eq!(keep_shape(100, 0, 800), 800, "no old size to follow");
-    }
-
     fn draft(name: &str, width: u32, height: u32) -> ReaderDraft {
         ReaderDraft {
             name: name.into(),
@@ -590,28 +705,58 @@ mod tests {
     }
 
     #[test]
-    fn changing_a_built_in_readers_size_saves_a_copy_and_chooses_it() {
-        let mut s = library::Settings::default();
-        let before = s.devices().len();
-        let d = draft("Xteink X4 Pro", 240, 400);
-        apply_reader(&mut s, &d).unwrap();
-        assert_eq!(s.devices().len(), before + 1);
-        let chosen = s.device_profile();
-        assert!(!chosen.builtin);
-        assert_eq!((chosen.width, chosen.height), (240, 400));
+    fn a_locked_shape_follows_the_size_typed() {
+        assert_eq!(keep_shape(240, 480, 800), 400);
+        assert_eq!(keep_shape(500, 480, 800), 833);
+        assert_eq!(keep_shape(100, 0, 800), 800, "no old size to follow");
     }
 
     #[test]
-    fn a_custom_reader_is_changed_in_place_and_a_bad_size_changes_nothing() {
+    fn a_known_reader_is_added_once_and_chosen() {
         let mut s = library::Settings::default();
-        apply_reader(&mut s, &draft("x", 240, 400)).unwrap();
-        let id = s.device.clone();
+        let id = add_known(&mut s, device_profiles::x4()).unwrap();
+        assert_eq!((s.devices().len(), s.device.as_str()), (1, id.as_str()));
+        s.device = String::new();
+        add_known(&mut s, device_profiles::x4()).unwrap();
+        assert_eq!(s.devices().len(), 1, "not added twice");
+        assert_eq!(s.device, id);
+        assert!(!s.devices()[0].builtin);
+    }
+
+    #[test]
+    fn typing_lists_the_known_readers_not_yet_added_closest_first() {
+        let mut s = library::Settings::default();
+        assert_eq!(known_matches("", &s.devices()).len(), 3);
+        let names: Vec<_> = known_matches("x4", &s.devices()).into_iter().map(|k| k.name).collect();
+        assert_eq!(names, ["Xteink X4 Pro", "Xteink X4"]);
+        add_known(&mut s, device_profiles::x4()).unwrap();
+        let names: Vec<_> = known_matches("x4", &s.devices()).into_iter().map(|k| k.name).collect();
+        assert_eq!(names, ["Xteink X4 Pro"]);
+        assert!(known_matches("kobo", &s.devices()).is_empty());
+    }
+
+    #[test]
+    fn a_typed_name_makes_a_reader_of_your_own() {
+        let mut s = library::Settings::default();
+        let id = add_custom(&mut s, "  Kobo Nia ").unwrap();
+        assert_eq!(s.device, id);
+        let made = s.device_profile();
+        assert_eq!((made.name.as_str(), made.width, made.height), ("Kobo Nia", 480, 800));
+        assert!(add_custom(&mut s, "kobo nia").is_err(), "names are not shared");
+        assert!(add_custom(&mut s, "  ").is_err());
+    }
+
+    #[test]
+    fn a_reader_is_changed_in_place_and_a_bad_size_changes_nothing() {
+        let mut s = library::Settings::default();
+        add_known(&mut s, device_profiles::x4_pro()).unwrap();
         apply_reader(&mut s, &draft("  Travel  ", 300, 500)).unwrap();
         let now = s.device_profile();
         assert_eq!(
             (now.id.as_str(), now.name.as_str(), now.width),
-            (id.as_str(), "Travel", 300)
+            (device_profiles::X4_PRO_ID, "Travel", 300)
         );
+        assert_eq!(s.devices().len(), 1);
         let before = s.clone();
         assert!(apply_reader(&mut s, &draft("Travel", 5, 500)).is_err());
         assert_eq!(s.device_profile().width, before.device_profile().width);

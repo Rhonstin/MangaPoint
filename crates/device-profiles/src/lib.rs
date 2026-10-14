@@ -119,9 +119,40 @@ pub fn x3() -> DeviceProfile {
     }
 }
 
-/// The devices that ship with the app.
+/// The readers the app knows: what you can pick from when adding one. Adding
+/// one copies it, so it is then yours to change or remove.
 pub fn builtin() -> Vec<DeviceProfile> {
     vec![x4_pro(), x4(), x3()]
+}
+
+/// A known reader by id, as the app lists it.
+pub fn known(id: &str) -> Option<DeviceProfile> {
+    builtin().into_iter().find(|p| p.id == id)
+}
+
+/// How well `name` answers what was typed: `None` if it does not, otherwise
+/// smaller is better. Case, spaces and punctuation do not matter, and every
+/// word typed has to be in the name.
+pub fn match_rank(query: &str, name: &str) -> Option<usize> {
+    let squash = |s: &str| -> String {
+        s.chars()
+            .filter(|c| c.is_alphanumeric())
+            .flat_map(char::to_lowercase)
+            .collect()
+    };
+    let whole = squash(name);
+    let q = squash(query);
+    if q.is_empty() {
+        return Some(0);
+    }
+    if let Some(at) = whole.find(&q) {
+        return Some(at);
+    }
+    let words: Vec<String> = query.split_whitespace().map(squash).filter(|w| !w.is_empty()).collect();
+    if !words.is_empty() && words.iter().all(|w| whole.contains(w.as_str())) {
+        return Some(1000);
+    }
+    None
 }
 
 /// Why a custom device was refused.
@@ -167,7 +198,7 @@ impl DeviceProfile {
             builtin: false,
             support: SupportTable::UNKNOWN,
         };
-        profile.validate(&all(existing))?;
+        profile.validate(existing)?;
         Ok(profile)
     }
 
@@ -203,26 +234,21 @@ impl DeviceProfile {
     }
 }
 
-/// Find a device in `custom` or the built-ins. Built-ins are listed first, so
-/// a custom device can never shadow one.
+/// Find one of the user's readers.
 pub fn find(id: &str, custom: &[DeviceProfile]) -> Option<DeviceProfile> {
-    builtin()
-        .into_iter()
-        .chain(custom.iter().cloned().map(|mut c| {
-            c.builtin = false;
-            c
-        }))
-        .find(|p| p.id == id)
+    all(custom).into_iter().find(|p| p.id == id)
 }
 
-/// Every device: built-ins, then the user's own.
+/// Every reader the user has.
 pub fn all(custom: &[DeviceProfile]) -> Vec<DeviceProfile> {
-    let mut out = builtin();
-    out.extend(custom.iter().cloned().map(|mut c| {
-        c.builtin = false;
-        c
-    }));
-    out
+    custom
+        .iter()
+        .cloned()
+        .map(|mut c| {
+            c.builtin = false;
+            c
+        })
+        .collect()
 }
 
 /// Settings files written before devices became data stored the enum's name.
@@ -265,16 +291,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn built_ins_are_found_by_id() {
+    fn known_readers_are_found_by_id_and_nobody_has_any_to_begin_with() {
         for p in builtin() {
-            assert_eq!(find(&p.id, &[]), Some(p));
+            assert_eq!(known(&p.id), Some(p));
         }
-        assert_eq!(find("nope", &[]), None);
+        assert_eq!(known("nope"), None);
+        assert_eq!(find(X4_ID, &[]), None);
+        let mine = vec![x4()];
+        assert_eq!(find(X4_ID, &mine).map(|p| p.builtin), Some(false));
+    }
+
+    #[test]
+    fn typing_finds_the_closest_reader() {
+        assert_eq!(match_rank("x4", "Xteink X4 Pro"), Some(6));
+        assert!(match_rank("x4 pro", "Xteink X4 Pro").is_some());
+        assert_eq!(match_rank("xteink", "Xteink X3"), Some(0));
+        assert_eq!(match_rank("PRO x4", "Xteink X4 Pro"), Some(1000));
+        assert_eq!(match_rank("kobo", "Xteink X4"), None);
+        assert_eq!(match_rank("", "Anything"), Some(0));
     }
 
     #[test]
     fn sizes_match_the_spec_sheets() {
-        let size = |id| find(id, &[]).map(|p| (p.width, p.height));
+        let size = |id| known(id).map(|p| (p.width, p.height));
         assert_eq!(size(X4_ID), Some((480, 800)));
         assert_eq!(size(X4_PRO_ID), Some((480, 800)), "same panel as the X4");
         assert_eq!(size(X3_ID), Some((528, 792)));
@@ -314,20 +353,10 @@ mod tests {
             DeviceError::BadSize
         );
         assert_eq!(
-            e(DeviceProfile::custom(&[], "xteink x4", 480, 800)),
+            e(DeviceProfile::custom(&[x4()], "xteink x4", 480, 800)),
             DeviceError::NameTaken,
-            "a custom device cannot reuse a built-in's name"
+            "two readers cannot share a name"
         );
-    }
-
-    #[test]
-    fn a_custom_device_cannot_shadow_a_built_in() {
-        let mut fake = x4();
-        fake.name = "Sneaky".into();
-        fake.width = 100;
-        let found = find(X4_ID, &[fake]).unwrap();
-        assert_eq!(found.width, 480);
-        assert!(found.builtin);
     }
 
     #[test]

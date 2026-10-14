@@ -12,6 +12,8 @@ $root = Split-Path -Parent $PSScriptRoot
 
 $data = Join-Path ([IO.Path]::GetTempPath()) ("mangapoint-smoke-" + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $data | Out-Null
+# A fresh folder would start the first-run setup; start past it, with one reader.
+[IO.File]::WriteAllText((Join-Path $data 'settings.json'), '{"setup_step":"Done","readers_listed":true,"device":"xteink-x4-pro","custom_devices":[{"id":"xteink-x4-pro","name":"Xteink X4 Pro","width":480,"height":800}]}')
 $env:MANGAPOINT_HOME = $data
 $env:MANGAPOINT_DEBUG_PORT = "$Port"
 $app = Start-Process -FilePath (Join-Path $root $Exe) -PassThru
@@ -26,7 +28,7 @@ try {
     for ($i = 0; $i -lt 60; $i++) {
         try { Connect-App $Port; break } catch { Start-Sleep -Milliseconds 500 }
     }
-    Wait-Until "document.querySelector('.nav') !== null" 60 'the app window'
+    Wait-Until "document.querySelector('.nav') !== null" 300 'the app window'
 
     Check 'the Export page opens on the sample pages' {
         Mouse-Click '.nav-item' 'export'

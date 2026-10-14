@@ -288,6 +288,29 @@ impl Default for ReaderSetup {
     }
 }
 
+/// How far the first-run setup has got. It is kept, so closing the app part
+/// way through picks up where it stopped.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SetupStep {
+    /// Installing the catalog engine.
+    #[default]
+    Engine,
+    /// Choosing sources.
+    Sources,
+    /// Choosing or making a reader.
+    Reader,
+    /// Finished (or never needed: the app was already in use).
+    Done,
+}
+
+fn setup_done() -> SetupStep {
+    SetupStep::Done
+}
+
+fn not_yet() -> bool {
+    false
+}
+
 /// How the app moves between pages and parts of them.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Animations {
@@ -331,8 +354,16 @@ pub struct Settings {
     /// enum's name, which is mapped on load.
     #[serde(deserialize_with = "device_id")]
     pub device: String,
-    /// Devices the user added.
+    /// The user's readers. None to begin with: they are added from the known
+    /// ones, or made.
     pub custom_devices: Vec<DeviceProfile>,
+    /// First-run setup progress. Files from before it existed count as done.
+    #[serde(default = "setup_done")]
+    pub setup_step: SetupStep,
+    /// Whether the readers that used to be built in were turned into readers
+    /// of the user's own. Files from before that did not have them yet.
+    #[serde(default = "not_yet")]
+    pub readers_listed: bool,
     /// The preset a device starts from, by device id.
     pub device_presets: BTreeMap<String, String>,
     pub firmware: Firmware,
@@ -374,7 +405,7 @@ impl Settings {
     /// How the chosen reader receives files. A reader without a setup of its
     /// own starts from what was kept before readers had one.
     pub fn reader_setup(&self) -> ReaderSetup {
-        self.reader_setups.get(&self.device).cloned().unwrap_or_else(|| ReaderSetup {
+        self.reader_setups.get(&self.device_profile().id).cloned().unwrap_or_else(|| ReaderSetup {
             wifi_url: self.export.webdav_url.clone(),
             folder: self.export.device_folder.clone(),
             reader_dir: self.export.reader_dir.clone(),
@@ -386,15 +417,17 @@ impl Settings {
     pub fn update_reader_setup(&mut self, change: impl FnOnce(&mut ReaderSetup)) {
         let mut setup = self.reader_setup();
         change(&mut setup);
-        self.reader_setups.insert(self.device.clone(), setup);
+        self.reader_setups.insert(self.device_profile().id, setup);
     }
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            device: device_profiles::X4_PRO_ID.into(),
+            device: String::new(),
             custom_devices: Vec::new(),
+            setup_step: SetupStep::Engine,
+            readers_listed: true,
             device_presets: BTreeMap::new(),
             firmware: Firmware::CrossPoint,
             advanced_conversion: false,
@@ -423,16 +456,32 @@ fn device_id<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> {
 }
 
 impl Settings {
-    /// The chosen device. A device that has since been removed falls back to
-    /// the X4 Pro, so export never fails over a stale id.
+    /// The chosen reader. With none chosen (or the chosen one removed) it is
+    /// the first of the user's, and with none at all the Xteink X4 Pro, so
+    /// pages can still be made.
     pub fn device_profile(&self) -> DeviceProfile {
         device_profiles::find(&self.device, &self.custom_devices)
+            .or_else(|| self.devices().into_iter().next())
             .unwrap_or_else(device_profiles::x4_pro)
     }
 
-    /// Every device the user can pick.
+    /// The readers the user has.
     pub fn devices(&self) -> Vec<DeviceProfile> {
         device_profiles::all(&self.custom_devices)
+    }
+
+    /// Settings from before readers were all the user's own: the three that
+    /// used to be built in become theirs, once.
+    pub fn list_old_readers(&mut self) {
+        if self.readers_listed {
+            return;
+        }
+        for known in device_profiles::builtin().into_iter().rev() {
+            if !self.custom_devices.iter().any(|d| d.id == known.id) {
+                self.custom_devices.insert(0, known);
+            }
+        }
+        self.readers_listed = true;
     }
 }
 
@@ -443,7 +492,9 @@ mod tests {
     #[test]
     fn defaults_follow_the_plan() {
         let s = Settings::default();
-        assert_eq!(s.device, device_profiles::X4_PRO_ID);
+        assert!(s.devices().is_empty(), "no readers to begin with");
+        assert_eq!(s.device_profile().id, device_profiles::X4_PRO_ID, "pages can still be made");
+        assert_eq!(s.setup_step, SetupStep::Engine);
         assert_eq!(s.conversion.direction, ReadDirection::RightToLeft);
         assert_eq!(s.conversion.contrast, 55);
         assert_eq!(s.conversion.overlap_percent, 8);
@@ -556,6 +607,25 @@ mod tests {
     }
 
     #[test]
+    fn old_files_keep_their_readers_and_skip_the_first_run_setup() {
+        let mut old: Settings = serde_json::from_str(r#"{"device":"xteink-x4"}"#).unwrap();
+        assert_eq!(old.setup_step, SetupStep::Done);
+        assert!(old.devices().is_empty());
+        old.list_old_readers();
+        assert_eq!(old.devices().len(), 3);
+        assert_eq!(old.device_profile().id, device_profiles::X4_ID);
+        old.list_old_readers();
+        assert_eq!(old.devices().len(), 3, "only once");
+        // A reader removed afterwards stays removed.
+        old.custom_devices.retain(|d| d.id != device_profiles::X3_ID);
+        old.list_old_readers();
+        assert_eq!(old.devices().len(), 2);
+        let mut fresh = Settings::default();
+        fresh.list_old_readers();
+        assert!(fresh.devices().is_empty());
+    }
+
+    #[test]
     fn custom_devices_round_trip_and_are_selectable() {
         let mut s = Settings::default();
         let dev = DeviceProfile::custom(&s.devices(), "Kobo Nia", 758, 1024).unwrap();
@@ -582,6 +652,11 @@ mod tests {
     #[test]
     fn a_reader_has_its_own_way_of_receiving_files() {
         let mut s = Settings::default();
+        s.custom_devices = vec![
+            DeviceProfile::custom(&[], "Mine", 480, 800).unwrap(),
+            DeviceProfile::custom(&[], "Other", 480, 800).unwrap(),
+        ];
+        s.device = s.custom_devices[0].id.clone();
         s.export.device_folder = "Books".into();
         s.export.webdav_url = Some("http://192.168.3.3".into());
         // Without a setup of its own, the older settings are what it starts from.
@@ -596,7 +671,7 @@ mod tests {
         });
         assert_eq!(s.reader_setup().methods(), [ExportMethod::Usb, ExportMethod::WiFi]);
         // Another reader is not affected.
-        s.device = "my-reader".into();
+        s.device = s.custom_devices[1].id.clone();
         assert_eq!(s.reader_setup().methods(), [ExportMethod::Usb]);
         // It is kept in the file and comes back.
         let json = serde_json::to_string(&s).unwrap();

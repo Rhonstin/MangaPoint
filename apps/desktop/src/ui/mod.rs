@@ -8,6 +8,7 @@ mod download_dialog;
 mod tasks_page;
 mod export_page;
 mod hang;
+mod onboarding;
 mod icons;
 mod library_page;
 mod ocean;
@@ -72,17 +73,19 @@ pub fn App() -> Element {
 
     let snappy = state.settings.read().animations == library::Animations::Snappy;
     let boot = state.boot.read().clone();
+    let setup_step = state.settings.read().setup_step;
     rsx! {
         style { "{CSS}" }
         style { {include_str!("../page-editor.css")} }
         style { {include_str!("../editor-controls.css")} }
         div { class: "app", "data-motion": if snappy { "snappy" } else { "clean" },
             {match boot {
-                // The first run has to download the engine, so it waits on the
-                // splash. Later runs open the app at once; only what needs the
-                // engine (the search) waits for it.
-                BootState::Starting { message, percent } if !state.engine_installed => rsx! { Splash { message, percent } },
                 BootState::Failed(message) => rsx! { Failed { message } },
+                // The very first run: the engine, sources and a reader, step by step.
+                _ if setup_step != library::SetupStep::Done => rsx! { onboarding::Onboarding {} },
+                // An engine still to download waits on the splash. Otherwise the
+                // app opens at once; only what needs the engine (the search) waits.
+                BootState::Starting { message, percent } if !state.engine_installed => rsx! { Splash { message, percent } },
                 _ => rsx! { Shell {} },
             }}
             ModalHost {}
