@@ -46,6 +46,17 @@ impl ExportTarget {
     /// never loaded into memory (Wi-Fi uploads are the exception, since they
     /// need the whole body).
     pub async fn write_file(&self, filename: &str, src: &Path) -> Result<ExportedFile> {
+        self.write_file_with(filename, src, || {}).await
+    }
+
+    /// As [`write_file`](Self::write_file), calling `flushing` when a drive has
+    /// the whole file and is being made to really store it.
+    pub async fn write_file_with(
+        &self,
+        filename: &str,
+        src: &Path,
+        flushing: impl FnOnce() + Send + 'static,
+    ) -> Result<ExportedFile> {
         let size = fs::metadata(src)
             .map_err(|e| PipelineError::Io(src.to_path_buf(), e))?
             .len();
@@ -55,12 +66,12 @@ impl ExportTarget {
         match self {
             ExportTarget::Folder { path } => {
                 let path = path.clone();
-                blocking(move || copy_file(&path, &filename_owned, &src_owned, false)).await
+                blocking(move || copy_file(&path, &filename_owned, &src_owned, None)).await
             }
             ExportTarget::Device { mount, folder } => {
                 check_space(mount, size)?;
                 let dir = mount.join(sanitize_component(folder));
-                blocking(move || copy_file(&dir, &filename_owned, &src_owned, true)).await
+                blocking(move || copy_file(&dir, &filename_owned, &src_owned, Some(Box::new(flushing)))).await
             }
             ExportTarget::WebDav { base_url, folder } => {
                 let data = tokio::fs::read(src)
@@ -88,7 +99,12 @@ async fn blocking<T: Send + 'static>(
 /// With `flush`, the file is forced out to the drive before it gets its real
 /// name, so that when this returns it is safe to unplug (a card or a reader
 /// can otherwise still be holding the end of the file in memory).
-fn copy_file(dir: &Path, filename: &str, src: &Path, flush: bool) -> Result<ExportedFile> {
+fn copy_file(
+    dir: &Path,
+    filename: &str,
+    src: &Path,
+    flush: Option<Box<dyn FnOnce() + Send>>,
+) -> Result<ExportedFile> {
     fs::create_dir_all(dir).map_err(|e| PipelineError::Io(dir.to_path_buf(), e))?;
     let path = unique_path(dir, filename);
     let tmp = path.with_extension("part");
@@ -96,7 +112,8 @@ fn copy_file(dir: &Path, filename: &str, src: &Path, flush: bool) -> Result<Expo
         let _ = fs::remove_file(&tmp);
         PipelineError::Io(tmp.clone(), e)
     })?;
-    if flush {
+    if let Some(flushing) = flush {
+        flushing();
         flush_to_disk(&tmp)?;
     }
     fs::rename(&tmp, &path).map_err(|e| PipelineError::Io(path.clone(), e))?;

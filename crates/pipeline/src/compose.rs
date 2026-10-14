@@ -341,7 +341,16 @@ pub async fn export_series(
     for (i, volume) in volumes.iter().enumerate() {
         let name = volume_name(job, volume, &volumes, i, format.extension());
         emit(JobEvent::Writing { file: name.clone() });
-        sent.push(job.target.write_file(&name, &volume.temp).await?);
+        let tx = events.clone();
+        sent.push(
+            job.target
+                .write_file_with(&name, &volume.temp, move || {
+                    if let Some(tx) = tx {
+                        let _ = tx.send(JobEvent::Flushing);
+                    }
+                })
+                .await?,
+        );
     }
     Ok(ExportOutcome {
         files: sent,

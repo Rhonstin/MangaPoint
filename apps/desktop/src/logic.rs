@@ -324,6 +324,9 @@ impl JobProgress {
                     )
                 });
             }
+            JobEvent::Flushing => {
+                self.note = Some("Making sure the drive has all of it. This can take a minute or two…".into());
+            }
             JobEvent::Writing { .. } => {
                 self.active.clear();
                 self.finished = self.chapter_total;

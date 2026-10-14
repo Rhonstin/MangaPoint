@@ -600,6 +600,7 @@ pub(super) fn log_event(event: &JobEvent, logged_pages: &mut HashMap<usize, usiz
             }
         }
         JobEvent::Writing { file } => info!("Writing {file}"),
+        JobEvent::Flushing => info!("The file is copied; waiting for the drive to store it"),
     }
 }
 
