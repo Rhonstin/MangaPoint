@@ -219,7 +219,7 @@ pub fn SearchPage() -> Element {
                                 span { class: "chev", Icon { name: "chevron-down", size: 14 } }
                             }
                             button {
-                                class: "pill-btn fil-btn", r#type: "button",
+                                class: if filters_open() { "pill-btn fil-btn is-open" } else { "pill-btn fil-btn" }, r#type: "button",
                                 title: "Narrow the results by type, explicit content and genre",
                                 onclick: move |_| {
                                     if open() { close_panel() }
@@ -232,7 +232,7 @@ pub fn SearchPage() -> Element {
                                 span { class: "src-pill fil-pill", key: "{label}", "{label}" }
                             }
                             button {
-                                class: "pill-btn", r#type: "button",
+                                class: if open() { "pill-btn is-open" } else { "pill-btn" }, r#type: "button",
                                 title: "Choose which sources to search",
                                 disabled: total == 0,
                                 onclick: move |_| { if open() { close_panel() } else { filters_open.set(false); open.set(true) } },
@@ -324,8 +324,6 @@ fn SourcePanel(
     let state = use_context::<AppState>();
     let mut find = use_signal(String::new);
     let health = state.health.read().clone();
-    let total = sources.len();
-    let on = sources.iter().filter(|s| !excluded.contains(&s.id)).count();
     let needle = find.read().trim().to_lowercase();
     let shown: Vec<&SourceInfo> = sources
         .iter()
@@ -347,7 +345,7 @@ fn SourcePanel(
         .collect();
 
     rsx! {
-        div { class: "popover",
+        div { class: "popover", onmounted: move |_| place_popover(),
             div { class: "popover-quick",
                 button { class: "pill small", r#type: "button", onclick: move |_| on_change.call(Vec::new()), "All" }
                 button { class: "pill small", r#type: "button", onclick: move |_| on_change.call(all_ids.clone()), "None" }
@@ -392,12 +390,34 @@ fn SourcePanel(
                 }
                 if shown.is_empty() { p { class: "muted small", style: "padding: 8px", "No source matches that." } }
             }
-            div { class: "row", style: "margin-top: 10px",
-                span { class: "muted small grow", "{on} of {total} selected" }
+            div { class: "row", style: "margin-top: 10px; justify-content: flex-end",
                 button { class: "btn primary small", r#type: "button", onclick: move |_| on_close.call(()), "Done" }
             }
         }
     }
+}
+
+/// Put a dropdown just under the pill row of the search box and keep it inside
+/// the window (it scrolls inside itself), so it never makes the page longer.
+const PLACE_POPOVER: &str = r#"
+(() => {
+  const p = document.querySelector('.searchwrap .popover');
+  const box = document.querySelector('.searchwrap .searchbox:not(.searchbox-ghost)');
+  const row = box && box.querySelector('.sort-pill');
+  if (!p || !box || !row) return;
+  const top = row.getBoundingClientRect().bottom + 18;
+  p.style.position = 'fixed';
+  p.style.top = top + 'px';
+  p.style.left = (box.getBoundingClientRect().left + 14) + 'px';
+  p.style.maxHeight = Math.max(160, window.innerHeight - top - 16) + 'px';
+  p.style.overflowY = 'auto';
+})();
+"#;
+
+fn place_popover() {
+    spawn(async move {
+        let _ = document::eval(PLACE_POPOVER).await;
+    });
 }
 
 /// How many results get their genres looked up.
@@ -473,7 +493,7 @@ fn FilterPanel(on_close: EventHandler<()>) -> Element {
     let (for_all_types, for_all_genres) = (filters.clone(), filters.clone());
     let (clear_types, clear_explicit, clear_genres) = (filters.clone(), filters.clone(), filters.clone());
     rsx! {
-        div { class: "popover filter-panel",
+        div { class: "popover filter-panel", onmounted: move |_| place_popover(),
             div { class: "filter-group first",
                 div { class: "filter-head",
                     span { class: "filter-label", "Type" }

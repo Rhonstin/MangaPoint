@@ -89,6 +89,11 @@ pub fn TasksPage() -> Element {
                     }
                 }
                 span { class: "grow" }
+                if !finished.is_empty() {
+                    button { class: "btn", onclick: move |_| state.edit_queue(|q| q.clear_finished()),
+                        "Clear all"
+                    }
+                }
                 if busy {
                     button { class: "btn", onclick: move |_| set_queue_paused(state, !paused),
                         if paused { Icon { name: "play", size: 15 } "Resume" } else { Icon { name: "pause", size: 15 } "Pause" }
@@ -114,10 +119,6 @@ pub fn TasksPage() -> Element {
             if !finished.is_empty() {
                 div { class: "q-subhead",
                     h3 { class: "q-title", "Finished" span { class: "muted", " ({finished.len()})" } }
-                    span { class: "grow" }
-                    button { class: "btn small", onclick: move |_| state.edit_queue(|q| q.clear_finished()),
-                        "Clear all"
-                    }
                 }
                 for id in finished.iter().copied() {
                     BatchRow { key: "{id}", id }
@@ -228,6 +229,8 @@ fn ExportedFiles() -> Element {
     let mut records = state.exports.read().records.clone();
     records.reverse();
     let now = now_secs();
+    // The export whose menu is open.
+    let mut menu = use_signal(|| None::<String>);
     rsx! {
         if records.is_empty() {
             p { class: "muted small", style: "margin: 4px 0 0",
@@ -248,8 +251,11 @@ fn ExportedFiles() -> Element {
                 let can_open = !first.is_empty() && !first.starts_with("http") && std::path::Path::new(&first).exists();
                 let total: u64 = r.files.iter().map(|f| f.bytes).sum();
                 let place_full = r.target.strip_prefix("folder ").unwrap_or(&r.target).to_string();
-                let place = short_path(&place_full);
+                let place = place_full.clone();
                 let series_id = r.series_id.clone();
+                let menu_open = menu().as_deref() == Some(r.id.as_str());
+                let menu_id = r.id.clone();
+                let (preset_title, preset_settings) = (r.title.clone(), r.settings.clone());
                 // One file is deleted from the buttons on the right; several each have their own.
                 let single = (r.files.len() == 1).then(|| (r.id.clone(), first.clone()));
                 rsx! {
@@ -308,7 +314,27 @@ fn ExportedFiles() -> Element {
                             button { class: "path-link", disabled: !can_open,
                                 title: if can_open { "Show the file in its folder: {place_full}" } else { "The file is not there any more" },
                                 onclick: move |_| show_in_folder(&first),
-                                "{place}"
+                                span { class: "path-text", "{place}" }
+                                Icon { name: "external-link", size: 15 }
+                            }
+                            div { class: "menu-anchor",
+                                button { class: "btn ghost open-big square", title: "More actions",
+                                    onclick: move |_| menu.set(if menu_open { None } else { Some(menu_id.clone()) }),
+                                    Icon { name: "ellipsis", size: 18 }
+                                }
+                                if menu_open {
+                                    div { class: "menu-scrim", onclick: move |_| menu.set(None) }
+                                    div { class: "menu down",
+                                        button { class: "menu-item", disabled: preset_settings.is_none(),
+                                            title: if preset_settings.is_some() { "Keep how this series was converted for this export as a preset" } else { "This export did not keep its settings" },
+                                            onclick: move |_| {
+                                                menu.set(None);
+                                                save_export_preset(state, &preset_title, preset_settings.clone());
+                                            },
+                                            Icon { name: "layers", size: 15 } "Save its settings as a preset"
+                                        }
+                                    }
+                                }
                             }
                             if let Some((record_id, path)) = single {
                                 button { class: "btn ghost open-big square danger", title: "Delete this file",
@@ -395,7 +421,7 @@ fn BatchRow(id: u64) -> Element {
         .parent()
         .map(|p| p.display().to_string())
         .unwrap_or_default();
-    let folder_text = short_path(&folder_full);
+    let folder_text = folder_full.clone();
 
     rsx! {
         div { class: if running { "q-row running" } else { "q-row" },
@@ -490,7 +516,8 @@ fn BatchRow(id: u64) -> Element {
                                         open_folder(&dir);
                                     }
                                 },
-                                "{folder_text}"
+                                span { class: "path-text", "{folder_text}" }
+                                Icon { name: "external-link", size: 15 }
                             }
                         }
                         if downloaded > 0 {
@@ -541,13 +568,23 @@ pub(super) fn ActiveChapters(progress: JobProgress, limit: Option<usize>) -> Ele
     }
 }
 
-/// A long path with its beginning left out, so the folder it ends in shows.
-fn short_path(path: &str) -> String {
-    const MAX: usize = 44;
-    let count = path.chars().count();
-    if count <= MAX {
-        return path.to_string();
+/// Keep the way an export was converted as a preset, named after the series.
+fn save_export_preset(state: AppState, title: &str, settings: Option<library::ConversionSettings>) {
+    let Some(settings) = settings else {
+        state.error("This export did not keep its settings.");
+        return;
+    };
+    let mut last_error = String::new();
+    for n in 1..=20 {
+        let name = if n == 1 { title.to_string() } else { format!("{title} {n}") };
+        match state.edit_presets(|p| p.save_new(&name, settings.clone())) {
+            Ok(_) => {
+                state.save_presets();
+                state.notify(format!("Saved \"{name}\" to your presets."));
+                return;
+            }
+            Err(e) => last_error = e.to_string(),
+        }
     }
-    let tail: String = path.chars().skip(count - MAX).collect();
-    format!("…{tail}")
+    state.error(last_error);
 }
