@@ -431,6 +431,10 @@ pub struct JobView {
 #[derive(Clone, Copy)]
 pub struct AppState {
     pub boot: Signal<BootState>,
+    /// The catalog engine was already installed when the app started, so the
+    /// app can be used (offline) while it starts. False on the very first run,
+    /// which has to download it.
+    pub engine_installed: bool,
     pub services: Signal<Option<Services>>,
     pub settings: Signal<Settings>,
     pub sources: Signal<SourceState>,
@@ -513,6 +517,12 @@ impl AppState {
             Page::Setup
         };
         Self {
+            engine_installed: catalog::provision::locate_install(
+                &paths()
+                    .suwayomi_dir()
+                    .join(format!("suwayomi-{}", catalog::release::VERSION_TAG)),
+            )
+            .is_ok(),
             boot: sig(BootState::Starting {
                 message: "Starting…".into(),
                 percent: None,

@@ -1,6 +1,6 @@
 //! Searching every installed source at once.
 
-use super::widgets::{cover_key, load_cover, Busy, Chip, Cover, EmptyState, Icon, Loading};
+use super::widgets::{cover_key, load_cover, Busy, Chip, Cover, EmptyState, EngineStarting, Icon, Loading};
 use crate::logic::{self, ExplicitFilter, SearchFilters, SearchSort, COMMON_GENRES, SERIES_TYPES};
 use crate::state::now_secs;
 use crate::state::spawn_forever;
@@ -155,8 +155,13 @@ pub fn SearchPage() -> Element {
     // Before anything is searched the box sits in the middle of the window, under
     // the cat. Searching moves it up and widens it (see style.css).
     let idle = view.query.is_empty() && !view.searching;
+    // Until the catalog engine is up there is nothing to search with: show how
+    // far it is instead of the box, which then arrives.
+    if state.services.read().is_none() {
+        return rsx! { EngineStarting {} };
+    }
     rsx! {
-      div { class: if idle { "search-stage idle" } else { "search-stage" },
+      div { class: if idle { "search-stage idle arrive" } else { "search-stage arrive" },
         div { class: "search-hero",
             super::ocean::OceanCat {}
             h2 { "What are we reading?" }

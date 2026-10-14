@@ -16,6 +16,21 @@ pub(super) fn reset_workspace_state(state: AppState) {
     source.set(SourceChoice::Adaptive);
 }
 
+/// Wait for the catalog engine if it is still starting (up to a minute and a
+/// half). True if it is running.
+pub(super) async fn wait_for_engine(state: AppState) -> bool {
+    for _ in 0..450 {
+        if state.client().is_some() {
+            return true;
+        }
+        if !matches!(*state.boot.peek(), crate::state::BootState::Starting { .. }) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    state.client().is_some()
+}
+
 /// Open a search result: show its chapters and fetch their lists.
 pub fn open_series_from_search(state: AppState, ranked: RankedSeries) {
     let title = ranked.title.clone();
@@ -34,6 +49,7 @@ pub fn open_series_from_search(state: AppState, ranked: RankedSeries) {
 
     let members = logic::one_per_source(&ranked.members, 4);
     spawn_forever(async move {
+        wait_for_engine(state).await;
         let result = load_chapters(state, members).await;
         // The user may have opened something else meanwhile.
         let still_here = state
@@ -77,6 +93,7 @@ pub fn open_series_from_library(state: AppState, series_id: &str) {
     chapters.set(ChaptersState::Loading);
     let id = series_id.to_string();
     spawn_forever(async move {
+        wait_for_engine(state).await;
         // Series downloaded before sources were kept find theirs again from
         // their downloaded chapters.
         let sources = if sources.is_empty() {

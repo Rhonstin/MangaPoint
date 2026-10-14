@@ -71,9 +71,12 @@ pub fn App() -> Element {
         style { {include_str!("../editor-controls.css")} }
         div { class: "app",
             {match boot {
-                BootState::Starting { message, percent } => rsx! { Splash { message, percent } },
+                // The first run has to download the engine, so it waits on the
+                // splash. Later runs open the app at once; only what needs the
+                // engine (the search) waits for it.
+                BootState::Starting { message, percent } if !state.engine_installed => rsx! { Splash { message, percent } },
                 BootState::Failed(message) => rsx! { Failed { message } },
-                BootState::Ready => rsx! { Shell {} },
+                _ => rsx! { Shell {} },
             }}
             ModalHost {}
             download_dialog::DownloadDialogHost {}

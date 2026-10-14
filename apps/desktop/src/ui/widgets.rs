@@ -136,6 +136,26 @@ pub fn Busy(label: String, size: Option<u32>) -> Element {
     }
 }
 
+/// What a page that needs the catalog engine shows while it is still
+/// starting: the cat, how far it is, and that the rest of the app works.
+#[component]
+pub fn EngineStarting() -> Element {
+    let state = use_context::<AppState>();
+    let (message, percent) = match &*state.boot.read() {
+        crate::state::BootState::Starting { message, percent } => (message.clone(), *percent),
+        _ => ("Starting the catalog engine…".to_string(), None),
+    };
+    rsx! {
+        div { class: "engine-starting",
+            super::cat::CirclingCat { size: 120 }
+            strong { "Getting the search ready" }
+            p { class: "muted", "{message}" }
+            div { class: "es-bar", super::ProgressBar { fraction: percent.map(|p| f32::from(p) / 100.0) } }
+            p { class: "muted small", "Your Library and downloads work in the meantime." }
+        }
+    }
+}
+
 /// A cover image, or a placeholder until it has loaded.
 #[component]
 pub fn Cover(key_id: String) -> Element {
