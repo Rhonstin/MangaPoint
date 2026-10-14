@@ -540,6 +540,13 @@ impl AppState {
             settings: sig({
                 let mut settings = JsonFile::<Settings>::new(paths().settings_file()).load();
                 settings.list_old_readers();
+                // Dev flag: `cargo run -p mangapoint -- --onboarding` (or
+                // MANGAPOINT_ONBOARDING=1) walks through the first-run setup again.
+                if std::env::args().any(|a| a == "--onboarding")
+                    || std::env::var_os("MANGAPOINT_ONBOARDING").is_some()
+                {
+                    settings.setup_step = library::SetupStep::Engine;
+                }
                 apply_library_dirs(&settings);
                 settings
             }),
