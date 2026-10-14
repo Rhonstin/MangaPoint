@@ -147,7 +147,7 @@ pub fn EngineStarting() -> Element {
     };
     rsx! {
         div { class: "engine-starting",
-            super::cat::CirclingCat { size: 120 }
+            super::cat::Cat {}
             strong { "Getting the search ready" }
             p { class: "muted", "{message}" }
             div { class: "es-bar", super::ProgressBar { fraction: percent.map(|p| f32::from(p) / 100.0) } }

@@ -182,7 +182,6 @@ fn AddSources(on_close: EventHandler<()>) -> Element {
                             rsx! {
                                 div { class: "as-card", key: "{id}",
                                     div { class: "as-card-top",
-                                        div { class: "src-avatar", "{initial_of(d.name)}" }
                                         div { class: "grow",
                                             strong { "{d.name}" }
                                             div { class: "muted small", "{host_of(d.site)}" }
@@ -264,7 +263,6 @@ fn AddSources(on_close: EventHandler<()>) -> Element {
                             let name = ext.name.clone();
                             rsx! {
                                 div { class: "as-row", key: "{pkg}",
-                                    div { class: "src-avatar small", "{initial_of(&name)}" }
                                     div { class: "grow",
                                         strong { "{name}" }
                                         span { class: "muted small", "  {ext.lang}" }
@@ -316,14 +314,6 @@ fn host_of(url: &str) -> String {
         .to_string()
 }
 
-/// The first letter of a name, for the tile that stands for a source.
-fn initial_of(name: &str) -> String {
-    name.chars()
-        .find(|c| c.is_alphanumeric())
-        .map(|c| c.to_uppercase().to_string())
-        .unwrap_or_else(|| "?".to_string())
-}
-
 fn source_card(
     state: AppState,
     item: &InstalledSource,
@@ -348,27 +338,20 @@ fn source_card(
         .as_ref()
         .is_some_and(|r| r.verdict == Verdict::NeedsBrowser)
         && !browser_on;
-    let (chip_text, chip_kind, tone) = match &last {
-        None => ("not tested yet".to_string(), None, ""),
+    let (chip_text, chip_kind) = match &last {
+        None => ("not tested yet".to_string(), None),
         Some(r) => {
             let kind = match r.verdict {
                 Verdict::Pass => "ok",
                 Verdict::NeedsBrowser => "warn",
                 _ => "bad",
             };
-            (
-                verdict_label(r.verdict).to_string(),
-                Some(kind.to_string()),
-                kind,
-            )
+            (verdict_label(r.verdict).to_string(), Some(kind.to_string()))
         }
     };
-    let avatar_class = format!("src-avatar {tone}");
-    let initial = initial_of(&name);
 
     rsx! {
         div { class: "src-card", key: "{id}",
-            div { class: "{avatar_class}", "{initial}" }
             div { class: "src-main",
                 div { class: "row wrap",
                     strong { class: "src-name", "{name}" }

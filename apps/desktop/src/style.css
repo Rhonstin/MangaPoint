@@ -881,7 +881,8 @@ h3.q-title { margin: 22px 0 6px; font-size: 0.8rem; text-transform: uppercase; l
 .pill-btn.is-open .icon { transform: rotate(180deg); }
 
 /* ---- the search while the catalog engine starts, and the box arriving ---- */
-.engine-starting { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; min-height: 70vh; text-align: center; }
+.engine-starting { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; min-height: calc(100vh - 80px); text-align: center; }
+.engine-starting .cat { width: 96px; height: 96px; margin-bottom: 6px; }
 .engine-starting strong { font-size: 1.2rem; margin-top: 6px; }
 .engine-starting p { margin: 0; }
 .es-bar { width: min(360px, 70vw); margin: 10px 0 8px; }
@@ -922,25 +923,19 @@ table.chapters tbody tr[data-cursor] { outline: 2px solid var(--accent); outline
 .sources-head h1 { margin: 0; }
 .sources-head p { margin: 4px 0 0; }
 .sources-head .btn { margin-top: 4px; }
-.src-list { display: flex; flex-direction: column; gap: 10px; }
-.src-card { display: flex; gap: 14px; align-items: flex-start; padding: 14px 16px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; }
-.src-card:hover { border-color: var(--line-strong); }
+.src-list { display: flex; flex-direction: column; gap: 6px; }
+.src-card { display: flex; gap: 16px; align-items: flex-start; padding: 14px 2px; }
 .src-card .src-main { gap: 4px; }
 .src-name { font-size: 1.02rem; }
 .src-pkg { opacity: 0.7; }
-.src-avatar { width: 44px; height: 44px; flex: none; display: flex; align-items: center; justify-content: center; border-radius: 12px; background: var(--panel-3); border: 1px solid var(--line-strong); color: var(--muted); font-weight: 700; font-size: 1.1rem; }
-.src-avatar.ok { color: var(--ok); border-color: #2f5a38; background: #0f1d12; }
-.src-avatar.warn { color: var(--warn); border-color: #6b5a2a; background: #1d1809; }
-.src-avatar.bad { color: var(--bad); border-color: #6a2e2e; background: #1f1111; }
-.src-avatar.small { width: 34px; height: 34px; border-radius: 9px; font-size: 0.95rem; }
 
 /* ---- the dialog for adding sources ---- */
-.modal.add-sources { max-width: 760px; max-height: 82vh; display: flex; flex-direction: column; overflow: hidden; padding: 20px 22px; }
-.as-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+.modal.add-sources { width: min(820px, 94vw); max-width: none; height: min(680px, 88vh); max-height: none; display: flex; flex-direction: column; overflow: hidden; padding: 20px 22px; }
+.as-head { flex: none; display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
 .as-head h2 { margin: 0; font-size: 1.3rem; }
-.as-tabs { align-self: flex-start; margin-bottom: 16px; }
+.as-tabs { flex: none; align-self: flex-start; margin-bottom: 16px; }
 .as-tabs button { padding: 8px 18px; }
-.as-body { flex: 1; min-height: 0; overflow-y: auto; padding-right: 4px; }
+.as-body { flex: 1 1 0; min-height: 0; overflow-y: auto; padding-right: 4px; }
 .as-lead { margin: 0 0 12px; }
 .as-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .as-card { display: flex; flex-direction: column; gap: 10px; padding: 14px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 12px; transition: border-color 0.18s ease; }
