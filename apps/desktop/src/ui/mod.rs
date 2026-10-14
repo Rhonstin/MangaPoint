@@ -9,6 +9,7 @@ mod tasks_page;
 mod export_page;
 mod hang;
 mod onboarding;
+mod walker;
 mod icons;
 mod library_page;
 mod ocean;
@@ -50,7 +51,7 @@ pub fn App() -> Element {
 
     // Start the catalog server once, when the app opens.
     use_hook(|| {
-        spawn_forever(backend::boot(state));
+        spawn_forever(backend::boot(state, false));
     });
     // Stop it when the window closes, so no process is left behind.
     use_wry_event_handler(|event, _| {
@@ -100,7 +101,7 @@ fn Splash(message: String, percent: Option<u8>) -> Element {
     let fraction = percent.map(|p| p as f32 / 100.0);
     rsx! {
         div { class: "splash",
-            cat::Cat {}
+            walker::WalkingCat {}
             h1 { "MangaPoint" }
             p { class: "muted", "{message}" }
             ProgressBar { fraction }
@@ -121,7 +122,7 @@ fn Failed(message: String) -> Element {
             button {
                 class: "btn primary",
                 onclick: move |_| {
-                    spawn_forever(backend::boot(state));
+                    spawn_forever(backend::boot(state, true));
                 },
                 "Try again"
             }

@@ -69,10 +69,10 @@ pub fn Setup(#[props(default = false)] onboarding: bool) -> Element {
                 let installed = o.installed;
                 let skipped = o.choice == Some(Choice::Skip) && !installed;
                 rsx! {
-                    div { class: "list-row", key: "{id}",
-                        div { class: "grow",
+                    div { class: "setup-row", key: "{id}",
+                        div { class: "src-main",
                             div { class: "row wrap",
-                                strong { "{o.default.name}" }
+                                strong { class: "src-name", "{o.default.name}" }
                                 if needs_browser { Chip { text: "needs browser support", kind: Some("warn".to_string()) } }
                                 if installed { Chip { text: "installed", kind: Some("ok".to_string()) } }
                                 if skipped { Chip { text: "skipped" } }
@@ -81,31 +81,33 @@ pub fn Setup(#[props(default = false)] onboarding: bool) -> Element {
                             div { class: "muted small", "{o.default.description}" }
                         }
                         if o.available && !installed {
-                            button {
-                                class: "btn primary small",
-                                onclick: move |_| {
-                                    let browser_off = !state.settings.read().browser_support;
-                                    if needs_browser && browser_off {
-                                        ask_enable_browser(state, Some(id.to_string()));
-                                    } else {
-                                        spawn_forever(async move {
-                                            backend::install_default(state, id).await;
-                                            state.bump_sources();
-                                        });
-                                    }
-                                },
-                                Icon { name: "download", size: 15 }
-                                "Install"
-                            }
-                            button {
-                                class: "btn small",
-                                onclick: move |_| {
-                                    let mut s = state.sources;
-                                    s.write().choices.insert(id.to_string(), Choice::Skip);
-                                    state.save_sources();
-                                    state.bump_sources();
-                                },
-                                "Skip for now"
+                            div { class: "src-actions",
+                                button {
+                                    class: "btn ghost small",
+                                    onclick: move |_| {
+                                        let mut s = state.sources;
+                                        s.write().choices.insert(id.to_string(), Choice::Skip);
+                                        state.save_sources();
+                                        state.bump_sources();
+                                    },
+                                    "Skip"
+                                }
+                                button {
+                                    class: "btn primary small",
+                                    onclick: move |_| {
+                                        let browser_off = !state.settings.read().browser_support;
+                                        if needs_browser && browser_off {
+                                            ask_enable_browser(state, Some(id.to_string()));
+                                        } else {
+                                            spawn_forever(async move {
+                                                backend::install_default(state, id).await;
+                                                state.bump_sources();
+                                            });
+                                        }
+                                    },
+                                    Icon { name: "download", size: 15 }
+                                    "Install"
+                                }
                             }
                         }
                     }
@@ -123,44 +125,41 @@ pub fn Setup(#[props(default = false)] onboarding: bool) -> Element {
         .any(|c| *c == Choice::Install);
 
     rsx! {
-        h1 { "Choose your sources" }
-        p { class: "muted",
-            "Sources are the websites MangaPoint searches. Pick the ones you want; you can change this any time in Sources. "
-            "These all passed our full test (search, chapters and page images) when we last checked."
-        }
-        div { class: "card",
+        div { class: "rise-in",
+            h1 { "Choose your sources" }
+            p { class: "muted",
+                "Sources are the websites MangaPoint searches. Pick the ones you want; you can change this any time in Sources. "
+                "These all passed our full test (search, chapters and page images) when we last checked."
+            }
             if !loaded {
-                p { class: "muted", "Loading the list…" }
+                p { class: "muted", "Loading the list\u{2026}" }
             }
-            {rows.into_iter()}
-        }
-        div { class: "spacer" }
-        div { class: "row",
-            button {
-                class: "btn",
-                disabled: busy,
-                onclick: install_recommended,
-                if busy { "Installing…" } else { "Install all recommended" }
-            }
-            div { class: "grow" }
-            if onboarding {
+            div { class: "setup-list", {rows.into_iter()} }
+            div { class: "onboard-foot",
                 button {
-                    class: "btn ghost onboard-skip",
-                    onclick: move |_| super::onboarding::set_step(state, library::SetupStep::Reader),
-                    "Skip this step"
+                    class: "btn",
+                    disabled: busy,
+                    onclick: install_recommended,
+                    if busy { "Installing\u{2026}" } else { "Install all recommended" }
                 }
-            }
-            button {
-                class: "btn primary",
-                disabled: !installed_any,
-                onclick: finish,
-                Icon { name: "check", size: 15 }
-                "Done"
-            }
-        }
-        if !installed_any {
-            p { class: "muted small", style: "margin-top: 8px",
-                "Install at least one source to start searching."
+                if !installed_any {
+                    span { class: "muted small", "Install at least one source to start searching." }
+                }
+                div { class: "grow" }
+                if onboarding {
+                    button {
+                        class: "btn ghost onboard-skip",
+                        onclick: move |_| super::onboarding::set_step(state, library::SetupStep::Reader),
+                        "Skip this step"
+                    }
+                }
+                button {
+                    class: "btn primary",
+                    disabled: !installed_any,
+                    onclick: finish,
+                    Icon { name: "check", size: 15 }
+                    "Done"
+                }
             }
         }
     }

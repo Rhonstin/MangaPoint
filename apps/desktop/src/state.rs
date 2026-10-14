@@ -94,6 +94,9 @@ pub enum BootState {
         percent: Option<u8>,
     },
     Ready,
+    /// The first run: the catalog engine is not on this computer, and nothing is
+    /// downloaded until the user says so.
+    NeedsEngine,
     Failed(String),
 }
 
