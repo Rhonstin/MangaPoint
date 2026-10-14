@@ -1,7 +1,11 @@
 //! MangaPoint: search manga, convert it for an Xteink reader, export.
 
+// A release build is a window, not a console program.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 mod assets;
 mod backend;
+mod logfile;
 mod logic;
 mod queue;
 mod sample;
@@ -10,7 +14,7 @@ mod ui;
 
 use dioxus::desktop::tao::window::Icon;
 use dioxus::desktop::{Config, LogicalSize, WindowBuilder};
-use tracing_subscriber::fmt::time::uptime;
+use tracing_subscriber::fmt::time::SystemTime;
 use tracing_subscriber::EnvFilter;
 
 /// What the console shows by default: MangaPoint's own progress messages
@@ -22,13 +26,24 @@ const DEFAULT_LOG: &str = "mangapoint=info,error";
 fn init_logging() {
     let filter =
         EnvFilter::try_from_env("MANGAPOINT_LOG").unwrap_or_else(|_| EnvFilter::new(DEFAULT_LOG));
+    // The log is kept in the data folder (added to at every start, rolled over
+    // at a size limit); a debug build also prints it.
+    let file = logfile::LogFile::open(state::paths().root().join("logs")).ok();
     // Installed before Dioxus starts, so its own logger steps aside.
     let _ = tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_target(false)
-        .with_timer(uptime())
+        .with_ansi(false)
+        .with_timer(SystemTime)
+        .with_writer(logfile::Sink(file))
         .compact()
         .try_init();
+    // A crash leaves its reason in the log.
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        tracing::error!("The app crashed: {info}");
+        previous(info);
+    }));
 }
 
 fn main() {
@@ -54,7 +69,8 @@ fn main() {
         std::process::exit(130);
     });
     tracing::info!(
-        "MangaPoint starting; data folder: {}",
+        "MangaPoint {} starting; data folder: {}",
+        env!("CARGO_PKG_VERSION"),
         state::paths().root().display()
     );
     // The cat is the window and taskbar icon (Windows and Linux; macOS takes
