@@ -825,5 +825,4 @@ table.chapters th.size, table.chapters td.size { width: 90px; text-align: right;
 .overview.found { margin-bottom: 8px; }
 
 /* ---- downloads and exports: a compact column, not the width of the window ---- */
-.q-head, .q-section, .q-row { max-width: 1000px; }
 .q-where { margin-top: 2px; color: var(--muted); font-size: 0.78rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
