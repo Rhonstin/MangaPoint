@@ -49,18 +49,36 @@ impl ExportTarget {
         let size = fs::metadata(src)
             .map_err(|e| PipelineError::Io(src.to_path_buf(), e))?
             .len();
+        // Copying gigabytes takes minutes; it must not hold up the thread the
+        // app's window runs on (Windows would call the app "not responding").
+        let (filename_owned, src_owned) = (filename.to_string(), src.to_path_buf());
         match self {
-            ExportTarget::Folder { path } => copy_file(path, filename, src, false),
+            ExportTarget::Folder { path } => {
+                let path = path.clone();
+                blocking(move || copy_file(&path, &filename_owned, &src_owned, false)).await
+            }
             ExportTarget::Device { mount, folder } => {
                 check_space(mount, size)?;
-                copy_file(&mount.join(sanitize_component(folder)), filename, src, true)
+                let dir = mount.join(sanitize_component(folder));
+                blocking(move || copy_file(&dir, &filename_owned, &src_owned, true)).await
             }
             ExportTarget::WebDav { base_url, folder } => {
-                let data = fs::read(src).map_err(|e| PipelineError::Io(src.to_path_buf(), e))?;
+                let data = tokio::fs::read(src)
+                    .await
+                    .map_err(|e| PipelineError::Io(src.to_path_buf(), e))?;
                 upload_webdav(base_url, folder, filename, data).await
             }
         }
     }
+}
+
+/// Run slow file work on a thread of its own and wait for it.
+async fn blocking<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T> + Send + 'static,
+) -> Result<T> {
+    tokio::task::spawn_blocking(work)
+        .await
+        .map_err(|e| PipelineError::Upload(format!("the copy was interrupted: {e}")))?
 }
 
 /// Copy `src` into `dir` under a name that does not exist yet. Written to a

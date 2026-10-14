@@ -126,7 +126,6 @@ impl Drop for Scratch {
     }
 }
 
-/// Split `count` chapters (by position) into groups.
 /// The most pages a file may hold: what the job says, and over Wi-Fi also
 /// what keeps a file under the size the reader can take in one go.
 fn pages_per_file(job: &ExportJob, format: Format) -> usize {
@@ -148,6 +147,7 @@ fn wifi_page_cap(width: u32, height: u32, format: Format) -> usize {
     (crate::export::WIFI_MAX_FILE_BYTES / page_bytes).max(1) as usize
 }
 
+/// Split `count` chapters (by position) into groups.
 fn group_ranges(count: usize, grouping: Grouping) -> Vec<std::ops::Range<usize>> {
     let size = match grouping {
         Grouping::Single => count.max(1),
@@ -272,7 +272,7 @@ pub async fn export_series(
         // A new group starts a new file.
         if group != open_group {
             if let Some((builder, volume)) = open.take() {
-                volumes.push(finish_volume(builder, volume, &job.work_dir, &mut scratch)?);
+                volumes.push(finish_volume(builder, volume, &job.work_dir, &mut scratch).await?);
             }
             open_group = group;
         }
@@ -280,7 +280,7 @@ pub async fn export_series(
         if let Some((builder, _)) = &open {
             if builder.page_count() + images.len() > page_cap {
                 let (builder, volume) = open.take().expect("checked above");
-                volumes.push(finish_volume(builder, volume, &job.work_dir, &mut scratch)?);
+                volumes.push(finish_volume(builder, volume, &job.work_dir, &mut scratch).await?);
             }
         }
         if open.is_none() {
@@ -332,7 +332,7 @@ pub async fn export_series(
         total_pages += images.len();
     }
     if let Some((builder, volume)) = open.take() {
-        volumes.push(finish_volume(builder, volume, &job.work_dir, &mut scratch)?);
+        volumes.push(finish_volume(builder, volume, &job.work_dir, &mut scratch).await?);
     }
 
     // Now that every file exists, name them (part numbers need the count) and
@@ -385,14 +385,22 @@ async fn cover_page(
 }
 
 /// Write an assembled book to the scratch folder.
-fn finish_volume(
+/// Write a finished book out as its file. A book can be gigabytes, so this
+/// happens on a thread of its own, not the one the app's window runs on.
+async fn finish_volume(
     builder: XtcBuilder,
-    mut volume: Volume,
+    volume: Volume,
     work_dir: &Path,
     scratch: &mut Scratch,
 ) -> Result<Volume> {
     let temp = work_dir.join(unique_name("book"));
     scratch.0.push(temp.clone());
+    tokio::task::spawn_blocking(move || write_volume(builder, volume, temp))
+        .await
+        .map_err(|e| PipelineError::Upload(format!("writing the book was interrupted: {e}")))?
+}
+
+fn write_volume(builder: XtcBuilder, mut volume: Volume, temp: PathBuf) -> Result<Volume> {
     let file = File::create(&temp).map_err(|e| PipelineError::Io(temp.clone(), e))?;
     let mut writer = BufWriter::new(file);
     builder.write_to(&mut writer).map_err(|e| match e {
