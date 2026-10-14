@@ -907,4 +907,4 @@ h3.q-title { margin: 22px 0 6px; font-size: 0.8rem; text-transform: uppercase; l
 .q-row:not(.running) .q-main { flex: 1 1 280px; min-width: 280px; }
 .app { min-width: 1280px; min-height: 720px; }
 .q-actions:has(> .q-aside) { flex: 0 1 auto; min-width: 0; margin-left: auto; }
-@media (max-width: 1500px) { .export-body { grid-template-columns: min(var(--left-w, 340px), 290px) minmax(0, 1fr) min(var(--right-w, 330px), 280px); } }
+@media (max-width: 1500px) { .export-body { grid-template-columns: var(--left-w, 290px) minmax(0, 1fr) var(--right-w, 280px); } }
