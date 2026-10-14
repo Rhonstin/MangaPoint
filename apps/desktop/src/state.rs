@@ -67,10 +67,8 @@ pub enum Page {
     Library,
     /// Choosing, editing and exporting series, full window.
     Export,
-    /// The download queue.
-    Downloads,
-    /// The files exported for a reader.
-    Exports,
+    /// Downloads and exports, running and finished.
+    Tasks,
     /// Choosing what to download from one or more library series.
     Plan,
     Sources,
@@ -417,6 +415,11 @@ pub enum JobKind {
 pub struct JobView {
     pub kind: JobKind,
     pub title: String,
+    /// The series being exported, for its cover.
+    pub series_id: String,
+    /// Stopped for now; it goes on from where it was when resumed (even after
+    /// the app is closed and opened again).
+    pub paused: bool,
     pub progress: JobProgress,
     /// `None` while running, then a one-line summary or the error.
     pub result: Option<Result<String, String>>,

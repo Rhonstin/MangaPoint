@@ -279,7 +279,7 @@ pub fn ChaptersTab() -> Element {
                 }
             }
             if working || failed_count > 0 {
-                button { class: "btn", onclick: move |_| state.go(Page::Downloads),
+                button { class: "btn", onclick: move |_| state.go(Page::Tasks),
                     Icon { name: "download", size: 16 } "All downloads"
                 }
             }
@@ -419,7 +419,7 @@ pub fn ChaptersTab() -> Element {
                     }
                 }
                 if to_download == 0 && queued_picked > 0 {
-                    button { class: "btn primary", onclick: move |_| state.go(Page::Downloads),
+                    button { class: "btn primary", onclick: move |_| state.go(Page::Tasks),
                         Icon { name: "download", size: 16 } "View downloads"
                     }
                 } else if to_download == 0 {

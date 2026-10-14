@@ -1,6 +1,8 @@
 //! The Export screen: its list of series and the export itself.
 
 use super::*;
+use library::JsonFile;
+use serde::{Deserialize, Serialize};
 
 /// Open the Export screen for these series. Only series with downloaded
 /// chapters can be exported, so the others are left out.
@@ -188,10 +190,106 @@ pub fn start_export_plan(state: AppState) {
             return;
         }
     };
-    let grouping = grouping_of(&opts);
+    let saved = SavedExport {
+        items: list
+            .iter()
+            .map(|(series, keys)| SavedExportItem {
+                series_id: series.id.clone(),
+                keys: keys.clone(),
+            })
+            .collect(),
+        grouping: SavedGrouping::from(grouping_of(&opts)),
+        target: Some(target),
+        next: 0,
+    };
+    save_export_plan(&saved);
+    run_saved_export(state, saved);
+}
+
+/// What is kept of an export that has not finished, so it can go on after the
+/// app was closed. The chapters already converted are kept too, so going on
+/// does not do them again.
+#[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SavedExport {
+    items: Vec<SavedExportItem>,
+    grouping: SavedGrouping,
+    target: Option<ExportTarget>,
+    /// The first series that is not finished.
+    next: usize,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct SavedExportItem {
+    series_id: String,
+    keys: Vec<String>,
+}
+
+#[derive(Clone, Copy, Default, Serialize, Deserialize)]
+enum SavedGrouping {
+    #[default]
+    Single,
+    PerChapter,
+    EveryN(usize),
+}
+
+impl From<Grouping> for SavedGrouping {
+    fn from(g: Grouping) -> Self {
+        match g {
+            Grouping::Single => Self::Single,
+            Grouping::PerChapter => Self::PerChapter,
+            Grouping::EveryN(n) => Self::EveryN(n),
+        }
+    }
+}
+
+impl From<SavedGrouping> for Grouping {
+    fn from(g: SavedGrouping) -> Self {
+        match g {
+            SavedGrouping::Single => Self::Single,
+            SavedGrouping::PerChapter => Self::PerChapter,
+            SavedGrouping::EveryN(n) => Self::EveryN(n.max(1)),
+        }
+    }
+}
+
+fn save_export_plan(saved: &SavedExport) {
+    let _ = JsonFile::new(paths().export_job_file()).save(saved);
+}
+
+fn forget_export_plan() {
+    let _ = std::fs::remove_file(paths().export_job_file());
+}
+
+/// Export the saved series one after another, from the first unfinished one.
+/// The plan on disk always says where to go on from.
+fn run_saved_export(state: AppState, saved: SavedExport) {
     spawn_forever(async move {
-        let total = list.len();
-        for (n, (series, keys)) in list.into_iter().enumerate() {
+        let settings = state.settings.peek().clone();
+        let Some(target) = saved.target.clone() else {
+            forget_export_plan();
+            return;
+        };
+        let grouping = Grouping::from(saved.grouping);
+        let total = saved.items.len();
+        for n in saved.next..total {
+            let item = &saved.items[n];
+            let Some(series) = state.library.peek().find(&item.series_id).cloned() else {
+                continue;
+            };
+            let keys: Vec<String> = item
+                .keys
+                .iter()
+                .filter(|k| series.chapters.iter().any(|c| &c.key == *k))
+                .cloned()
+                .collect();
+            if keys.is_empty() {
+                continue;
+            }
+            save_export_plan(&SavedExport {
+                next: n,
+                ..saved.clone()
+            });
             let cancel = CancelFlag::new();
             let mut export = ExportJob::new(
                 series.clone(),
@@ -210,6 +308,8 @@ pub fn start_export_plan(state: AppState) {
                 } else {
                     series.title.clone()
                 },
+                series_id: series.id.clone(),
+                paused: false,
                 progress: JobProgress::default(),
                 result: None,
                 cancel: cancel.clone(),
@@ -227,14 +327,24 @@ pub fn start_export_plan(state: AppState) {
                 describe_target(&target)
             );
             run_export(state, series, export, target.clone(), cancel).await;
-            let failed = matches!(
-                job.peek().as_ref().and_then(|j| j.result.as_ref()),
-                Some(Err(_))
-            );
+            let (paused, failed) = {
+                let view = job.peek();
+                let view = view.as_ref();
+                (
+                    view.is_some_and(|v| v.paused && v.result.is_none()),
+                    view.and_then(|v| v.result.as_ref()).is_some_and(|r| r.is_err()),
+                )
+            };
+            if paused {
+                info!("Export paused; it goes on from \"{}\"", saved.items[n].series_id);
+                return;
+            }
             if failed {
+                forget_export_plan();
                 return;
             }
         }
+        forget_export_plan();
         if total > 1 {
             let mut job = state.job;
             let mut guard = job.write();
@@ -243,6 +353,65 @@ pub fn start_export_plan(state: AppState) {
             }
         }
     });
+}
+
+/// Stop the export for now. What it has converted is kept, and it goes on
+/// from where it was when resumed, even after the app is closed.
+pub fn pause_export(state: AppState) {
+    let mut job = state.job;
+    let mut guard = job.write();
+    if let Some(view) = guard.as_mut() {
+        if view.result.is_none() && !view.paused {
+            view.paused = true;
+            view.cancel.cancel();
+            view.progress.stopping = true;
+        }
+    }
+}
+
+/// Carry on with a paused export.
+pub fn resume_export(state: AppState) {
+    let paused = state.job.peek().as_ref().is_some_and(|v| v.paused);
+    if !paused {
+        return;
+    }
+    let saved = JsonFile::<SavedExport>::new(paths().export_job_file()).load();
+    if saved.items.is_empty() || saved.next >= saved.items.len() {
+        let mut job = state.job;
+        job.set(None);
+        forget_export_plan();
+        return;
+    }
+    run_saved_export(state, saved);
+}
+
+/// An export that was not finished when the app was closed comes back paused,
+/// to be resumed when you want it (it can take a lot of the computer).
+pub fn restore_export(state: AppState) {
+    let saved = JsonFile::<SavedExport>::new(paths().export_job_file()).load();
+    let Some(item) = saved.items.get(saved.next) else {
+        return;
+    };
+    let Some(series) = state.library.peek().find(&item.series_id).cloned() else {
+        forget_export_plan();
+        return;
+    };
+    let total = saved.items.len();
+    let mut job = state.job;
+    job.set(Some(JobView {
+        kind: JobKind::Export,
+        title: if total > 1 {
+            format!("{} ({} of {total})", series.title, saved.next + 1)
+        } else {
+            series.title.clone()
+        },
+        series_id: series.id.clone(),
+        paused: true,
+        progress: JobProgress::default(),
+        result: None,
+        cancel: CancelFlag::new(),
+    }));
+    info!("An export of \"{}\" was not finished; it waits to be resumed", series.title);
 }
 
 /// Run one export, keeping the job bar up to date, and record the result.
@@ -328,7 +497,12 @@ pub(super) async fn run_export(
                 warn!("Export failed: {message}");
             }
             if let Some(view) = job.write().as_mut() {
-                view.result = Some(Err(message));
+                if cancelled && view.paused {
+                    // Paused, not stopped: it stays as it was, to be resumed.
+                    view.progress.stopping = false;
+                } else {
+                    view.result = Some(Err(message));
+                }
             }
         }
     }
@@ -388,5 +562,31 @@ pub(super) fn log_event(event: &JobEvent, logged_pages: &mut HashMap<usize, usiz
             }
         }
         JobEvent::Writing { file } => info!("Writing {file}"),
+    }
+}
+
+#[cfg(test)]
+mod saved_export_tests {
+    use super::*;
+
+    #[test]
+    fn an_unfinished_export_is_kept_with_where_to_go_on() {
+        let saved = SavedExport {
+            items: vec![
+                SavedExportItem { series_id: "a".into(), keys: vec!["c1".into(), "c2".into()] },
+                SavedExportItem { series_id: "b".into(), keys: vec!["c1".into()] },
+            ],
+            grouping: SavedGrouping::from(Grouping::EveryN(25)),
+            target: Some(ExportTarget::Folder { path: "out".into() }),
+            next: 1,
+        };
+        let back: SavedExport = serde_json::from_str(&serde_json::to_string(&saved).unwrap()).unwrap();
+        assert_eq!(back.next, 1);
+        assert_eq!(back.items.len(), 2);
+        assert_eq!(back.items[0].keys, ["c1", "c2"]);
+        assert_eq!(back.target, saved.target);
+        assert_eq!(Grouping::from(back.grouping), Grouping::EveryN(25));
+        // Nothing saved is nothing to resume.
+        assert!(serde_json::from_str::<SavedExport>("{}").unwrap().items.is_empty());
     }
 }

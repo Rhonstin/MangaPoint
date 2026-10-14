@@ -165,7 +165,7 @@ pub fn DownloadsTab() -> Element {
                 }
             }
             if working || failed_count > 0 {
-                button { class: "btn", onclick: move |_| state.go(Page::Downloads),
+                button { class: "btn", onclick: move |_| state.go(Page::Tasks),
                     Icon { name: "download", size: 16 } "All downloads"
                 }
             }

@@ -291,7 +291,7 @@ pub fn commit_plan(state: AppState) {
         "Added {} from {series} series to the downloads{skipped}.",
         logic::plural(chapters, "chapter"),
     ));
-    state.go(Page::Downloads);
+    state.go(Page::Tasks);
     ensure_queue_running(state);
 }
 
@@ -618,9 +618,16 @@ pub(super) const PROGRESS_REFRESH: Duration = Duration::from_millis(140);
 /// itself ends as soon as the pages already on their way are dropped.
 pub fn cancel_job(state: AppState) {
     let mut job = state.job;
+    // Paused: nothing is running, so it is simply given up.
+    if job.peek().as_ref().is_some_and(|v| v.paused && v.result.is_none()) {
+        job.set(None);
+        let _ = std::fs::remove_file(paths().export_job_file());
+        return;
+    }
     let mut guard = job.write();
     if let Some(view) = guard.as_mut() {
         if view.result.is_none() {
+            view.paused = false;
             view.cancel.cancel();
             view.progress.stopping = true;
         }

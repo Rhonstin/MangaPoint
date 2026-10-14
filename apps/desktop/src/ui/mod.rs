@@ -5,9 +5,8 @@ mod chapter_table;
 mod conversion;
 mod devices;
 mod download_dialog;
-mod downloads_page;
+mod tasks_page;
 mod export_page;
-mod exports_page;
 mod hang;
 mod icons;
 mod library_page;
@@ -133,11 +132,10 @@ fn Shell() -> Element {
             NavItem { page: Page::Search, label: "Search", icon: "search" }
             NavItem { page: Page::Library, label: "Library", icon: "book-open" }
             NavItem { page: Page::Export, label: "Export", icon: "file-down" }
-            NavItem { page: Page::Exports, label: "Exported files", icon: "folder-open" }
             div { class: "nav-spacer" }
             sidebar::SidebarJobs {}
             NavItem {
-                page: Page::Downloads, label: "Downloads", icon: "download",
+                page: Page::Tasks, label: "Tasks", icon: "list-checks",
                 badge: (in_queue > 0).then(|| in_queue.to_string()),
             }
             NavItem { page: Page::Sources, label: "Sources", icon: "layers" }
@@ -150,13 +148,15 @@ fn Shell() -> Element {
                 div { class: if page == Page::Search { "keep" } else { "keep gone" },
                     search::SearchPage {}
                 }
+                div { class: if page == Page::Library { "keep" } else { "keep gone" },
+                    library_page::LibraryPage {}
+                }
                 {match page {
                     Page::Setup => rsx! { setup::Setup {} },
                     Page::Search => rsx! {},
                     Page::Series => rsx! { workspace::WorkspacePage {} },
-                    Page::Library => rsx! { library_page::LibraryPage {} },
-                    Page::Downloads => rsx! { downloads_page::DownloadsPage {} },
-                    Page::Exports => rsx! { exports_page::ExportsPage {} },
+                    Page::Library => rsx! {},
+                    Page::Tasks => rsx! { tasks_page::TasksPage {} },
                     Page::Plan => rsx! { plan_page::PlanPage {} },
                     Page::Export => rsx! { export_page::ExportPage {} },
                     Page::Sources => rsx! { sources_page::SourcesPage {} },
@@ -178,7 +178,12 @@ fn NavItem(page: Page, label: &'static str, icon: &'static str, badge: Option<St
         .read()
         .as_ref()
         .is_some_and(|w| w.origin == Page::Library);
-    let open_from = state.workspace.read().as_ref().map(|w| w.origin);
+    // On the Export screen the series that was open waits to be put back.
+    let open_from = if current == Page::Export {
+        state.parked_workspace.read().as_ref().map(|w| w.origin)
+    } else {
+        state.workspace.read().as_ref().map(|w| w.origin)
+    };
     let active = current == page
         || (page == Page::Search && current == Page::Series && !opened_from_library)
         || (page == Page::Library && current == Page::Series && opened_from_library)

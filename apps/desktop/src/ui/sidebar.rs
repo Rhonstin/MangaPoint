@@ -1,9 +1,12 @@
-//! What is running, in the sidebar: the download in progress with the
-//! chapters it is on, and the export. Nothing takes room at the top of a page.
+//! What is running, in the sidebar: the download in progress and the export,
+//! each with the cover of its series and the chapters it is on. Nothing takes
+//! room at the top of a page.
 
-use super::downloads_page::ActiveChapters;
-use super::widgets::{Icon, ProgressBar};
-use super::work::{cancel_job, set_queue_paused};
+use super::tasks_page::ActiveChapters;
+use super::widgets::{Cover, Icon, NoCover, ProgressBar};
+use super::work::{
+    cancel_job, load_saved_cover, pause_export, resume_export, saved_cover_key, set_queue_paused,
+};
 use crate::logic::{human_duration, plural};
 use crate::state::{AppState, Page};
 use dioxus::prelude::*;
@@ -13,6 +16,27 @@ pub fn SidebarJobs() -> Element {
     rsx! {
         ExportCard {}
         DownloadCard {}
+    }
+}
+
+/// The cover of a series, small, loaded once.
+#[component]
+fn JobCover(series_id: String) -> Element {
+    let state = use_context::<AppState>();
+    let has_cover = state
+        .library
+        .read()
+        .find(&series_id)
+        .and_then(|s| s.info.as_ref())
+        .is_some_and(|i| i.has_cover);
+    {
+        let id = series_id.clone();
+        use_effect(move || load_saved_cover(state, &id));
+    }
+    rsx! {
+        div { class: "side-job-cover",
+            if has_cover { Cover { key_id: saved_cover_key(&series_id) } } else { NoCover {} }
+        }
     }
 }
 
@@ -32,85 +56,147 @@ fn DownloadCard() -> Element {
     } else {
         ("pause", "Pause the downloads")
     };
+    // The series on the cover: the one running, or the next in line.
+    let cover_of = running
+        .as_ref()
+        .map(|b| b.series_id.clone())
+        .or_else(|| {
+            queue
+                .batches
+                .iter()
+                .find(|b| b.status.is_active())
+                .map(|b| b.series_id.clone())
+        })
+        .unwrap_or_default();
     rsx! {
-        div { class: "side-job", onclick: move |_| state.go(Page::Downloads),
-            div { class: "side-job-head",
-                Icon { name: "download", size: 15 }
-                if let Some(batch) = &running {
-                    span { class: "side-job-title", title: "{batch.title}", "{batch.title}" }
-                } else {
-                    span { class: "side-job-title", "Downloads paused" }
+        div { class: "side-job", onclick: move |_| state.go(Page::Tasks),
+            div { class: "side-job-top",
+                for key in [cover_of.clone()] {
+                    JobCover { key: "{key}", series_id: key.clone() }
                 }
-                button { class: "side-job-btn", title: "{toggle_title}",
-                    onclick: move |e| {
-                        e.stop_propagation();
-                        set_queue_paused(state, !paused);
-                    },
-                    Icon { name: toggle_icon, size: 13 }
+                div { class: "side-job-info",
+                    div { class: "side-job-head",
+                        Icon { name: "download", size: 14 }
+                        if let Some(batch) = &running {
+                            span { class: "side-job-title", title: "{batch.title}", "{batch.title}" }
+                        } else {
+                            span { class: "side-job-title", "Downloads paused" }
+                        }
+                        button { class: "side-job-btn", title: "{toggle_title}",
+                            onclick: move |e| {
+                                e.stop_propagation();
+                                set_queue_paused(state, !paused);
+                            },
+                            Icon { name: toggle_icon, size: 13 }
+                        }
+                    }
+                    if let Some(batch) = &running {
+                        div { class: "side-job-meta",
+                            span { "{batch.chapters_done()} of {plural(batch.chapter_count(), \"chapter\")}" }
+                            if let Some(v) = batch.progress.pages_per_second() { span { "{v:.1} pages/s" } }
+                        }
+                    } else {
+                        div { class: "side-job-meta", "{plural(chapters_left, \"chapter\")} waiting" }
+                    }
                 }
             }
             if let Some(batch) = &running {
-                div { class: "side-job-meta",
-                    span { "{batch.chapters_done()} of {plural(batch.chapter_count(), \"chapter\")}" }
-                    if let Some(v) = batch.progress.pages_per_second() { span { "{v:.1} pages/s" } }
-                }
                 ProgressBar { fraction: Some(batch.progress.fraction()) }
                 ActiveChapters { progress: batch.progress.clone(), limit: 3 }
                 if waiting > 0 { div { class: "side-job-meta", "{waiting} more in line" } }
-            } else {
-                div { class: "side-job-meta", "{plural(chapters_left, \"chapter\")} waiting" }
             }
         }
     }
 }
 
-/// The export that is running, or has just ended.
+/// The export that is running, paused, or has just ended.
 #[component]
 fn ExportCard() -> Element {
     let state = use_context::<AppState>();
     let Some(job) = state.job.read().clone() else {
         return rsx! {};
     };
-    let running = job.result.is_none();
+    let ended = job.result.is_some();
+    let running = !ended && !job.paused;
     let (meta_class, meta) = match &job.result {
         Some(Ok(text)) => ("side-job-meta", text.clone()),
         Some(Err(text)) => ("side-job-meta bad", text.clone()),
         None => ("side-job-meta", String::new()),
     };
     let left = job.progress.eta_secs().map(human_duration);
+    let series_id = job.series_id.clone();
     rsx! {
-        div { class: "side-job", onclick: move |_| state.go(Page::Exports),
-            div { class: "side-job-head",
-                Icon { name: "file-down", size: 15 }
-                span { class: "side-job-title", title: "{job.title}", "{job.title}" }
-                if running {
-                    button { class: "side-job-btn", title: "Stop the export", disabled: job.progress.stopping,
-                        onclick: move |e| {
-                            e.stop_propagation();
-                            cancel_job(state);
-                        },
-                        Icon { name: "x", size: 13 }
+        div { class: "side-job", onclick: move |_| state.go(Page::Tasks),
+            div { class: "side-job-top",
+                for key in [series_id.clone()] {
+                    JobCover { key: "{key}", series_id: key.clone() }
+                }
+                div { class: "side-job-info",
+                    div { class: "side-job-head",
+                        Icon { name: "file-down", size: 14 }
+                        span { class: "side-job-title", title: "{job.title}", "{job.title}" }
+                        if ended {
+                            button { class: "side-job-btn", title: "Dismiss",
+                                onclick: move |e| {
+                                    e.stop_propagation();
+                                    let mut j = state.job;
+                                    j.set(None);
+                                },
+                                Icon { name: "x", size: 13 }
+                            }
+                        } else if job.paused {
+                            button { class: "side-job-btn", title: "Carry on with the export",
+                                onclick: move |e| {
+                                    e.stop_propagation();
+                                    resume_export(state);
+                                },
+                                Icon { name: "play", size: 13 }
+                            }
+                            button { class: "side-job-btn", title: "Stop it for good",
+                                onclick: move |e| {
+                                    e.stop_propagation();
+                                    cancel_job(state);
+                                },
+                                Icon { name: "x", size: 13 }
+                            }
+                        } else {
+                            button { class: "side-job-btn", title: "Pause the export", disabled: job.progress.stopping,
+                                onclick: move |e| {
+                                    e.stop_propagation();
+                                    pause_export(state);
+                                },
+                                Icon { name: "pause", size: 13 }
+                            }
+                            button { class: "side-job-btn", title: "Stop it for good", disabled: job.progress.stopping,
+                                onclick: move |e| {
+                                    e.stop_propagation();
+                                    cancel_job(state);
+                                },
+                                Icon { name: "x", size: 13 }
+                            }
+                        }
                     }
-                } else {
-                    button { class: "side-job-btn", title: "Dismiss",
-                        onclick: move |e| {
-                            e.stop_propagation();
-                            let mut j = state.job;
-                            j.set(None);
-                        },
-                        Icon { name: "x", size: 13 }
+                    if ended {
+                        div { class: "{meta_class}", "{meta}" }
+                    } else if job.paused {
+                        div { class: "side-job-meta",
+                            if job.progress.chapter_total > 0 {
+                                "Paused · {job.progress.finished} of {plural(job.progress.chapter_total, \"chapter\")}"
+                            } else {
+                                "Paused"
+                            }
+                        }
+                    } else {
+                        div { class: "side-job-meta",
+                            span { "{job.progress.finished} of {plural(job.progress.chapter_total, \"chapter\")}" }
+                            if let Some(left) = left { span { "{left} left" } }
+                        }
                     }
                 }
             }
-            if running {
-                div { class: "side-job-meta",
-                    span { "{job.progress.finished} of {plural(job.progress.chapter_total, \"chapter\")}" }
-                    if let Some(left) = left { span { "{left} left" } }
-                }
+            if !ended {
                 ProgressBar { fraction: Some(job.progress.fraction()) }
-                ActiveChapters { progress: job.progress.clone(), limit: 3 }
-            } else {
-                div { class: "{meta_class}", "{meta}" }
+                if running { ActiveChapters { progress: job.progress.clone(), limit: 3 } }
             }
         }
     }
