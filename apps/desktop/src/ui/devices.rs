@@ -167,15 +167,20 @@ pub fn DeviceAdder(
     let state = use_context::<AppState>();
     let mut text = use_signal(String::new);
     let mut focused = use_signal(|| false);
+    // The row that Enter would take: moved with the arrows or Tab, and back to
+    // the first whenever the text changes.
+    let mut active = use_signal(|| 0usize);
     let have = state.settings.read().devices();
     let query = text().trim().to_string();
     let matches = known_matches(&query, &have);
     let same_as_known = device_profiles::builtin()
         .iter()
         .any(|k| k.name.trim().eq_ignore_ascii_case(&query));
-    let can_create = !query.is_empty() && !same_as_known && matches.is_empty();
     let show_create = !query.is_empty() && !same_as_known;
     let open = focused() || always_open;
+    let known_count = matches.len();
+    let rows = known_count + usize::from(show_create);
+    let active_now = active().min(rows.saturating_sub(1));
 
     let mut finish = move |result: Result<String, DeviceError>| match result {
         Ok(id) => {
@@ -195,7 +200,7 @@ pub fn DeviceAdder(
         let result = add_custom(&mut settings.write(), &name);
         finish(result);
     };
-    let first = matches.first().cloned();
+    let chosen = matches.get(active_now).cloned();
     let typed = query.clone();
     let typed_for_row = query.clone();
 
@@ -219,16 +224,24 @@ pub fn DeviceAdder(
                             if let Some(close) = on_close { close.call(()); }
                         }
                     },
-                    oninput: move |e| { text.set(e.value()); focused.set(true); },
+                    oninput: move |e| { text.set(e.value()); focused.set(true); active.set(0); },
                     onkeydown: move |e| {
-                        if e.key() == Key::Enter {
+                        let key = e.key();
+                        if key == Key::Enter {
                             e.prevent_default();
-                            if let Some(k) = first.clone() {
+                            if let Some(k) = chosen.clone() {
                                 add_known_now(k);
                             } else if !typed.is_empty() {
                                 add_custom_now(typed.clone());
                             }
-                        } else if e.key() == Key::Escape {
+                        } else if rows > 0
+                            && (key == Key::ArrowDown || key == Key::ArrowUp || key == Key::Tab)
+                        {
+                            // Tab and Shift+Tab move through the rows too, and wrap round.
+                            e.prevent_default();
+                            let back = key == Key::ArrowUp || (key == Key::Tab && e.modifiers().shift());
+                            active.set(if back { (active_now + rows - 1) % rows } else { (active_now + 1) % rows });
+                        } else if key == Key::Escape {
                             text.set(String::new());
                             focused.set(false);
                             if let Some(close) = on_close { close.call(()); }
@@ -238,9 +251,10 @@ pub fn DeviceAdder(
             }
             if open {
                 div { class: "adder-list",
-                    for k in matches.iter().cloned() {
+                    for (i, k) in matches.iter().cloned().enumerate() {
                         button {
-                            key: "{k.id}", class: "adder-opt", r#type: "button",
+                            key: "{k.id}", class: if i == active_now { "adder-opt active" } else { "adder-opt" }, r#type: "button",
+                            onmouseenter: move |_| active.set(i),
                             // Pressed before the box loses focus, so the list stays until it is used.
                             onmousedown: {
                                 let k = k.clone();
@@ -249,18 +263,20 @@ pub fn DeviceAdder(
                             Icon { name: "hard-drive", size: 15 }
                             span { class: "grow", "{k.name}" }
                             span { class: "px-size", "{k.width} \u{d7} {k.height} px" }
+                            if i == active_now { span { class: "adder-enter", "Enter" } }
                         }
                     }
                     if show_create {
                         button {
-                            class: "adder-opt create", r#type: "button",
+                            class: if active_now == known_count { "adder-opt create active" } else { "adder-opt create" }, r#type: "button",
+                            onmouseenter: move |_| active.set(known_count),
                             onmousedown: {
                                 let name = typed_for_row.clone();
                                 move |e| { e.prevent_default(); add_custom_now(name.clone()); }
                             },
                             Icon { name: "plus", size: 15 }
                             span { class: "grow", "Create \u{201c}{typed_for_row}\u{201d} as your own reader" }
-                            if can_create { span { class: "px-size", "Enter" } }
+                            if active_now == known_count { span { class: "adder-enter", "Enter" } }
                         }
                     }
                     if matches.is_empty() && !show_create {
@@ -524,6 +540,7 @@ fn ReaderForm(revision: Signal<u32>) -> Element {
             }
         }
         if setup().wifi {
+            p { class: "sx-note warn", "Wi-Fi is slow. A whole series can take an hour or more to send, because the reader takes files very slowly. We recommend USB (or the SD card in your computer), and Wi-Fi for a few chapters at a time." }
             div { class: "sx-row",
                 div { class: "sx-text",
                     div { class: "sx-label", "Reader address"

@@ -599,13 +599,13 @@ async fn conversion_cache_invalidates_for_settings_device_and_format() {
     j.device.width = 320;
     j.device.height = 512;
     assert_eq!(export(&lib, &j).await.unwrap().cached_chapters, 0);
-    j.series.settings.format = Format::Xtc;
+    j.series.settings.format = Format::Xtch;
     assert_eq!(export(&lib, &j).await.unwrap().cached_chapters, 0);
     let final_run = export(&lib, &j).await.unwrap();
     assert_eq!(final_run.cached_chapters, 3);
     let bytes = fs::read(&final_run.files[0].location).unwrap();
     let file = XtcFile::parse(&bytes).unwrap();
-    assert_eq!(file.format, Format::Xtc);
+    assert_eq!(file.format, Format::Xtch);
     let image = file.decode_page(0).unwrap().image;
     assert_eq!((image.width, image.height), (320, 512));
     let _ = fs::remove_dir_all(lib.root);
@@ -670,11 +670,11 @@ async fn one_file_holds_every_chapter_with_a_working_chapter_menu() {
         .await
         .unwrap();
 
-    assert_eq!(names(&out), ["Test Series - Ch 1-3.xtch"]);
+    assert_eq!(names(&out), ["Test Series - Ch 1-3.xtc"]);
     assert_eq!((out.pages, out.chapters), (9, 3));
     let bytes = fs::read(&out.files[0].location).unwrap();
     let file = XtcFile::parse(&bytes).unwrap();
-    assert_eq!(file.format, Format::Xtch);
+    assert_eq!(file.format, Format::Xtc);
     assert_eq!(file.title, TITLE);
     assert_eq!(file.read_direction(), Some(ReadDirection::RightToLeft));
     let menu: Vec<_> = file
@@ -707,9 +707,9 @@ async fn one_file_per_chapter_and_one_file_every_n_chapters() {
     assert_eq!(
         names(&per),
         [
-            "Test Series - Ch 1.xtch",
-            "Test Series - Ch 2.xtch",
-            "Test Series - Ch 3.xtch"
+            "Test Series - Ch 1.xtc",
+            "Test Series - Ch 2.xtc",
+            "Test Series - Ch 3.xtc"
         ]
     );
     let one = XtcFile::parse(&fs::read(&per.files[1].location).unwrap())
@@ -718,14 +718,14 @@ async fn one_file_per_chapter_and_one_file_every_n_chapters() {
     assert_eq!(one, (3, 1));
 
     // Every 2 chapters: "Ch 1-2" and "Ch 3". The per-chapter run above already
-    // wrote "Ch 3.xtch" into the same folder, so the new copy is numbered
+    // wrote "Ch 3.xtc" into the same folder, so the new copy is numbered
     // rather than overwriting it.
     let every2 = export(&lib, &job(&lib, &series, Grouping::EveryN(2)))
         .await
         .unwrap();
     assert_eq!(
         names(&every2),
-        ["Test Series - Ch 1-2.xtch", "Test Series - Ch 3 (2).xtch"]
+        ["Test Series - Ch 1-2.xtc", "Test Series - Ch 3 (2).xtc"]
     );
     let _ = fs::remove_dir_all(lib.root);
 }
@@ -745,7 +745,7 @@ async fn a_subset_of_the_downloaded_chapters_can_be_exported() {
         })
         .unwrap();
     assert_eq!(file, ["Chapter 1", "Chapter 3"]);
-    assert_eq!(names(&out), ["Test Series - Ch 1-3.xtch"]);
+    assert_eq!(names(&out), ["Test Series - Ch 1-3.xtc"]);
 
     j.chapter_keys = vec!["nope".into()];
     assert!(matches!(
@@ -764,9 +764,9 @@ async fn a_page_limit_starts_a_new_file_with_part_numbers() {
     assert_eq!(
         names(&out),
         [
-            "Test Series - Part 1 - Ch 1.xtch",
-            "Test Series - Part 2 - Ch 2.xtch",
-            "Test Series - Part 3 - Ch 3.xtch"
+            "Test Series - Part 1 - Ch 1.xtc",
+            "Test Series - Part 2 - Ch 2.xtc",
+            "Test Series - Part 3 - Ch 3.xtc"
         ]
     );
     let _ = fs::remove_dir_all(lib.root);
@@ -932,7 +932,7 @@ async fn a_lone_unnumbered_chapter_is_named_after_itself() {
     let exported = export(&lib, &job(&lib, &series, Grouping::PerChapter))
         .await
         .unwrap();
-    assert_eq!(names(&exported), ["Test Series - Author's note.xtch"]);
+    assert_eq!(names(&exported), ["Test Series - Author's note.xtc"]);
     let _ = fs::remove_dir_all(lib.root);
 }
 

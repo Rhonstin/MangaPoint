@@ -1160,3 +1160,8 @@ input.px-name:focus { border-color: var(--accent); background: var(--bg); outlin
 .setup-list { display: flex; flex-direction: column; margin-top: 6px; max-height: clamp(180px, calc(100vh - 600px), 340px); overflow-y: auto; padding-right: 4px; }
 .setup-row { display: flex; align-items: center; gap: 16px; padding: 12px 12px; border-radius: 10px; transition: background-color 0.15s ease; }
 .setup-row:hover { background: var(--panel); }
+.adder-opt:hover, .adder-opt.active { background: var(--panel-3); }
+.adder-opt.create.active { color: var(--text); }
+.adder-enter { padding: 1px 7px; border: 1px solid var(--line-strong); border-radius: 5px; color: var(--muted); font-size: 0.72rem; }
+.sx-note.warn, .reader-note.warn { color: var(--warn); }
+.reader-note.warn svg { vertical-align: -2px; }

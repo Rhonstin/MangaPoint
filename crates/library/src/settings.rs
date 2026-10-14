@@ -36,11 +36,13 @@ pub struct ConversionSettings {
 }
 
 impl Default for ConversionSettings {
-    /// The plan's default profile, with XTCH (4 gray levels) as the format
-    /// because manga needs the grays.
+    /// The default profile: XTC (black and white), which readers show quickly
+    /// and which is half the size, and long strips cut with repeated rows so
+    /// nothing is cut off. XTCH (4 grays) is there to choose, but readers are
+    /// slow with it.
     fn default() -> Self {
         Self {
-            format: Format::Xtch,
+            format: Format::Xtc,
             direction: ReadDirection::RightToLeft,
             layout: Layout::Auto,
             crop: CropMode::Margins,
@@ -50,7 +52,7 @@ impl Default for ConversionSettings {
             spread: SpreadMode::Split,
             contrast: 55,
             auto_levels: true,
-            strip_cut: StripCut::Quiet,
+            strip_cut: StripCut::Overlap,
             overlap_percent: 8,
             dither: Dither::FloydSteinberg,
         }

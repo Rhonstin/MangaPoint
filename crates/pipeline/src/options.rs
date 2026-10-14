@@ -46,11 +46,11 @@ mod tests {
         let mut s = Settings::default();
         let o = process_options(&s);
         assert_eq!((o.width, o.height), (480, 800));
-        assert_eq!(o.depth, Depth::Two, "default is XTCH");
+        assert_eq!(o.depth, Depth::One, "default is XTC");
         assert_eq!(o.contrast, 55);
 
-        s.conversion.format = Format::Xtc;
-        assert_eq!(process_options(&s).depth, Depth::One);
+        s.conversion.format = Format::Xtch;
+        assert_eq!(process_options(&s).depth, Depth::Two);
     }
 
     #[test]

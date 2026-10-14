@@ -125,16 +125,16 @@ pub fn ConversionControls(
     let cut_tiles = choices(
         vec![
             (
+                "Repeat rows",
+                "Nothing is cut off",
+                "cutrepeat",
+                c.strip_cut == StripCut::Overlap,
+            ),
+            (
                 "Quiet spot",
                 "Cut where little is drawn",
                 "cutquiet",
                 c.strip_cut == StripCut::Quiet,
-            ),
-            (
-                "Repeat rows",
-                "The older way",
-                "cutrepeat",
-                c.strip_cut == StripCut::Overlap,
             ),
         ],
         |s, v| {
@@ -253,9 +253,9 @@ pub fn ConversionControls(
                 h4 { class: "mp-control-heading",
                     "Where long strips are cut"
                     Help { text: if c.strip_cut == StripCut::Quiet {
-                        "Each page ends at the quietest row near its bottom: a gap, a panel edge or a flat area. No row is shown twice."
+                        "Each page ends at the quietest row near its bottom: a gap, a panel edge or a flat area. No row is shown twice, but a page can end a little early and cut a drawing off."
                     } else {
-                        "Each page ends at the full screen height, and its last rows repeat at the top of the next page."
+                        "Each page ends at the full screen height, and its last rows repeat at the top of the next page, so nothing is cut off."
                     } }
                 }
                 div { class: "mp-choice-grid two", role: "group", aria_label: "Where long strips are cut", {cut_tiles.into_iter()} }
@@ -335,10 +335,12 @@ pub fn ConversionControls(
 
             h3 { class: "group", "Appearance" }
             div { class: "field",
-                label { "Quality" }
+                label { "Quality"
+                    Help { text: "XTC is black and white: half the size, and readers show it quickly. XTCH has 4 grays, but its files are twice as big and most readers are slow and laggy with them." }
+                }
                 select { aria_label: "Reader file quality", onchange: on_format,
-                    option { value: "xtch", selected: c.format == Format::Xtch, "4 grays (XTCH), best for manga" }
-                    option { value: "xtc", selected: c.format == Format::Xtc, "Black & white (XTC), smaller files" }
+                    option { value: "xtc", selected: c.format == Format::Xtc, "Black & white (XTC), recommended" }
+                    option { value: "xtch", selected: c.format == Format::Xtch, "4 grays (XTCH), slower, less recommended" }
                 }
             }
             div { class: "field",

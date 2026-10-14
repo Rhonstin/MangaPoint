@@ -831,10 +831,14 @@ fn SendPanel() -> Element {
                                     }
                                 }
                             }
+                            div { class: "reader-note warn",
+                                Icon { name: "triangle-alert", size: 14 }
+                                " Wi-Fi is slow: a whole series can take an hour or more to send. We recommend USB, or Wi-Fi for a few chapters at a time."
+                            }
                             {match &*wifi_test.read() {
                                 Some(Ok(())) => rsx! { div { class: "reader-note good", "The reader answered." } },
                                 Some(Err(message)) => rsx! { div { class: "reader-note bad", "{message}" } },
-                                None => rsx! { div { class: "reader-note", "Switch on the reader's Wi-Fi file transfer first. Long series are sent in parts of about 500 MB, which is all the reader can take at once." } },
+                                None => rsx! { div { class: "reader-note", "Switch on the reader's Wi-Fi file transfer first." } },
                             }}
                         },
                     }}
