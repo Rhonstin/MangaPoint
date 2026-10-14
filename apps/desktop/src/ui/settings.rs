@@ -142,6 +142,14 @@ pub fn SettingsPage() -> Element {
                             }
                         }
 
+                        Group { title: "Notifications" }
+                        Row { label: "Tell me when something finishes", desc: "A notification from your system when a download or an export is done, or could not be finished.",
+                            Toggle {
+                                on: s.notifications,
+                                onchange: move |on: bool| { let mut st = state.settings; st.write().notifications = on; state.save_settings(); },
+                            }
+                        }
+
                         Group { title: "Saved pages" }
                         Row {
                             label: "Page quality",

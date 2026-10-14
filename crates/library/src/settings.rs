@@ -267,6 +267,8 @@ pub struct Settings {
     /// Shrink downloaded pages to save disk space. Off by default: pages are
     /// kept exactly as downloaded, for the best quality.
     pub shrink_downloads: bool,
+    /// Show a system notification when a download or an export finishes.
+    pub notifications: bool,
     /// How many chapters and pages to download at once.
     pub download: DownloadSettings,
     /// Where new downloads are kept. `None` means the app's own folder.
@@ -298,6 +300,7 @@ impl Default for Settings {
             export: ExportSettings::default(),
             browser_support: false,
             shrink_downloads: false,
+            notifications: true,
             download: DownloadSettings::default(),
             library_dir: None,
             library_dirs: Vec::new(),

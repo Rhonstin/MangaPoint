@@ -7,6 +7,7 @@ mod assets;
 mod backend;
 mod logfile;
 mod logic;
+mod notify;
 mod queue;
 mod sample;
 mod state;

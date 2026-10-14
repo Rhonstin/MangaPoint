@@ -482,6 +482,7 @@ pub(super) async fn run_export(
             exports.write().add(record);
             state.save_exports();
             let summary = format!("Exported {} file(s)", outcome.files.len());
+            crate::notify::finished(state, "Export finished", &format!("{}: {summary}", series.title));
             if let Some(view) = job.write().as_mut() {
                 view.result = Some(Ok(summary));
             }
@@ -497,6 +498,9 @@ pub(super) async fn run_export(
                 info!("Export cancelled");
             } else {
                 warn!("Export failed: {message}");
+            }
+            if !cancelled {
+                crate::notify::finished(state, "Export failed", &format!("{}: {message}", series.title));
             }
             if let Some(view) = job.write().as_mut() {
                 if cancelled && view.paused {

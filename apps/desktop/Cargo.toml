@@ -23,6 +23,7 @@ base64 = "0.22"
 sha2 = "0.10"
 sysinfo = { version = "0.37", default-features = false, features = ["system"] }
 rfd = "0.17"
+notify-rust = "4"
 serde = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
