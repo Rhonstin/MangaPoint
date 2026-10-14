@@ -46,7 +46,7 @@ try {
         Wait-Until "document.querySelectorAll('.px-scroll .px-preset').length >= 1" 15 'the reader list'
         if (Eval "document.querySelectorAll('.size-boxes').length") { throw 'size boxes are on the Export screen' }
         Mouse-Click '.px-new' 'New device'
-        Wait-Until "document.querySelector('.size-boxes.labelled') !== null" 15 'the reader page in Settings'
+        Wait-Until "document.querySelector('.dim-box') !== null" 15 'the reader page in Settings'
         Mouse-Click '.nav-item' 'export'
         Wait-Until "document.querySelector('.export-screen') !== null" 30 'the Export screen'
     }
