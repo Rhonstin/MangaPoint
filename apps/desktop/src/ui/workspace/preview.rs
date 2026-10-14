@@ -247,6 +247,7 @@ fn ZoomMenu() -> Element {
     rsx! {
         div { class: "{class}",
             div { class: "zoom-field",
+                span { class: "zoom-icon", Icon { name: "zoom-in", size: 15 } }
                 input {
                     r#type: "text", value: "{label}", "aria-label": "Zoom", spellcheck: "false",
                     onfocus: move |_| open.set(true),

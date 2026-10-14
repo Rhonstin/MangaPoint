@@ -202,10 +202,8 @@ pub fn select_by_text(text: &str, numbers: &[Option<f64>]) -> Result<Vec<usize>,
 pub enum TargetChoice {
     /// The configured output folder (or the app's default one).
     Folder,
-    /// The reader's drive (or SD card), the place chosen in the Export screen.
+    /// The reader, the way its setup says (USB or Wi-Fi).
     Reader,
-    /// The reader's WebDAV share from Settings.
-    WebDav,
 }
 
 pub fn export_target(
@@ -221,20 +219,28 @@ pub fn export_target(
                 .clone()
                 .unwrap_or_else(|| default_dir.to_path_buf()),
         }),
-        TargetChoice::Reader => match &settings.export.reader_dir {
-            Some(dir) => Ok(ExportTarget::Device {
-                mount: dir.clone(),
-                folder: settings.export.device_folder.clone(),
-            }),
-            None => Err("Choose where the reader is first (under Send to).".into()),
-        },
-        TargetChoice::WebDav => match settings.export.webdav_url.as_deref() {
-            Some(url) if !url.trim().is_empty() => Ok(ExportTarget::WebDav {
-                base_url: url.trim().to_string(),
-                folder: settings.export.device_folder.clone(),
-            }),
-            _ => Err("Type the reader's Wi-Fi address first (under Send to).".into()),
-        },
+        TargetChoice::Reader => {
+            let setup = settings.reader_setup();
+            match setup.method {
+                library::ExportMethod::Usb => match setup.reader_dir {
+                    Some(dir) => Ok(ExportTarget::Device {
+                        mount: dir,
+                        folder: setup.folder,
+                    }),
+                    None => Err("Choose where the reader is first (under Send to).".into()),
+                },
+                library::ExportMethod::WiFi => match setup.wifi_url.as_deref() {
+                    Some(url) if !url.trim().is_empty() => Ok(ExportTarget::WebDav {
+                        base_url: url.trim().to_string(),
+                        folder: setup.folder,
+                    }),
+                    _ => Err("Add the reader's Wi-Fi address in Settings, under Your reader.".into()),
+                },
+                library::ExportMethod::None => {
+                    Err("This reader has no export method. Set one in Settings, under Your reader.".into())
+                }
+            }
+        }
     }
 }
 
@@ -1040,7 +1046,7 @@ mod tests {
             }
         );
         assert!(export_target(&TargetChoice::Reader, &s, default_dir).is_err());
-        s.export.reader_dir = Some("E:\\".into());
+        s.update_reader_setup(|r| r.reader_dir = Some("E:\\".into()));
         assert_eq!(
             export_target(&TargetChoice::Reader, &s, default_dir).unwrap(),
             ExportTarget::Device {
@@ -1048,15 +1054,18 @@ mod tests {
                 folder: "Manga".into()
             }
         );
-        assert!(export_target(&TargetChoice::WebDav, &s, default_dir).is_err());
-        s.export.webdav_url = Some(" http://192.168.3.3 ".into());
+        s.update_reader_setup(|r| r.method = library::ExportMethod::WiFi);
+        assert!(export_target(&TargetChoice::Reader, &s, default_dir).is_err());
+        s.update_reader_setup(|r| r.wifi_url = Some(" http://192.168.3.3 ".into()));
         assert_eq!(
-            export_target(&TargetChoice::WebDav, &s, default_dir).unwrap(),
+            export_target(&TargetChoice::Reader, &s, default_dir).unwrap(),
             ExportTarget::WebDav {
                 base_url: "http://192.168.3.3".into(),
                 folder: "Manga".into()
             }
         );
+        s.update_reader_setup(|r| r.method = library::ExportMethod::None);
+        assert!(export_target(&TargetChoice::Reader, &s, default_dir).is_err());
     }
 
     fn started(index: usize, total: usize) -> JobEvent {

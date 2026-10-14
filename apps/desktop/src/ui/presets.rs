@@ -23,6 +23,18 @@ pub fn apply_to_series(
     schedule_preview(state, 0);
 }
 
+/// Replace one of the user's presets with some settings.
+pub fn save_to_preset(state: AppState, id: &str, settings: ConversionSettings) {
+    let result = state.edit_presets(|p| p.overwrite(id, settings));
+    match result {
+        Ok(()) => {
+            state.save_presets();
+            state.notify("Preset saved.");
+        }
+        Err(e) => state.error(e.to_string()),
+    }
+}
+
 /// Delete one of the user's presets, or put a changed built-in back. Series
 /// and defaults that pointed at a deleted preset keep their settings but lose
 /// the link.

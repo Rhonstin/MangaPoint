@@ -30,7 +30,7 @@ pub use presets::{
 };
 pub use settings::{
     Animations, ConversionField, ConversionSettings, DownloadLimits, DownloadSettings,
-    DownloadSpeed, ExportSettings, Settings,
+    DownloadSpeed, ExportMethod, ExportSettings, ReaderSetup, Settings,
 };
 pub use sources::{Choice, SourceState};
 pub use speeds::{SourceSpeed, SpeedDb};

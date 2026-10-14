@@ -1,15 +1,96 @@
 //! Choosing the reader pages are made for, and adding your own.
 
-use super::widgets::{Chip, Help, Icon};
+use super::widgets::{Help, Icon};
 use crate::state::AppState;
-use device_profiles::{DeviceError, DeviceProfile, Firmware, Support};
+use device_profiles::{DeviceError, DeviceProfile, Firmware};
 use dioxus::prelude::*;
+use library::{ExportMethod, ReaderSetup};
 
-fn support_chip(support: Support) -> (&'static str, &'static str) {
-    match support {
-        Support::Documented => ("opens XTC", "ok"),
-        Support::CommunityReported => ("reported to open XTC", "ok"),
-        Support::Unverified => ("not tried yet", "warn"),
+/// The file types a reader can be said to open.
+const FORMAT_OPTIONS: [&str; 2] = ["XTC", "XTCH"];
+
+/// The formats as a row of pills inside a box: type one and press Enter, or
+/// pick from the list that opens under the box.
+#[component]
+fn FormatTags(value: Vec<String>, on_change: EventHandler<Vec<String>>) -> Element {
+    let mut text = use_signal(String::new);
+    let mut focused = use_signal(|| false);
+    let query = text().trim().to_uppercase();
+    let free: Vec<&str> = FORMAT_OPTIONS
+        .iter()
+        .copied()
+        .filter(|o| !value.iter().any(|v| v.eq_ignore_ascii_case(o)) && o.contains(query.as_str()))
+        .collect();
+    let with = {
+        let value = value.clone();
+        move |option: &str| {
+            let mut next = value.clone();
+            next.push(option.to_string());
+            next.sort_by_key(|v| FORMAT_OPTIONS.iter().position(|o| o.eq_ignore_ascii_case(v)));
+            next
+        }
+    };
+    let first_free = free.first().map(|f| f.to_string());
+    let on_enter = with.clone();
+    let last_removable = value.last().cloned();
+    let value_for_backspace = value.clone();
+    rsx! {
+        div { class: if focused() { "tags focused" } else { "tags" },
+            for v in value.iter() {
+                {
+                    let name = v.clone();
+                    let rest: Vec<String> = value.iter().filter(|x| *x != v).cloned().collect();
+                    rsx! {
+                        span { class: "tag", key: "{name}",
+                            "{name}"
+                            button { class: "tag-x", r#type: "button", title: "Remove {name}",
+                                onclick: move |_| on_change.call(rest.clone()),
+                                Icon { name: "x", size: 11 }
+                            }
+                        }
+                    }
+                }
+            }
+            input {
+                r#type: "text", value: "{text}", spellcheck: "false", "aria-label": "Add a file format",
+                placeholder: if value.is_empty() { "Add a format" } else { "" },
+                onfocus: move |_| focused.set(true),
+                onblur: move |_| focused.set(false),
+                oninput: move |e| text.set(e.value()),
+                onkeydown: move |e| {
+                    if e.key() == Key::Enter {
+                        e.prevent_default();
+                        if let Some(option) = &first_free {
+                            on_change.call(on_enter(option));
+                            text.set(String::new());
+                        }
+                    } else if e.key() == Key::Backspace && text().is_empty() && last_removable.is_some() {
+                        let mut next = value_for_backspace.clone();
+                        next.pop();
+                        on_change.call(next);
+                    }
+                },
+            }
+            if focused() && !free.is_empty() {
+                div { class: "tag-options",
+                    for option in free.iter().copied() {
+                        button {
+                            key: "{option}", class: "tag-option", r#type: "button",
+                            // Pressed before the box loses focus, so the list stays until it is used.
+                            onmousedown: {
+                                let with = with.clone();
+                                move |e| {
+                                    e.prevent_default();
+                                    on_change.call(with(option));
+                                    text.set(String::new());
+                                }
+                            },
+                            "{option}"
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -140,6 +221,8 @@ struct ReaderDraft {
     /// The preset new series start from; empty for the default.
     preset: String,
     firmware: Firmware,
+    /// How the reader receives files, and the file types it opens.
+    setup: ReaderSetup,
 }
 
 /// Save a draft over the chosen reader. A built-in reader whose size changes
@@ -170,12 +253,14 @@ fn apply_reader(settings: &mut library::Settings, draft: &ReaderDraft) -> Result
         }
         base.id.clone()
     };
+    let id_for_setup = id.clone();
     if draft.preset.is_empty() {
         settings.device_presets.remove(&id);
     } else {
         settings.device_presets.insert(id, draft.preset.clone());
     }
     settings.firmware = draft.firmware;
+    settings.reader_setups.insert(id_for_setup, draft.setup.clone());
     Ok(())
 }
 
@@ -253,7 +338,11 @@ fn ReaderForm(revision: Signal<u32>) -> Element {
             .cloned()
             .unwrap_or_default(),
         firmware: s.firmware,
+        setup: s.reader_setup(),
     };
+    let mut setup = use_signal(|| saved.setup.clone());
+    let mut wifi_test = use_signal(|| None::<Result<(), String>>);
+    let mut testing = use_signal(|| false);
     let mut name = use_signal(|| saved.name.clone());
     let mut width = use_signal(|| saved.width.to_string());
     let mut height = use_signal(|| saved.height.to_string());
@@ -267,10 +356,11 @@ fn ReaderForm(revision: Signal<u32>) -> Element {
         height: height().trim().parse().unwrap_or(0),
         preset: preset(),
         firmware: firmware(),
+        setup: setup(),
     };
     let dirty = draft != saved;
-    let (stock_text, stock_kind) = support_chip(current.xtc_support(Firmware::Stock));
-    let (cross_text, cross_kind) = support_chip(current.xtc_support(Firmware::CrossPoint));
+    let wifi_url_now = setup().wifi_url.clone().unwrap_or_default();
+    let wifi_url_to_test = wifi_url_now.clone();
     let presets = state.presets.read().all();
     let (w0, h0) = (saved.width, saved.height);
     let remove_id = current.id.clone();
@@ -332,15 +422,15 @@ fn ReaderForm(revision: Signal<u32>) -> Element {
 
         div { class: "sx-row",
             div { class: "sx-text",
-                div { class: "sx-label", "Opens XTC files"
-                    Help { text: if editable { "A custom reader counts as untested until you try a file on it." } else { "What we know about this reader and each firmware." } }
+                div { class: "sx-label", "File formats"
+                    Help { text: "The file types this reader opens. Type one and press Enter, or pick from the list." }
                 }
             }
-            div { class: "sx-control sx-inline", style: "flex-wrap: wrap; justify-content: flex-end",
-                span { class: "muted small", style: "align-self: center", "CrossPoint" }
-                Chip { text: cross_text, kind: Some(cross_kind.to_string()) }
-                span { class: "muted small", style: "align-self: center", "Stock" }
-                Chip { text: stock_text, kind: Some(stock_kind.to_string()) }
+            div { class: "sx-control",
+                FormatTags {
+                    value: setup().formats.clone(),
+                    on_change: move |list: Vec<String>| setup.write().formats = list,
+                }
             }
         }
         div { class: "sx-row",
@@ -370,6 +460,88 @@ fn ReaderForm(revision: Signal<u32>) -> Element {
                     onchange: move |e| firmware.set(if e.value() == "cross" { Firmware::CrossPoint } else { Firmware::Stock }),
                     option { value: "cross", selected: firmware() == Firmware::CrossPoint, "CrossPoint" }
                     option { value: "stock", selected: firmware() == Firmware::Stock, "Stock (the one it came with)" }
+                }
+            }
+        }
+
+        div { class: "sx-row",
+            div { class: "sx-text",
+                div { class: "sx-label", "Export method"
+                    Help { text: "How files get to this reader. Where they go is chosen by the reader, not each time." }
+                }
+            }
+            div { class: "sx-control",
+                div { class: "seg",
+                    button {
+                        class: if setup().method == ExportMethod::Usb { "on" } else { "" },
+                        onclick: move |_| setup.write().method = ExportMethod::Usb, "USB"
+                    }
+                    button {
+                        class: if setup().method == ExportMethod::WiFi { "on" } else { "" },
+                        onclick: move |_| setup.write().method = ExportMethod::WiFi, "Wi-Fi"
+                    }
+                    button {
+                        class: if setup().method == ExportMethod::None { "on" } else { "" },
+                        onclick: move |_| setup.write().method = ExportMethod::None, "None"
+                    }
+                }
+            }
+        }
+        if setup().method == ExportMethod::WiFi {
+            div { class: "sx-row",
+                div { class: "sx-text",
+                    div { class: "sx-label", "Reader address"
+                        Help { text: "The address the reader shows on its screen when its Wi-Fi file transfer is on, for example http://192.168.3.3" }
+                    }
+                }
+                div { class: "sx-control sx-inline",
+                    input {
+                        r#type: "text", placeholder: "http://192.168.3.3", value: "{wifi_url_now}",
+                        oninput: move |e| {
+                            let v = e.value();
+                            setup.write().wifi_url = (!v.trim().is_empty()).then(|| v.trim().to_string());
+                            wifi_test.set(None);
+                        },
+                    }
+                    button { class: "btn", disabled: testing() || wifi_url_now.trim().is_empty(),
+                        onclick: move |_| {
+                            let url = wifi_url_to_test.clone();
+                            spawn(async move {
+                                testing.set(true);
+                                wifi_test.set(None);
+                                let result = pipeline::export::check_webdav(&url).await;
+                                wifi_test.set(Some(result));
+                                testing.set(false);
+                            });
+                        },
+                        if testing() { "Looking…" } else { "Test" }
+                    }
+                }
+            }
+            {match &*wifi_test.read() {
+                Some(Ok(())) => rsx! { p { class: "sx-note", style: "color: var(--ok)", "The reader answered." } },
+                Some(Err(message)) => rsx! { p { class: "sx-note", style: "color: var(--bad)", "{message}" } },
+                None => rsx! {},
+            }}
+        }
+        if setup().method == ExportMethod::Usb {
+            p { class: "sx-note", "When you export, plug the reader in with USB (drive mode), or put its SD card in this computer. You pick the drive on the Export screen." }
+        }
+        if setup().method == ExportMethod::None {
+            p { class: "sx-note", "Nothing is sent to this reader. Exports go to a folder on this computer, and you move the files yourself." }
+        }
+        if setup().method != ExportMethod::None {
+            div { class: "sx-row",
+                div { class: "sx-text",
+                    div { class: "sx-label", "Folder on the reader"
+                        Help { text: "Files go into this folder on the reader. It is made if it is not there." }
+                    }
+                }
+                div { class: "sx-control",
+                    input {
+                        r#type: "text", value: "{setup().folder}",
+                        oninput: move |e| setup.write().folder = e.value(),
+                    }
                 }
             }
         }
@@ -483,6 +655,7 @@ mod tests {
             height,
             preset: String::new(),
             firmware: Firmware::CrossPoint,
+            setup: ReaderSetup::default(),
         }
     }
 
@@ -518,11 +691,5 @@ mod tests {
         assert!(apply_reader(&mut s, &draft("Travel", 5, 500)).is_err());
         assert_eq!(s.device_profile().width, before.device_profile().width);
         assert!(apply_reader(&mut s, &draft("  ", 300, 500)).is_err());
-    }
-
-    #[test]
-    fn support_is_shown_with_a_colour() {
-        assert_eq!(support_chip(Support::Unverified), ("not tried yet", "warn"));
-        assert_eq!(support_chip(Support::Documented).1, "ok");
     }
 }

@@ -297,6 +297,10 @@ fn run_action(state: AppState, action: ModalAction) {
                 work::delete_downloads(state, series_ids)
             }
             ModalAction::DeletePreset { id } => presets::delete_preset(state, id),
+            ModalAction::LoadPreset { series_id, preset_id, settings } => {
+                presets::apply_to_series(state, &series_id, preset_id, settings)
+            }
+            ModalAction::SavePreset { id, settings } => presets::save_to_preset(state, &id, settings),
             ModalAction::DeleteExport { record_id } => work::delete_export(state, record_id),
             ModalAction::DeleteExportedFile { record_id, path } => {
                 work::delete_exported_file(state, record_id, path)

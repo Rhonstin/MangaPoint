@@ -224,6 +224,46 @@ impl DownloadSettings {
     }
 }
 
+/// How files get from this computer to a reader.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ExportMethod {
+    /// Over a cable (or the SD card put in this computer): the drive is chosen
+    /// when exporting.
+    #[default]
+    Usb,
+    /// Over Wi-Fi, to the reader's own file transfer.
+    WiFi,
+    /// Nothing sends files to it: they go to a folder on this computer.
+    None,
+}
+
+/// What belongs to one reader about getting files onto it. Kept per reader.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ReaderSetup {
+    pub method: ExportMethod,
+    /// The reader's address on Wi-Fi, for [`ExportMethod::WiFi`].
+    pub wifi_url: Option<String>,
+    /// The folder files go into on the reader, for USB and Wi-Fi.
+    pub folder: String,
+    /// The drive (or a folder on it) chosen for USB, as last used.
+    pub reader_dir: Option<PathBuf>,
+    /// The file types the reader opens, such as "XTC" and "XTCH".
+    pub formats: Vec<String>,
+}
+
+impl Default for ReaderSetup {
+    fn default() -> Self {
+        Self {
+            method: ExportMethod::Usb,
+            wifi_url: None,
+            folder: "Manga".into(),
+            reader_dir: None,
+            formats: vec!["XTC".into(), "XTCH".into()],
+        }
+    }
+}
+
 /// How the app moves between pages and parts of them.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Animations {
@@ -285,6 +325,8 @@ pub struct Settings {
     pub notifications: bool,
     /// Clean (fades, one part after another) or snappy (pages just appear).
     pub animations: Animations,
+    /// How each reader receives files, by device id.
+    pub reader_setups: BTreeMap<String, ReaderSetup>,
     /// How many chapters and pages to download at once.
     pub download: DownloadSettings,
     /// Where new downloads are kept. `None` means the app's own folder.
@@ -304,6 +346,26 @@ pub struct Settings {
     pub search_excluded_sources: Vec<String>,
 }
 
+impl Settings {
+    /// How the chosen reader receives files. A reader without a setup of its
+    /// own starts from what was kept before readers had one.
+    pub fn reader_setup(&self) -> ReaderSetup {
+        self.reader_setups.get(&self.device).cloned().unwrap_or_else(|| ReaderSetup {
+            wifi_url: self.export.webdav_url.clone(),
+            folder: self.export.device_folder.clone(),
+            reader_dir: self.export.reader_dir.clone(),
+            ..ReaderSetup::default()
+        })
+    }
+
+    /// Change how the chosen reader receives files.
+    pub fn update_reader_setup(&mut self, change: impl FnOnce(&mut ReaderSetup)) {
+        let mut setup = self.reader_setup();
+        change(&mut setup);
+        self.reader_setups.insert(self.device.clone(), setup);
+    }
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -318,6 +380,7 @@ impl Default for Settings {
             shrink_downloads: false,
             notifications: true,
             animations: Animations::Clean,
+            reader_setups: BTreeMap::new(),
             download: DownloadSettings::default(),
             library_dir: None,
             library_dirs: Vec::new(),
@@ -490,5 +553,31 @@ mod tests {
         s.export.webdav_url = Some("http://192.168.3.3/".into());
         let json = serde_json::to_string(&s).unwrap();
         assert_eq!(serde_json::from_str::<Settings>(&json).unwrap(), s);
+    }
+
+    #[test]
+    fn a_reader_has_its_own_way_of_receiving_files() {
+        let mut s = Settings::default();
+        s.export.device_folder = "Books".into();
+        s.export.webdav_url = Some("http://192.168.3.3".into());
+        // Without a setup of its own, the older settings are what it starts from.
+        let first = s.reader_setup();
+        assert_eq!(first.method, ExportMethod::Usb);
+        assert_eq!(first.folder, "Books");
+        assert_eq!(first.wifi_url.as_deref(), Some("http://192.168.3.3"));
+        assert_eq!(first.formats, ["XTC", "XTCH"]);
+        s.update_reader_setup(|r| {
+            r.method = ExportMethod::WiFi;
+            r.folder = "Manga".into();
+        });
+        assert_eq!(s.reader_setup().method, ExportMethod::WiFi);
+        // Another reader is not affected.
+        s.device = "my-reader".into();
+        assert_eq!(s.reader_setup().method, ExportMethod::Usb);
+        // It is kept in the file and comes back.
+        let json = serde_json::to_string(&s).unwrap();
+        let back: Settings = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.reader_setups.len(), 1);
+        assert!(serde_json::from_str::<Settings>("{}").unwrap().reader_setups.is_empty());
     }
 }

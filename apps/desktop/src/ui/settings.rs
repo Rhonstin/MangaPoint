@@ -233,17 +233,11 @@ pub fn SettingsPage() -> Element {
                                 }
                             }
                         }
-                        Row { label: "Folder on the reader", desc: "The folder files go into on the reader's drive. You choose the drive itself when you export.",
-                            input {
-                                r#type: "text", value: "{s.export.device_folder}",
-                                oninput: move |e| update(|s, v| s.export.device_folder = v, e.value()),
-                            }
-                        }
-                        Row { label: "Reader Wi-Fi address", desc: "For sending over Wi-Fi to CrossPoint's file transfer.",
-                            input {
-                                r#type: "text", placeholder: "http://192.168.3.3 (optional)",
-                                value: "{s.export.webdav_url.clone().unwrap_or_default()}",
-                                oninput: move |e| update(|s, v| s.export.webdav_url = (!v.trim().is_empty()).then(|| v.trim().to_string()), e.value()),
+                        Row { label: "Save to reader", desc: "This is managed in the Your reader section: how files get to each reader, and the folder they go into.",
+                            button { class: "btn",
+                                onclick: move |_| { let mut current = state.settings_section; current.set(SettingsSection::Reader); },
+                                Icon { name: "hard-drive", size: 15 }
+                                "Your reader"
                             }
                         }
                         Group { title: "Downloaded chapters" }

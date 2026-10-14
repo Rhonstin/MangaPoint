@@ -138,6 +138,17 @@ pub enum ModalAction {
     DeletePreset {
         id: String,
     },
+    /// Give a series a preset's settings (replacing its own).
+    LoadPreset {
+        series_id: String,
+        preset_id: Option<String>,
+        settings: library::ConversionSettings,
+    },
+    /// Save a series' settings over one of the user's presets.
+    SavePreset {
+        id: String,
+        settings: library::ConversionSettings,
+    },
     /// Delete an exported file from disk.
     /// Every file of one export.
     DeleteExport { record_id: String },
