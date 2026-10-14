@@ -295,17 +295,96 @@ pub(super) fn mascot_pixels() -> Vec<(usize, usize, &'static str)> {
     out
 }
 
-/// The cat running in circles, for whatever is loading. `size` is the width
-/// of the whole circle in pixels.
+/// The cat seen from above, running with its nose up: 12 pixels wide, 20 tall.
+/// The two frames swap legs (diagonal pairs) and swing the tail.
+fn runner_frame(step: bool) -> String {
+    const W: usize = 12;
+    const H: usize = 20;
+    let mut g = [[CLEAR; W]; H];
+    let head = [
+        "..gg....gg..",
+        "..gggggggg..",
+        ".gggggggggg.",
+        ".ggeggggegg.",
+        ".ggggppgggg.",
+        "..gggggggg..",
+        "...gggggg...",
+        "..ggsggsgg..",
+        "..gggggggg..",
+        "..ggsggsgg..",
+        "..gggggggg..",
+        "..ggsggsgg..",
+        "...gggggg...",
+        "....gggg....",
+    ];
+    for (y, row) in head.iter().enumerate() {
+        for (x, c) in row.bytes().enumerate() {
+            g[y][x] = if c == b'.' { CLEAR } else { c };
+        }
+    }
+    // Each paw is 2x2; a diagonal pair reaches forward while the other pushes back.
+    let (fl, fr, rl, rr) = if step { (5, 8, 12, 9) } else { (8, 5, 9, 12) };
+    for (x, y) in [(0, fl), (10, fr), (0, rl), (10, rr)] {
+        for dy in 0..2 {
+            for dx in 0..2 {
+                g[y + dy][x + dx] = LIGHT;
+            }
+        }
+    }
+    // The tail trails behind and swings from side to side.
+    for (y, row) in g.iter_mut().enumerate().skip(14) {
+        let x = match (y >= 18, step) {
+            (false, _) => 5,
+            (true, true) => 6,
+            (true, false) => 4,
+        };
+        row[x] = SHADE;
+        row[x + 1] = SHADE;
+    }
+    let mut out = String::new();
+    for (y, row) in g.iter().enumerate() {
+        let mut x = 0;
+        while x < W {
+            let c = row[x];
+            let mut end = x;
+            while end + 1 < W && row[end + 1] == c {
+                end += 1;
+            }
+            if c != CLEAR {
+                out.push_str(&format!(
+                    "<rect x=\"{x}\" y=\"{y}\" width=\"{}\" height=\"1\" fill=\"{}\"/>",
+                    end - x + 1,
+                    color(c)
+                ));
+            }
+            x = end + 1;
+        }
+    }
+    out
+}
+
+fn runner_markup() -> &'static str {
+    static MARKUP: OnceLock<String> = OnceLock::new();
+    MARKUP.get_or_init(|| {
+        format!(
+            "<g class=\"a\">{}</g><g class=\"b\">{}</g>",
+            runner_frame(true),
+            runner_frame(false)
+        )
+    })
+}
+
+/// The cat seen from above, running in circles, for whatever is loading.
+/// `size` is the width of the whole circle in pixels.
 #[component]
 pub fn CirclingCat(#[props(default = 120)] size: u32) -> Element {
     rsx! {
         span { class: "orbit", style: "--orbit: {size}px", role: "img", "aria-label": "Loading",
             svg {
                 class: "orbit-cat",
-                view_box: "0 0 32 32",
+                view_box: "0 0 12 20",
                 "aria-hidden": "true",
-                dangerous_inner_html: "{sitting_markup(false, None)}",
+                dangerous_inner_html: "{runner_markup()}",
             }
         }
     }

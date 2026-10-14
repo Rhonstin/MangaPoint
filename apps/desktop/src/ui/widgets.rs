@@ -130,7 +130,7 @@ pub fn Loading(label: String) -> Element {
 pub fn Busy(label: String, size: Option<u32>) -> Element {
     rsx! {
         span { class: "busy",
-            super::cat::CirclingCat { size: size.unwrap_or(30) }
+            super::cat::CirclingCat { size: size.unwrap_or(44) }
             "{label}"
         }
     }
