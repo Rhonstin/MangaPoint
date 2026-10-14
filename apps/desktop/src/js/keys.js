@@ -12,7 +12,7 @@ if (!window.mpKeysReady) {
       el.isContentEditable);
 
   const goSearch = () => {
-    const nav = [...document.querySelectorAll('.nav .nav-item')].find((b) => /^\s*search\s*$/i.test(b.innerText));
+    const nav = [...document.querySelectorAll('.nav .nav-item')].find((b) => /^\s*search\b/i.test(b.innerText));
     if (nav && !nav.classList.contains('active')) nav.click();
     let tries = 0;
     const focus = () => {

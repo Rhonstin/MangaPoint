@@ -71,6 +71,9 @@ pub fn body(name: &str) -> Option<&'static str> {
         "circle-alert" => Some(
             r#"<circle cx="12" cy="12" r="10" /> <line x1="12" x2="12" y1="8" y2="12" /> <line x1="12" x2="12.01" y1="16" y2="16" />"#,
         ),
+        "command" => Some(
+            r#"<path d="M15 6v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3V6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3" />"#,
+        ),
         "external-link" => Some(
             r#"<path d="M15 3h6v6" /> <path d="M10 14 21 3" /> <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />"#,
         ),

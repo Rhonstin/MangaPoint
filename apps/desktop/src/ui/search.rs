@@ -192,7 +192,10 @@ pub fn SearchPage() -> Element {
                     onsubmit: move |e| {
                         e.prevent_default();
                         let q = text.read().trim().to_string();
-                        if !q.is_empty() {
+                        if q.is_empty() {
+                            // Searching for nothing goes back to the start.
+                            clear_search(state);
+                        } else {
                             run_search(state, q);
                         }
                     },
@@ -250,7 +253,7 @@ pub fn SearchPage() -> Element {
                             }
                         }
                         // Submitting the form (this button or Enter) starts the search.
-                        button { class: "search-circle", r#type: "submit", title: "Search", disabled: view.searching,
+                        button { class: "search-circle", r#type: "submit", title: "Search",
                             Icon { name: "search", size: 18 }
                         }
                     }
@@ -655,6 +658,17 @@ fn SeriesCard(index: usize) -> Element {
 
 /// Run a search across all installed sources, filling the results in as
 /// each source answers.
+/// Forget the results and show the start of the Search page again. A search
+/// still running is dropped (it stops publishing once the generation moves on).
+pub fn clear_search(state: AppState) {
+    let mut view = state.search;
+    let generation = view.peek().generation + 1;
+    view.set(SearchView {
+        generation,
+        ..Default::default()
+    });
+}
+
 pub fn run_search(state: AppState, query: String) {
     spawn_forever(async move {
         let Some(client) = state.client() else { return };

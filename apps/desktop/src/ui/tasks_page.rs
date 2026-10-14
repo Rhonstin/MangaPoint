@@ -64,6 +64,7 @@ pub fn TasksPage() -> Element {
     let nothing_exported = state.exports.read().records.is_empty();
 
     rsx! {
+        div { class: "rise-in",
         div { class: "q-head",
             div { class: "grow",
                 h1 { "Tasks" }
@@ -133,6 +134,7 @@ pub fn TasksPage() -> Element {
                 ExportJobRow {}
             }
             ExportedFiles {}
+        }
         }
     }
 }

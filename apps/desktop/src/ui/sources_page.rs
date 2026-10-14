@@ -61,6 +61,7 @@ pub fn SourcesPage() -> Element {
     }
 
     rsx! {
+        div { class: "rise-in",
         div { class: "sources-head",
             div { class: "grow",
                 h1 { "Sources" }
@@ -94,6 +95,7 @@ pub fn SourcesPage() -> Element {
             }
         }
         div { class: "src-list", {rows.into_iter()} }
+        }
 
         if adding() {
             div { class: if closing() { "overlay out" } else { "overlay" }, onclick: move |_| close(),

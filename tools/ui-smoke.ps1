@@ -70,7 +70,7 @@ try {
     Check 'Ctrl+K goes to the search' {
         Send-Cdp 'Input.dispatchKeyEvent' @{ type='keyDown'; key='k'; code='KeyK'; modifiers=2; windowsVirtualKeyCode=75 } | Out-Null
         Send-Cdp 'Input.dispatchKeyEvent' @{ type='keyUp'; key='k'; code='KeyK'; modifiers=2; windowsVirtualKeyCode=75 } | Out-Null
-        Wait-Until "document.querySelector('.nav-item.active').innerText.trim() === 'Search'" 10 'the Search page'
+        Wait-Until "document.querySelector('.nav-item.active').innerText.trim().startsWith('Search')" 10 'the Search page'
     }
 }
 finally {

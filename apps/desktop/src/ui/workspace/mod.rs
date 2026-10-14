@@ -73,6 +73,7 @@ pub fn WorkspacePage() -> Element {
         .unwrap_or_default();
 
     rsx! {
+        div { class: "rise-in",
         button { class: "btn ghost small", onclick: move |_| state.close_series(origin),
             Icon { name: "arrow-left", size: 16 }
             "{back_label}"
@@ -105,6 +106,7 @@ pub fn WorkspacePage() -> Element {
         // The overview of a series in your library, and below it every chapter.
         if in_library { overview::OverviewTab {} }
         chapters::ChaptersTab {}
+        }
     }
 }
 

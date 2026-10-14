@@ -157,7 +157,7 @@ fn Shell() -> Element {
                 div { class: if page == Page::Search { "keep" } else { "keep gone" },
                     search::SearchPage {}
                 }
-                div { class: if page == Page::Library { "keep" } else { "keep gone" },
+                div { class: if page == Page::Library { "keep lib" } else { "keep gone lib" },
                     library_page::LibraryPage {}
                 }
                 {match page {
@@ -215,7 +215,22 @@ fn NavItem(page: Page, label: &'static str, icon: &'static str, badge: Option<St
             },
             Icon { name: icon, size: 17 }
             span { class: "grow", "{label}" }
+            if page == Page::Search { ShortcutKeys {} }
             if let Some(count) = badge { span { class: "nav-badge", "{count}" } }
+        }
+    }
+}
+
+/// The shortcut to the search, as keys: Command K on a Mac, Ctrl K elsewhere.
+#[component]
+fn ShortcutKeys() -> Element {
+    let mac = cfg!(target_os = "macos");
+    rsx! {
+        span { class: "kbds", title: if mac { "Press Command+K (or /) to search" } else { "Press Ctrl+K (or /) to search" },
+            kbd {
+                if mac { Icon { name: "command", size: 11 } } else { "Ctrl" }
+            }
+            kbd { "K" }
         }
     }
 }
