@@ -301,7 +301,7 @@ pub fn ensure_series_info(state: AppState, series_id: &str) {
     let Some(series) = state.library.peek().find(series_id).cloned() else {
         return;
     };
-    if series.info.is_some() || state.info_busy.peek().contains(series_id) {
+    if series.info.is_some() || series.is_sample() || state.info_busy.peek().contains(series_id) {
         return;
     }
     let Some(client) = state.client() else {

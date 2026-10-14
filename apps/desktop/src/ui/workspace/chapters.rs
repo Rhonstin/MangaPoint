@@ -6,7 +6,7 @@ use crate::queue::QueuedChapter;
 use crate::state::{AppState, ChaptersState, Modal, ModalAction, Page, PendingDownload};
 use crate::ui::chapter_table::{ChapterGrid, GridRow};
 use crate::ui::search::run_search;
-use crate::ui::widgets::{Chip, EmptyState, Icon, ProgressBar};
+use crate::ui::widgets::{Chip, EmptyState, Icon, Loading, ProgressBar};
 use crate::ui::work::{ask_download, downloaded_keys, merged_key, open_export, retry_batch};
 use dioxus::prelude::*;
 use pipeline::SourceChoice;
@@ -52,9 +52,8 @@ pub fn ChaptersTab() -> Element {
         }
         ChaptersState::Loading => {
             return rsx! {
-                div { class: "card row",
-                    Icon { name: "loader-circle", size: 18 }
-                    span { class: "muted", "Loading chapters from your sources…" }
+                div { class: "card",
+                    Loading { label: "Loading chapters from your sources…" }
                 }
             };
         }

@@ -803,3 +803,20 @@ table.chapters th.size, table.chapters td.size { width: 90px; text-align: right;
 .btn.open-big { height: 48px; min-width: 132px; padding: 0 24px; font-size: 1rem; font-weight: 700; justify-content: center; }
 .btn.open-big.square { min-width: 0; width: 48px; padding: 0; }
 .q-row .q-name.link-title { font-size: 1rem; }
+
+/* ---- the cat that runs in circles while something loads ---- */
+.orbit { --o: var(--orbit, 120px); display: inline-block; position: relative; width: var(--o); height: var(--o); flex: none; animation: orbit 2.2s linear infinite; }
+.orbit::before { content: ""; position: absolute; inset: 25%; border: 2px dashed var(--line-strong); border-radius: 50%; opacity: 0.7; }
+.orbit-cat { position: absolute; left: 25%; top: 0; width: 50%; height: 50%; animation: orbit-back 2.2s linear infinite; shape-rendering: crispEdges; }
+@keyframes orbit { to { transform: rotate(360deg); } }
+@keyframes orbit-back { to { transform: rotate(-360deg); } }
+.loading { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; padding: 24px 0; color: var(--muted); text-align: center; width: 100%; }
+.busy { display: inline-flex; align-items: center; gap: 6px; vertical-align: middle; }
+/* The status under the search box stays clear of it. */
+.searchwrap ~ .loading, .searchwrap ~ p, .searchwrap ~ .banner { margin-top: 24px; }
+/* A series that is not in the library yet has the same top as one that is. */
+.overview.found { margin-bottom: 8px; }
+
+/* ---- downloads and exports: a compact column, not the width of the window ---- */
+.q-head, .q-section, .q-row { max-width: 1000px; }
+.q-where { margin-top: 2px; color: var(--muted); font-size: 0.78rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

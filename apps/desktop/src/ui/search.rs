@@ -1,6 +1,6 @@
 //! Searching every installed source at once.
 
-use super::widgets::{cover_key, load_cover, Chip, Cover, EmptyState, Icon};
+use super::widgets::{cover_key, load_cover, Chip, Cover, EmptyState, Icon, Loading};
 use crate::logic::{self, SearchSort};
 use crate::state::now_secs;
 use crate::state::spawn_forever;
@@ -174,7 +174,7 @@ pub fn SearchPage() -> Element {
                         }
                         // Submitting the form (this button or Enter) starts the search.
                         button { class: "search-circle", r#type: "submit", title: "Search", disabled: view.searching,
-                            if view.searching { Icon { name: "loader-circle", size: 18 } } else { Icon { name: "search", size: 18 } }
+                            Icon { name: "search", size: 18 }
                         }
                     }
                 }
@@ -202,7 +202,7 @@ pub fn SearchPage() -> Element {
             }
         }
         if view.searching {
-            p { class: "muted", "Searching… {view.answered} of {view.total} sources answered" }
+            Loading { label: format!("Searching… {} of {} sources answered", view.answered, view.total) }
         } else if !view.query.is_empty() && view.ranked.is_empty() && !view.no_sources && !view.none_selected {
             EmptyState {
                 title: "The cat looked everywhere",

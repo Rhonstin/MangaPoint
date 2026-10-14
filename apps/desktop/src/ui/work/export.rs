@@ -54,6 +54,12 @@ pub fn activate_export_series(state: AppState, index: usize) {
         .get(index)
         .map(|i| i.series_id.clone());
     let Some(id) = id else { return };
+    // Whatever series was open waits until the Export screen is left.
+    let open = state.workspace.peek().clone();
+    if let Some(open) = open.filter(|w| w.origin != Page::Export) {
+        let mut parked = state.parked_workspace;
+        parked.set(Some(open));
+    }
     let series_id = id.clone();
     let title = ws_title(state, &id);
     let mut plan = state.export_plan;
@@ -64,7 +70,7 @@ pub fn activate_export_series(state: AppState, index: usize) {
         series_id: id,
         title,
         ranked: None,
-        origin: Page::Library,
+        origin: Page::Export,
     }));
     {
         let mut preview = state.preview;

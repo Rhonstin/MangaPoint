@@ -713,7 +713,7 @@ fn ExportFooter() -> Element {
                 class: "btn primary big", style: "margin-top: 10px",
                 disabled: chapters == 0 || busy || (opts.grouping == GroupingChoice::EveryN && !every_n_valid),
                 onclick: move |_| start_export_plan(state),
-                if exporting { Icon { name: "loader-circle", size: 18 } "Exporting…" }
+                if exporting { "Exporting…" }
                 else if busy { "Something else is running…" }
                 else if chapters == 0 { "Nothing to export yet" }
                 else { Icon { name: "file-down", size: 18 } "Export {plural(series_count, \"series\")}" }

@@ -279,6 +279,38 @@ pub(super) fn body_markup(eyes_closed: bool) -> String {
     }))
 }
 
+/// Every pixel of the sitting mascot (tail included) as (x, y, colour), for
+/// pictures that draw it themselves.
+pub(super) fn mascot_pixels() -> Vec<(usize, usize, &'static str)> {
+    let mut out = Vec::new();
+    for layer in [tail(), frame(POSES[0])] {
+        for (y, row) in layer.iter().enumerate() {
+            for (x, &c) in row.iter().enumerate() {
+                if c != CLEAR {
+                    out.push((x, y, color(c)));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The cat running in circles, for whatever is loading. `size` is the width
+/// of the whole circle in pixels.
+#[component]
+pub fn CirclingCat(#[props(default = 120)] size: u32) -> Element {
+    rsx! {
+        span { class: "orbit", style: "--orbit: {size}px", role: "img", "aria-label": "Loading",
+            svg {
+                class: "orbit-cat",
+                view_box: "0 0 32 32",
+                "aria-hidden": "true",
+                dangerous_inner_html: "{sitting_markup(false, None)}",
+            }
+        }
+    }
+}
+
 /// The cat asleep, for screens with nothing on them yet.
 #[component]
 pub fn RestingCat() -> Element {

@@ -2,7 +2,7 @@
 
 use crate::logic::describe_settings;
 use crate::state::AppState;
-use crate::ui::widgets::{Chip, Cover, EmptyState, Icon, NoCover};
+use crate::ui::widgets::{Busy, Chip, Cover, EmptyState, Icon, NoCover};
 use crate::ui::work::{ensure_series_info, load_saved_cover, saved_cover_key};
 use dioxus::prelude::*;
 
@@ -84,7 +84,7 @@ pub fn OverviewTab() -> Element {
                         }
                     }
                 } else if loading {
-                    p { class: "muted", style: "margin-top: 12px", span { class: "spin", Icon { name: "loader-circle", size: 14 } } " Loading the details…" }
+                    p { class: "muted", style: "margin-top: 12px", Busy { label: "Loading the details…" } }
                 } else if info.is_none() {
                     p { class: "muted small", style: "margin-top: 12px",
                         "The details of this series haven't been loaded yet. They need the catalog to be running."

@@ -31,6 +31,7 @@ pub fn LibraryPage() -> Element {
             .read()
             .series
             .iter()
+            .filter(|s| !s.is_sample())
             .map(|s| {
                 (
                     s.id.clone(),

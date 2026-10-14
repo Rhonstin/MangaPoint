@@ -221,6 +221,7 @@ fn ExportedFiles() -> Element {
                 let first = r.files.first().map(|f| f.path.clone()).unwrap_or_default();
                 let can_open = !first.is_empty() && !first.starts_with("http") && std::path::Path::new(&first).exists();
                 let total: u64 = r.files.iter().map(|f| f.bytes).sum();
+                let place = r.target.strip_prefix("folder ").unwrap_or(&r.target).to_string();
                 let series_id = r.series_id.clone();
                 // One file is deleted from the buttons on the right; several each have their own.
                 let single = (r.files.len() == 1).then(|| (r.id.clone(), first.clone()));
@@ -241,8 +242,8 @@ fn ExportedFiles() -> Element {
                             div { class: "q-stats",
                                 span { "{plural(r.chapters, \"chapter\")} · {plural(r.pages, \"page\")}" }
                                 span { "{human_bytes(total)}" }
-                                span { "{r.target}" }
                             }
+                            div { class: "q-where", title: "{place}", "{place}" }
                             if r.files.len() > 1 {
                                 for f in r.files.iter() {
                                     {

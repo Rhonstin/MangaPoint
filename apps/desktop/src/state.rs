@@ -456,6 +456,9 @@ pub struct AppState {
     /// Series whose details are being fetched right now.
     pub info_busy: Signal<HashSet<String>>,
     pub workspace: Signal<Option<Workspace>>,
+    /// The series that was open when the Export screen took the workspace over,
+    /// put back when the screen is left.
+    pub parked_workspace: Signal<Option<Workspace>>,
     pub chapters: Signal<ChaptersState>,
     /// Chapters ticked in the table, by position in the merged list.
     pub selected: Signal<HashSet<usize>>,
@@ -530,6 +533,7 @@ impl AppState {
             download_dialog: sig(None),
             info_busy: sig(HashSet::new()),
             workspace: sig(None),
+            parked_workspace: sig(None),
             chapters: sig(ChaptersState::Idle),
             selected: sig(HashSet::new()),
             table: sig(TableView::default()),
@@ -550,6 +554,14 @@ impl AppState {
 
     pub fn go(&self, page: Page) {
         let mut p = self.page;
+        // The Export screen borrows the workspace for its own series; the
+        // series that was open before it comes back when it is left.
+        if *p.peek() == Page::Export && page != Page::Export {
+            let mut parked = self.parked_workspace;
+            let back = parked.write().take();
+            let mut workspace = self.workspace;
+            workspace.set(back);
+        }
         p.set(page);
     }
 

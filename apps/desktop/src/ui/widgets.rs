@@ -113,6 +113,29 @@ pub fn Chip(text: String, kind: Option<String>) -> Element {
     rsx! { span { class: "{class}", "{text}" } }
 }
 
+/// Something is loading: the cat runs in circles in the middle of the place
+/// where it will show up.
+#[component]
+pub fn Loading(label: String) -> Element {
+    rsx! {
+        div { class: "loading",
+            super::cat::CirclingCat {}
+            span { "{label}" }
+        }
+    }
+}
+
+/// A small working marker with a few words, to sit in a line of text.
+#[component]
+pub fn Busy(label: String, size: Option<u32>) -> Element {
+    rsx! {
+        span { class: "busy",
+            super::cat::CirclingCat { size: size.unwrap_or(30) }
+            "{label}"
+        }
+    }
+}
+
 /// A cover image, or a placeholder until it has loaded.
 #[component]
 pub fn Cover(key_id: String) -> Element {
