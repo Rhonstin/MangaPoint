@@ -890,6 +890,8 @@ h3.q-title { margin: 22px 0 6px; font-size: 0.8rem; text-transform: uppercase; l
 .search-stage.arrive .searchwrap { animation-delay: 0.08s; }
 @media (prefers-reduced-motion: reduce) { .search-stage.arrive .search-hero, .search-stage.arrive .searchwrap { animation: none; } }
 
+.chip.tiny { padding: 1px 8px; font-size: 0.72rem; }
+
 /* ---- the cards of the library ---- */
 .poster-about { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .poster-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }

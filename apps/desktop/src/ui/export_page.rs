@@ -525,6 +525,8 @@ fn ChaptersPanel() -> Element {
     let all_on = included == series.chapters.len();
     let all_keys: Vec<String> = series.chapters.iter().map(|c| c.key.clone()).collect();
     let shown = state.preview.read().chapter_key.clone();
+    // Chapters of an earlier export are marked.
+    let exported = state.exports.read().exported_keys(&series.id);
 
     rsx! {
         Panel {
@@ -575,6 +577,9 @@ fn ChaptersPanel() -> Element {
                                     onclick: move |_| switch_chapter(state, show_key.clone()),
                                     span { class: "px-chapter-no", { c.number.map(logic::format_number).unwrap_or_else(|| "–".into()) } }
                                     span { class: "grow px-chapter-name", title: "{c.name}", "{c.name}" }
+                                }
+                                if exported.contains(&c.key) {
+                                    span { class: "chip tiny", title: "Already in an export", "exported" }
                                 }
                                 span { class: "muted small", "{logic::human_bytes(c.bytes)}" }
                             }

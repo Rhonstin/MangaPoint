@@ -18,6 +18,7 @@ pub fn open_export(state: AppState, series_ids: Vec<String>) {
         })
         .map(|id| ExportItem {
             series_id: id.clone(),
+            excluded: already_exported(state, id),
             ..Default::default()
         })
         .collect();
@@ -29,6 +30,28 @@ pub fn open_export(state: AppState, series_ids: Vec<String>) {
     plan.set(ExportPlan { items, active: 0 });
     activate_export_series(state, 0);
     state.go(Page::Export);
+}
+
+/// The chapters of a series to leave out when it is exported again: the ones
+/// that were exported before, so what is left is "the other half". Nothing is
+/// left out if everything was exported already (or nothing was).
+pub fn already_exported(state: AppState, series_id: &str) -> HashSet<String> {
+    let exported = state.exports.peek().exported_keys(series_id);
+    let library = state.library.peek();
+    let Some(series) = library.find(series_id) else {
+        return HashSet::new();
+    };
+    let done: HashSet<String> = series
+        .chapters
+        .iter()
+        .filter(|c| exported.contains(&c.key))
+        .map(|c| c.key.clone())
+        .collect();
+    if done.len() == series.chapters.len() {
+        HashSet::new()
+    } else {
+        done
+    }
 }
 
 /// Open the Export screen on the sample pages, to look around and try presets,
@@ -119,8 +142,10 @@ pub fn add_export_series(state: AppState, series_id: String) {
     let mut plan = state.export_plan;
     let mut p = plan.write();
     if !p.items.iter().any(|i| i.series_id == series_id) {
+        let excluded = already_exported(state, &series_id);
         p.items.push(ExportItem {
             series_id,
+            excluded,
             ..Default::default()
         });
     }
@@ -476,6 +501,7 @@ pub(super) async fn run_export(
                 target: describe_target(&target),
                 preset_id: series.preset_id.clone(),
                 settings: Some(series.settings.clone()),
+                chapter_keys: export.chapter_keys.clone(),
                 at: now_secs(),
             };
             let mut exports = state.exports;

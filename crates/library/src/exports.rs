@@ -31,6 +31,10 @@ pub struct ExportRecord {
     pub preset_id: Option<String>,
     #[serde(default)]
     pub settings: Option<crate::ConversionSettings>,
+    /// The chapters (by library key) that went into it. Empty for exports
+    /// made before these were kept.
+    #[serde(default)]
+    pub chapter_keys: Vec<String>,
     /// Seconds since the Unix epoch.
     pub at: u64,
 }
@@ -45,6 +49,15 @@ pub struct ExportsDb {
 }
 
 impl ExportsDb {
+    /// The chapters of a series that have been exported, in any export.
+    pub fn exported_keys(&self, series_id: &str) -> std::collections::HashSet<String> {
+        self.records
+            .iter()
+            .filter(|r| r.series_id == series_id)
+            .flat_map(|r| r.chapter_keys.iter().cloned())
+            .collect()
+    }
+
     pub fn add(&mut self, record: ExportRecord) {
         self.records.retain(|r| r.id != record.id);
         self.records.push(record);
@@ -94,6 +107,25 @@ pub fn delete_exported_file(path: &Path) -> io::Result<bool> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn the_chapters_exported_for_a_series_are_known_from_all_its_exports() {
+        let mut db = ExportsDb::default();
+        let mut first = record("a", &["a.xtc"]);
+        first.chapter_keys = vec!["c1".into(), "c2".into()];
+        let mut second = record("b", &["b.xtc"]);
+        second.chapter_keys = vec!["c2".into(), "c3".into()];
+        let mut other = record("c", &["c.xtc"]);
+        other.series_id = "other".into();
+        other.chapter_keys = vec!["c9".into()];
+        db.add(first);
+        db.add(second);
+        db.add(other);
+        let keys = db.exported_keys("s");
+        assert_eq!(keys.len(), 3);
+        assert!(keys.contains("c1") && keys.contains("c3") && !keys.contains("c9"));
+        assert!(db.exported_keys("nobody").is_empty());
+    }
+
     fn record(id: &str, files: &[&str]) -> ExportRecord {
         ExportRecord {
             id: id.into(),
@@ -112,6 +144,7 @@ mod tests {
             target: "folder".into(),
             preset_id: None,
             settings: None,
+            chapter_keys: Vec::new(),
             at: 1,
         }
     }
