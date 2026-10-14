@@ -597,6 +597,17 @@ fn ChaptersPanel() -> Element {
 fn SendPanel() -> Element {
     let state = use_context::<AppState>();
     let mut drives = use_signal(removable_drives);
+    // A reader plugged in (or taken out) shows up (or goes) by itself.
+    use_future(move || async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            if let Ok(now) = tokio::task::spawn_blocking(removable_drives).await {
+                if *drives.peek() != now {
+                    drives.set(now);
+                }
+            }
+        }
+    });
     let opts = state.export_opts.read().clone();
     let settings = state.settings.read().clone();
     let mut export_opts = state.export_opts;
@@ -606,6 +617,10 @@ fn SendPanel() -> Element {
         .clone()
         .unwrap_or_else(|| crate::state::paths().default_export_dir());
     let folder_text = folder.display().to_string();
+    let reader_dir = settings.export.reader_dir.clone();
+    let reader_text = reader_dir.as_ref().map(|d| d.display().to_string());
+    let reader_there = reader_dir.as_ref().is_some_and(|d| d.exists());
+    let on_reader = matches!(opts.target, TargetChoice::Reader);
     let every_n_valid = opts.every_n.trim().parse::<usize>().is_ok_and(|n| n >= 1);
 
     rsx! {
@@ -616,20 +631,10 @@ fn SendPanel() -> Element {
                     onclick: move |_| export_opts.write().target = TargetChoice::Folder,
                     Icon { name: "folder-open", size: 16 } "Folder on this computer"
                 }
-                for d in drives.read().iter() {
-                    {
-                        let mount = d.mount.display().to_string();
-                        let on = opts.target == TargetChoice::Reader(mount.clone());
-                        let label = format!("Reader / SD card ({mount})");
-                        rsx! {
-                            button {
-                                key: "{mount}",
-                                class: if on { "on" } else { "" },
-                                onclick: { let mount = mount.clone(); move |_| export_opts.write().target = TargetChoice::Reader(mount.clone()) },
-                                Icon { name: "hard-drive", size: 16 } "{label}"
-                            }
-                        }
-                    }
+                button {
+                    class: if on_reader { "on" } else { "" },
+                    onclick: move |_| export_opts.write().target = TargetChoice::Reader,
+                    Icon { name: "hard-drive", size: 16 } "On my reader"
                 }
                 if settings.export.webdav_url.as_deref().is_some_and(|u| !u.trim().is_empty()) {
                     button {
@@ -657,8 +662,69 @@ fn SendPanel() -> Element {
                     }
                 }
             }
-            button { class: "btn ghost small", style: "margin-top: 8px", onclick: move |_| drives.set(removable_drives()),
-                Icon { name: "refresh-cw", size: 14 } "Look for my reader"
+            if on_reader {
+                div { class: "reader-box",
+                    div { class: "folder-pick",
+                        span { class: "grow folder-path", title: "{reader_text.clone().unwrap_or_default()}",
+                            if let Some(text) = &reader_text { "{text}" } else { "No place chosen yet" }
+                        }
+                        button { class: "btn small",
+                            onclick: move |_| {
+                                let start = reader_dir.clone();
+                                spawn(async move {
+                                    if let Some(dir) = pick_folder("Where is your reader?", start).await {
+                                        let mut s = state.settings;
+                                        s.write().export.reader_dir = Some(dir);
+                                        state.save_settings();
+                                    }
+                                });
+                            },
+                            "Choose…"
+                        }
+                    }
+                    if reader_text.is_some() && !reader_there {
+                        div { class: "reader-note bad", "That place is not there now. Plug the reader in, or choose another." }
+                    }
+                    if drives.read().is_empty() {
+                        div { class: "reader-note", "Plug the reader in with USB (drive mode), or put its SD card in this computer, and it shows up here." }
+                    } else {
+                        div { class: "px-label", style: "margin-top: 10px", "Found" }
+                        div { class: "drive-list",
+                            for d in drives.read().iter() {
+                                {
+                                    let mount = d.mount.clone();
+                                    let on = reader_text.as_deref() == Some(mount.display().to_string().as_str());
+                                    let name = if d.name.trim().is_empty() { "Drive".to_string() } else { d.name.clone() };
+                                    let label = format!("{} · {name} · {} free", mount.display(), logic::human_bytes(d.available_bytes));
+                                    rsx! {
+                                        button {
+                                            key: "{label}",
+                                            class: if on { "drive on" } else { "drive" },
+                                            title: "Send files to this drive",
+                                            onclick: move |_| {
+                                                let mut s = state.settings;
+                                                s.write().export.reader_dir = Some(mount.clone());
+                                                state.save_settings();
+                                            },
+                                            Icon { name: "hard-drive", size: 15 }
+                                            span { class: "grow", "{label}" }
+                                            if on { Icon { name: "check", size: 14 } }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    div { class: "px-label", style: "margin-top: 10px", "Folder on the reader" }
+                    input {
+                        r#type: "text", value: "{settings.export.device_folder}", style: "width: 100%",
+                        oninput: move |e| {
+                            let mut s = state.settings;
+                            s.write().export.device_folder = e.value();
+                            state.save_settings();
+                        },
+                    }
+                }
             }
 
             div { class: "px-label", style: "margin-top: 16px", "Files" }

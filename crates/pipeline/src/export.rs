@@ -16,7 +16,6 @@ pub enum ExportTarget {
     /// A mounted reader or SD card; files go into `<mount>/<folder>/`.
     Device { mount: PathBuf, folder: String },
     /// The reader's WebDAV share (CrossPoint's Wi-Fi file transfer).
-    /// Untested against real hardware.
     WebDav { base_url: String, folder: String },
 }
 
@@ -30,10 +29,10 @@ pub struct ExportedFile {
 impl ExportTarget {
     pub async fn write(&self, filename: &str, data: &[u8]) -> Result<ExportedFile> {
         match self {
-            ExportTarget::Folder { path } => write_file(path, filename, data),
+            ExportTarget::Folder { path } => write_file(path, filename, data, false),
             ExportTarget::Device { mount, folder } => {
                 check_space(mount, data.len() as u64)?;
-                write_file(&mount.join(sanitize_component(folder)), filename, data)
+                write_file(&mount.join(sanitize_component(folder)), filename, data, true)
             }
             ExportTarget::WebDav { base_url, folder } => {
                 upload_webdav(base_url, folder, filename, data).await
@@ -51,10 +50,10 @@ impl ExportTarget {
             .map_err(|e| PipelineError::Io(src.to_path_buf(), e))?
             .len();
         match self {
-            ExportTarget::Folder { path } => copy_file(path, filename, src),
+            ExportTarget::Folder { path } => copy_file(path, filename, src, false),
             ExportTarget::Device { mount, folder } => {
                 check_space(mount, size)?;
-                copy_file(&mount.join(sanitize_component(folder)), filename, src)
+                copy_file(&mount.join(sanitize_component(folder)), filename, src, true)
             }
             ExportTarget::WebDav { base_url, folder } => {
                 let data = fs::read(src).map_err(|e| PipelineError::Io(src.to_path_buf(), e))?;
@@ -67,7 +66,11 @@ impl ExportTarget {
 /// Copy `src` into `dir` under a name that does not exist yet. Written to a
 /// temporary name first, so a full disk never leaves a half-file that looks
 /// complete.
-fn copy_file(dir: &Path, filename: &str, src: &Path) -> Result<ExportedFile> {
+///
+/// With `flush`, the file is forced out to the drive before it gets its real
+/// name, so that when this returns it is safe to unplug (a card or a reader
+/// can otherwise still be holding the end of the file in memory).
+fn copy_file(dir: &Path, filename: &str, src: &Path, flush: bool) -> Result<ExportedFile> {
     fs::create_dir_all(dir).map_err(|e| PipelineError::Io(dir.to_path_buf(), e))?;
     let path = unique_path(dir, filename);
     let tmp = path.with_extension("part");
@@ -75,6 +78,9 @@ fn copy_file(dir: &Path, filename: &str, src: &Path) -> Result<ExportedFile> {
         let _ = fs::remove_file(&tmp);
         PipelineError::Io(tmp.clone(), e)
     })?;
+    if flush {
+        flush_to_disk(&tmp)?;
+    }
     fs::rename(&tmp, &path).map_err(|e| PipelineError::Io(path.clone(), e))?;
     Ok(ExportedFile {
         location: path.display().to_string(),
@@ -82,7 +88,16 @@ fn copy_file(dir: &Path, filename: &str, src: &Path) -> Result<ExportedFile> {
     })
 }
 
-fn write_file(dir: &Path, filename: &str, data: &[u8]) -> Result<ExportedFile> {
+/// Force a written file out to its drive.
+fn flush_to_disk(path: &Path) -> Result<()> {
+    fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .and_then(|file| file.sync_all())
+        .map_err(|e| PipelineError::Io(path.to_path_buf(), e))
+}
+
+fn write_file(dir: &Path, filename: &str, data: &[u8], flush: bool) -> Result<ExportedFile> {
     let io = |p: &Path| {
         let p = p.to_path_buf();
         move |e| PipelineError::Io(p, e)
@@ -91,6 +106,9 @@ fn write_file(dir: &Path, filename: &str, data: &[u8]) -> Result<ExportedFile> {
     let path = unique_path(dir, filename);
     let tmp = path.with_extension("part");
     fs::write(&tmp, data).map_err(io(&tmp))?;
+    if flush {
+        flush_to_disk(&tmp)?;
+    }
     fs::rename(&tmp, &path).map_err(io(&path))?;
     Ok(ExportedFile {
         location: path.display().to_string(),
@@ -125,12 +143,25 @@ pub struct Drive {
     pub available_bytes: u64,
 }
 
-/// Removable drives currently mounted: SD cards, USB sticks, and a reader in
-/// USB drive mode.
+/// Is this mounted disk one a person plugs in? The system's "removable" flag
+/// is right for flash drives and SD cards on Windows, but Linux marks many
+/// card slots and USB disks as fixed, so the places where desktops mount
+/// external media count as well.
+fn looks_external(mount: &Path, removable: bool) -> bool {
+    if removable {
+        return true;
+    }
+    let m = mount.to_string_lossy();
+    m.starts_with("/Volumes/") || m.starts_with("/media/") || m.starts_with("/run/media/")
+}
+
+/// Drives that look plugged in right now: SD cards, USB sticks, and a reader
+/// in USB drive mode. It is a list of suggestions; the user can always pick
+/// any folder instead.
 pub fn removable_drives() -> Vec<Drive> {
     Disks::new_with_refreshed_list()
         .iter()
-        .filter(|d| d.is_removable())
+        .filter(|d| looks_external(d.mount_point(), d.is_removable()))
         .map(|d| Drive {
             mount: d.mount_point().to_path_buf(),
             name: d.name().to_string_lossy().into_owned(),
@@ -140,11 +171,17 @@ pub fn removable_drives() -> Vec<Drive> {
         .collect()
 }
 
-/// Fail early, with a clear message, if the card is too full. A mount we
-/// cannot find in the drive list is let through rather than blocked.
+/// Fail early, with a clear message, if the card is too full. `mount` may be
+/// the drive itself or any folder on it; a place we cannot match to a drive is
+/// let through rather than blocked.
 fn check_space(mount: &Path, needed: u64) -> Result<()> {
     let disks = Disks::new_with_refreshed_list();
-    let Some(disk) = disks.iter().find(|d| d.mount_point() == mount) else {
+    // The drive that holds the place: the deepest mount point it is under.
+    let Some(disk) = disks
+        .iter()
+        .filter(|d| mount.starts_with(d.mount_point()))
+        .max_by_key(|d| d.mount_point().components().count())
+    else {
         return Ok(());
     };
     // Leave a little room for the filesystem.
@@ -489,5 +526,33 @@ mod tests {
         .await
         .unwrap_err();
         assert!(matches!(err, PipelineError::Upload(_)));
+    }
+
+    #[test]
+    fn places_where_desktops_mount_external_media_count_as_drives() {
+        assert!(looks_external(Path::new("E:\\"), true));
+        assert!(looks_external(Path::new("/Volumes/XTEINK"), false));
+        assert!(looks_external(Path::new("/media/me/XTEINK"), false));
+        assert!(looks_external(Path::new("/run/media/me/XTEINK"), false));
+        assert!(!looks_external(Path::new("/"), false));
+        assert!(!looks_external(Path::new("/home"), false));
+        assert!(!looks_external(Path::new("C:\\"), false));
+    }
+
+    #[tokio::test]
+    async fn a_file_sent_to_a_drive_is_flushed_and_lands_in_its_folder() {
+        let mount = temp("device-flush");
+        fs::create_dir_all(&mount).unwrap();
+        let src = mount.join("book.xtc");
+        fs::write(&src, vec![7u8; 4096]).unwrap();
+        let target = ExportTarget::Device {
+            mount: mount.clone(),
+            folder: "Manga".into(),
+        };
+        let sent = target.write_file("My Book.xtc", &src).await.unwrap();
+        assert!(sent.location.ends_with("My Book.xtc"));
+        assert_eq!(fs::read(mount.join("Manga").join("My Book.xtc")).unwrap().len(), 4096);
+        assert!(!mount.join("Manga").join("My Book.part").exists(), "no half-written file is left");
+        let _ = fs::remove_dir_all(mount);
     }
 }

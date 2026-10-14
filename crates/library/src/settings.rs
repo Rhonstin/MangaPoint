@@ -229,6 +229,9 @@ impl DownloadSettings {
 pub struct ExportSettings {
     /// Where finished files are written. `None` means the app's default folder.
     pub output_dir: Option<PathBuf>,
+    /// The reader's drive (or a folder on it), as last chosen: files sent
+    /// "on my reader" go into `device_folder` inside it.
+    pub reader_dir: Option<PathBuf>,
     /// Folder created on the device's storage for copied files.
     pub device_folder: String,
     /// Base URL of the reader's WebDAV share, if the user set one up.
@@ -239,6 +242,7 @@ impl Default for ExportSettings {
     fn default() -> Self {
         Self {
             output_dir: None,
+            reader_dir: None,
             device_folder: "Manga".into(),
             webdav_url: None,
         }

@@ -232,13 +232,13 @@ pub fn SettingsPage() -> Element {
                                 }
                             }
                         }
-                        Row { label: "Folder on the reader", desc: "Where files go when you export straight to the reader.",
+                        Row { label: "Folder on the reader", desc: "The folder files go into on the reader's drive. You choose the drive itself when you export.",
                             input {
                                 r#type: "text", value: "{s.export.device_folder}",
                                 oninput: move |e| update(|s, v| s.export.device_folder = v, e.value()),
                             }
                         }
-                        Row { label: "Reader Wi-Fi address", desc: "For sending over Wi-Fi to CrossPoint's file transfer. Not yet tested on a real device.",
+                        Row { label: "Reader Wi-Fi address", desc: "For sending over Wi-Fi to CrossPoint's file transfer.",
                             input {
                                 r#type: "text", placeholder: "http://192.168.3.3 (optional)",
                                 value: "{s.export.webdav_url.clone().unwrap_or_default()}",

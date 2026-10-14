@@ -202,8 +202,8 @@ pub fn select_by_text(text: &str, numbers: &[Option<f64>]) -> Result<Vec<usize>,
 pub enum TargetChoice {
     /// The configured output folder (or the app's default one).
     Folder,
-    /// A mounted reader or SD card.
-    Reader(String),
+    /// The reader's drive (or SD card), the place chosen in the Export screen.
+    Reader,
     /// The reader's WebDAV share from Settings.
     WebDav,
 }
@@ -221,10 +221,13 @@ pub fn export_target(
                 .clone()
                 .unwrap_or_else(|| default_dir.to_path_buf()),
         }),
-        TargetChoice::Reader(mount) => Ok(ExportTarget::Device {
-            mount: mount.into(),
-            folder: settings.export.device_folder.clone(),
-        }),
+        TargetChoice::Reader => match &settings.export.reader_dir {
+            Some(dir) => Ok(ExportTarget::Device {
+                mount: dir.clone(),
+                folder: settings.export.device_folder.clone(),
+            }),
+            None => Err("Choose where the reader is first (under Send to).".into()),
+        },
         TargetChoice::WebDav => match settings.export.webdav_url.as_deref() {
             Some(url) if !url.trim().is_empty() => Ok(ExportTarget::WebDav {
                 base_url: url.trim().to_string(),
@@ -1036,8 +1039,10 @@ mod tests {
                 path: "/mine".into()
             }
         );
+        assert!(export_target(&TargetChoice::Reader, &s, default_dir).is_err());
+        s.export.reader_dir = Some("E:\\".into());
         assert_eq!(
-            export_target(&TargetChoice::Reader("E:\\".into()), &s, default_dir).unwrap(),
+            export_target(&TargetChoice::Reader, &s, default_dir).unwrap(),
             ExportTarget::Device {
                 mount: "E:\\".into(),
                 folder: "Manga".into()

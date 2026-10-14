@@ -507,7 +507,11 @@ pub(super) async fn run_export(
             let mut exports = state.exports;
             exports.write().add(record);
             state.save_exports();
-            let summary = format!("Exported {} file(s)", outcome.files.len());
+            let mut summary = format!("Exported {} file(s)", outcome.files.len());
+            // Files sent to a drive were flushed to it before they got their names.
+            if matches!(target, ExportTarget::Device { .. }) {
+                summary.push_str(". Safe to unplug.");
+            }
             crate::notify::finished(state, "Export finished", &format!("{}: {summary}", series.title));
             if let Some(view) = job.write().as_mut() {
                 view.result = Some(Ok(summary));
