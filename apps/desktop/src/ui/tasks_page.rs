@@ -41,26 +41,44 @@ pub fn TasksPage() -> Element {
         }
     });
 
-    let queue = state.queue.read().clone();
-    let running = queue.running().map(|b| b.id);
-    let waiting: Vec<u64> = queue
-        .batches
-        .iter()
-        .filter(|b| matches!(b.status, BatchStatus::Waiting | BatchStatus::Paused))
-        .map(|b| b.id)
-        .collect();
-    // Newest first.
-    let finished: Vec<u64> = queue
-        .batches
-        .iter()
-        .rev()
-        .filter(|b| !b.status.is_active())
-        .map(|b| b.id)
-        .collect();
-    let (_, waiting_batches, chapters_left) = queue.counts();
-    let paused = queue.paused;
+    // How the queue is laid out (which batch is running, which wait, which are
+    // finished), not how far the running one has got: each row follows its own
+    // progress, and the page is not drawn again for every page downloaded.
+    let (running, waiting, finished, (waiting_batches, chapters_left), paused) = use_memo(move || {
+        let queue = state.queue.read();
+        let waiting: Vec<u64> = queue
+            .batches
+            .iter()
+            .filter(|b| matches!(b.status, BatchStatus::Waiting | BatchStatus::Paused))
+            .map(|b| b.id)
+            .collect();
+        // Newest first.
+        let finished: Vec<u64> = queue
+            .batches
+            .iter()
+            .rev()
+            .filter(|b| !b.status.is_active())
+            .map(|b| b.id)
+            .collect();
+        let (_, waiting_batches, chapters_left) = queue.counts();
+        (
+            queue.running().map(|b| b.id),
+            waiting,
+            finished,
+            (waiting_batches, chapters_left),
+            queue.paused,
+        )
+    })();
     let busy = running.is_some() || !waiting.is_empty();
-    let job = state.job.read().clone();
+    // Only whether an export is on show matters here (the row itself follows
+    // its progress), so this page is not drawn again for every page converted.
+    let job_shown = use_memo(move || {
+        state
+            .job
+            .read()
+            .as_ref()
+            .map(|j| !matches!(j.result, Some(Ok(_))))
+    })();
     let nothing_exported = state.exports.read().records.is_empty();
 
     rsx! {
@@ -72,7 +90,7 @@ pub fn TasksPage() -> Element {
             }
         }
 
-        if !busy && finished.is_empty() && job.is_none() && nothing_exported {
+        if !busy && finished.is_empty() && job_shown.is_none() && nothing_exported {
             EmptyState {
                 title: "Nothing to do",
                 message: "Pick chapters in any series and add them to the downloads, or export what you have. They go on in the background while you carry on.",
@@ -130,7 +148,7 @@ pub fn TasksPage() -> Element {
                 h2 { "Exports" }
             }
             // A finished export is the first file in the list below.
-            if job.as_ref().is_some_and(|j| !matches!(j.result, Some(Ok(_)))) {
+            if job_shown == Some(true) {
                 ExportJobRow {}
             }
             ExportedFiles {}

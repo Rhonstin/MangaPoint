@@ -414,7 +414,8 @@ pub(super) async fn run_batch(state: AppState, id: u64) {
                     state.save_library();
                 }
             }
-            state.edit_queue(|q| {
+            // How far it has got is not kept on disk, so nothing is saved here.
+            state.edit_queue_quiet(|q| {
                 if let Some(b) = q.get_mut(id) {
                     for event in &events {
                         b.progress.apply(event);

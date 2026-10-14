@@ -67,7 +67,9 @@ pub fn LibraryPage() -> Element {
         .filter(|s| !s.chapters.is_empty())
         .count();
     let saved_count = library.series.len() - downloaded_count;
-    let queue = state.queue.read().clone();
+    // Which series have work, and nothing of how far it has got: the posters
+    // are not drawn again for every page of a download.
+    let working_series = use_memo(move || state.queue.read().series_with_work())();
 
     // The ticked series that are still shown, in the order shown.
     let chosen: Vec<&library::DownloadedSeries> = order
@@ -239,7 +241,7 @@ pub fn LibraryPage() -> Element {
                             })
                             .unwrap_or_default();
                         let is_exported = exported.contains(&s.id);
-                        let queued = queue.series_has_work(&s.id);
+                        let queued = working_series.contains(&s.id);
                         let menu_id = s.id.clone();
                         let text_id = s.id.clone();
                         let menu_open = menu().as_deref() == Some(s.id.as_str());

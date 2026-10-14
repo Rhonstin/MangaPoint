@@ -973,16 +973,16 @@ fn ExportFooter() -> Element {
     let plan = state.export_plan.read().clone();
     let library = state.library.read().clone();
     let opts = state.export_opts.read().clone();
-    let busy = state
-        .job
-        .read()
-        .as_ref()
-        .is_some_and(|j| j.result.is_none());
-    let exporting = state
-        .job
-        .read()
-        .as_ref()
-        .is_some_and(|j| j.kind == JobKind::Export && j.result.is_none());
+    // Whether something runs, not how far it has got: the footer is not drawn
+    // again for every page.
+    let (busy, exporting) = use_memo(move || {
+        let job = state.job.read();
+        let running = job.as_ref().is_some_and(|j| j.result.is_none());
+        let exporting = job
+            .as_ref()
+            .is_some_and(|j| j.kind == JobKind::Export && j.result.is_none());
+        (running, exporting)
+    })();
 
     let (mut series_count, mut chapters, mut pages, mut bytes) = (0usize, 0usize, 0usize, 0u64);
     for item in plan.items.iter().filter(|i| !i.off) {

@@ -15,6 +15,48 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use tracing::{info, warn};
 
+/// What was learned of the chapter lists of series already looked at, for a
+/// while: searching for the same thing again (or something that turns up the
+/// same series) does not ask the sources a second time.
+type Remembered = HashMap<(String, i64), (Instant, search::Enrichment)>;
+static ENRICHED: std::sync::Mutex<Option<Remembered>> = std::sync::Mutex::new(None);
+
+/// How long what was learned is trusted.
+const ENRICHED_FOR: Duration = Duration::from_secs(20 * 60);
+
+/// The chapter lists of `candidates`, from what is remembered where it is fresh
+/// and from the sources for the rest.
+async fn enrich_remembered(
+    client: &catalog::SuwayomiClient,
+    candidates: &[search::Candidate],
+) -> HashMap<(String, i64), search::Enrichment> {
+    let mut found = HashMap::new();
+    let mut missing = Vec::new();
+    {
+        let cache = ENRICHED.lock().ok();
+        let known = cache.as_ref().and_then(|c| c.as_ref());
+        for candidate in candidates {
+            match known.and_then(|k| k.get(&candidate.key())) {
+                Some((at, enrichment)) if at.elapsed() < ENRICHED_FOR => {
+                    found.insert(candidate.key(), enrichment.clone());
+                }
+                _ => missing.push(candidate.clone()),
+            }
+        }
+    }
+    // Eight lookups at once, and no source is waited on for long: a series
+    // whose list is slow keeps what it had.
+    let fetched = search::enrich(client, &missing, Duration::from_secs(10), 8).await;
+    if let Ok(mut cache) = ENRICHED.lock() {
+        let map = cache.get_or_insert_with(HashMap::new);
+        for (key, enrichment) in &fetched {
+            map.insert(key.clone(), (Instant::now(), enrichment.clone()));
+        }
+    }
+    found.extend(fetched);
+    found
+}
+
 /// A source as the search page shows it.
 #[derive(Clone, PartialEq)]
 struct SourceInfo {
@@ -287,6 +329,8 @@ pub fn SearchPage() -> Element {
         }
         if view.searching {
             Loading { label: format!("Searching… {} of {} sources answered", view.answered, view.total) }
+        } else if view.enriching {
+            p { class: "muted small", style: "margin: 6px 2px 0", "Checking chapter lists to pick the best source for each…" }
         } else if !view.query.is_empty() && view.ranked.is_empty() && !view.no_sources && !view.none_selected {
             EmptyState {
                 title: "The cat looked everywhere",
@@ -749,13 +793,18 @@ pub fn run_search(state: AppState, query: String) {
                 &enrichment,
                 &lang,
                 &preferred,
-                true,
+                Phase::Asking,
             ) {
                 info!("Search for \"{query}\" was replaced by a newer search");
                 return;
             }
         }
         drop(stream);
+        // Every source has answered: the results are all there to use. What
+        // follows only improves which source each one is shown from.
+        if !publish(state, generation, &search, &query, &enrichment, &lang, &preferred, Phase::Checking) {
+            return;
+        }
 
         // Look at the chapter lists of the best-looking series to rank their sources properly.
         let top: Vec<_> = state
@@ -771,7 +820,7 @@ pub fn run_search(state: AppState, query: String) {
             search.candidates().len(),
             started.elapsed().as_secs_f32()
         );
-        enrichment = search::enrich(&*client, &top, Duration::from_secs(25), 4).await;
+        enrichment = enrich_remembered(&client, &top).await;
         let current = publish(
             state,
             generation,
@@ -780,7 +829,7 @@ pub fn run_search(state: AppState, query: String) {
             &enrichment,
             &lang,
             &preferred,
-            false,
+            Phase::Done,
         );
         state.save_health();
         if !current {
@@ -794,6 +843,17 @@ pub fn run_search(state: AppState, query: String) {
     });
 }
 
+/// How far a search has got.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Phase {
+    /// Sources are still being asked.
+    Asking,
+    /// Every source has answered; chapter lists are being looked at.
+    Checking,
+    /// All done.
+    Done,
+}
+
 /// Show the results so far. Returns false, doing nothing, if a newer search
 /// has replaced this one.
 #[allow(clippy::too_many_arguments)]
@@ -805,7 +865,7 @@ fn publish(
     enrichment: &HashMap<(String, i64), search::Enrichment>,
     lang: &str,
     preferred: &[String],
-    still_searching: bool,
+    phase: Phase,
 ) -> bool {
     if state.search.peek().generation != generation {
         return false;
@@ -836,7 +896,8 @@ fn publish(
     view.set(SearchView {
         query: query.to_string(),
         ranked,
-        searching: still_searching,
+        searching: phase == Phase::Asking,
+        enriching: phase == Phase::Checking,
         answered: search.answered,
         total: search.total_sources,
         failed: search

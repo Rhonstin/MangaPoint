@@ -186,7 +186,12 @@ pub struct Modal {
 pub struct SearchView {
     pub query: String,
     pub ranked: Vec<RankedSeries>,
+    /// Sources are still being asked.
     pub searching: bool,
+    /// Every source has answered; the chapter lists of the best-looking series
+    /// are being looked at, to pick the best source for each. The results are
+    /// all there and can be used meanwhile.
+    pub enriching: bool,
     pub answered: usize,
     pub total: usize,
     /// Sources that did not answer, by name.
@@ -748,6 +753,15 @@ impl AppState {
         // Kept on disk, so what is waiting and what has finished survive a restart.
         let _ = JsonFile::new(paths().queue_file()).save(&guard.to_saved());
         result
+    }
+
+    /// Change the download queue without saving it. For how far a download
+    /// has got, which is not kept on disk: saving the whole queue (hundreds of
+    /// KB) several times a second held up the window for nothing.
+    pub fn edit_queue_quiet<R>(&self, edit: impl FnOnce(&mut DownloadQueue) -> R) -> R {
+        let mut queue = self.queue;
+        let mut guard = queue.write();
+        edit(&mut guard)
     }
 
     /// Change the saved source speeds.

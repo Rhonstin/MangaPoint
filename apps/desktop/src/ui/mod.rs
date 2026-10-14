@@ -14,6 +14,7 @@ mod walker;
 mod icons;
 mod library_page;
 mod ocean;
+mod pixels;
 mod placeholder;
 mod plan_page;
 mod presets;
@@ -58,6 +59,8 @@ pub fn App() -> Element {
             state.notify("Reader saved.");
             state.warn("That drive is almost full: 300 MB left.");
             state.error("Nothing answered at http://192.168.3.3. Is the reader on?");
+            // And one of the system's own, to see who it says it is from.
+            crate::notify::finished(state, "Export finished", "The Greatest Estate Developer: Exported 1 file(s).");
         }
     });
     // Start the catalog server once, when the app opens.
@@ -147,8 +150,12 @@ fn Shell() -> Element {
     let state = use_context::<AppState>();
     let page = *state.page.read();
     // How many batches are downloading or waiting, for the badge on Downloads.
-    let (running, waiting, _) = state.queue.read().counts();
-    let in_queue = running + waiting;
+    // The count is all the nav shows: it changes when a batch comes or goes,
+    // not with every page that arrives.
+    let in_queue = use_memo(move || {
+        let (running, waiting, _) = state.queue.read().counts();
+        running + waiting
+    })();
     rsx! {
         nav { class: "nav",
             div { class: "brand",

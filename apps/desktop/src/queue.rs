@@ -138,6 +138,20 @@ pub enum QueuedChapter {
     Failed,
 }
 
+/// How one series stands in the queue. It changes when something of this
+/// series does (a chapter joins, a page of it arrives), and not when the queue
+/// does something for another.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SeriesQueueView {
+    /// Something of it is waiting or downloading.
+    pub working: bool,
+    /// Finished batches of it with chapters that failed, to try again.
+    pub retry_ids: Vec<u64>,
+    /// The chapters that are in the queue (waiting, downloading or failed), and
+    /// where each stands.
+    pub states: std::collections::HashMap<String, QueuedChapter>,
+}
+
 /// What adding a batch did.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Added {
@@ -553,6 +567,45 @@ impl DownloadQueue {
         self.batches
             .iter()
             .any(|b| b.status.is_active() && b.series_id == series_id)
+    }
+
+    /// The series that have work in the queue, in a fixed order, so a screen
+    /// that only needs to know which can ignore the queue's progress.
+    pub fn series_with_work(&self) -> Vec<String> {
+        let mut ids: Vec<String> = self
+            .batches
+            .iter()
+            .filter(|b| b.status.is_active())
+            .map(|b| b.series_id.clone())
+            .collect();
+        ids.sort();
+        ids.dedup();
+        ids
+    }
+
+    /// What the chapter list of one series needs of the queue, with none of the
+    /// progress inside it, so the list is not drawn again for every page.
+    pub fn view_of(&self, series_id: &str) -> SeriesQueueView {
+        let mut states = std::collections::HashMap::new();
+        for batch in self.batches.iter().filter(|b| b.series_id == series_id) {
+            for key in &batch.plan {
+                if !states.contains_key(key) {
+                    if let Some(state) = self.chapter_state(series_id, key) {
+                        states.insert(key.clone(), state);
+                    }
+                }
+            }
+        }
+        SeriesQueueView {
+            working: self.series_has_work(series_id),
+            retry_ids: self
+                .batches
+                .iter()
+                .filter(|b| b.series_id == series_id && !b.status.is_active() && !b.failed.is_empty())
+                .map(|b| b.id)
+                .collect(),
+            states,
+        }
     }
 
     /// Where a chapter of a series stands in the queue, if it is in it.

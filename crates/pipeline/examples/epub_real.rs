@@ -38,6 +38,7 @@ async fn main() {
         out.join("work"),
     );
     job.grouping = Grouping::Single;
+    job.force_conversion = std::env::var("FORCE").is_ok();
     let files = LibraryFiles::new(root.join("library"));
     let started = std::time::Instant::now();
     let done = export_series(&files, &job, None, &CancelFlag::new()).await.unwrap();
