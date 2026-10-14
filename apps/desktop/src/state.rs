@@ -346,6 +346,9 @@ pub struct PreviewPage {
     pub crop_key: String,
     pub source: Option<converter::PlannedPage>,
     pub generation: u64,
+    /// The settings (see `PreviewState::signature`) this page was drawn with.
+    /// A page drawn with the current ones needs no drawing again.
+    pub rendered_for: u64,
 }
 
 /// What the Preview tab is showing: every page of one chapter.
@@ -367,6 +370,10 @@ pub struct PreviewState {
     pub error: Option<String>,
     /// Bumped on every change so an older render never overwrites a newer one.
     pub generation: u64,
+    /// What the pages should look like, as one number: the chapter, the
+    /// conversion settings, the reader, and the crops. Scrolling does not
+    /// change it; anything that changes a page does.
+    pub signature: u64,
     pub selected: usize,
     pub thumb_start: usize,
     /// The first and last page on or near the screen in the scrolling list;

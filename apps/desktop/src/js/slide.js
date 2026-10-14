@@ -5,15 +5,16 @@ if (!window.mpSlideOut) {
     const app = document.querySelector('.app');
     if (app && app.dataset.motion === 'snappy') return;
     if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
-    const root = document.querySelector('.onboard');
-    const body = document.querySelector('.onboard-body');
+    const root = document.querySelector('.onboard-stage');
+    const body = document.querySelector('.onboard-stage > .onboard-body');
     if (!root || !body) return;
     const r = body.getBoundingClientRect();
+    const s = root.getBoundingClientRect();
     const ghost = body.cloneNode(true);
     ghost.classList.remove('from-right', 'from-left');
     ghost.classList.add('ghost', forward ? 'out-left' : 'out-right');
     Object.assign(ghost.style, {
-      position: 'fixed', left: r.left + 'px', top: r.top + 'px',
+      position: 'absolute', left: (r.left - s.left) + 'px', top: (r.top - s.top) + 'px',
       width: r.width + 'px', height: r.height + 'px', margin: '0',
       zIndex: '20', pointerEvents: 'none',
     });

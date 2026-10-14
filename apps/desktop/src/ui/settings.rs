@@ -6,6 +6,7 @@ use super::devices::DevicesEditor;
 use super::widgets::{Icon, Toggle};
 use crate::logic::{human_bytes, plural};
 use crate::state::{paths, AppState, BootState, Modal, ModalAction, Page, SettingsSection};
+use crate::updates::{self, UpdateState, VERSION};
 use catalog::browser;
 use dioxus::prelude::*;
 use library::{DownloadLimits, DownloadSpeed};
@@ -293,6 +294,7 @@ pub fn SettingsPage() -> Element {
                         }
                     },
                     SettingsSection::About => rsx! {
+                        UpdateRow {}
                         Row {
                             label: "Catalog engine",
                             note: match &services {
@@ -313,6 +315,59 @@ pub fn SettingsPage() -> Element {
                     },
                 }}
             }
+        }
+    }
+}
+
+/// The version of MangaPoint, and a button that looks for a newer one and,
+/// when there is one, turns into the button that installs it.
+#[component]
+fn UpdateRow() -> Element {
+    let mut update = use_signal(|| UpdateState::Idle);
+    let note = match update() {
+        UpdateState::Idle => format!("MangaPoint {VERSION}"),
+        UpdateState::Checking => format!("MangaPoint {VERSION}. Looking for a newer version\u{2026}"),
+        UpdateState::UpToDate => format!("MangaPoint {VERSION}. This is the newest version."),
+        UpdateState::Available { ref version } => format!("MangaPoint {VERSION}. Version {version} is out."),
+        UpdateState::Installing => format!("MangaPoint {VERSION}. Getting the new version\u{2026}"),
+        UpdateState::Failed(ref why) => format!("MangaPoint {VERSION}. {why}"),
+    };
+    rsx! {
+        Row { label: "Version", note,
+            {match update() {
+                UpdateState::Available { version } => rsx! {
+                    button { class: "btn primary",
+                        onclick: move |_| {
+                            let version = version.clone();
+                            spawn(async move {
+                                update.set(UpdateState::Installing);
+                                match updates::install(&version).await {
+                                    Ok(()) => update.set(UpdateState::UpToDate),
+                                    Err(why) => update.set(UpdateState::Failed(why)),
+                                }
+                            });
+                        },
+                        Icon { name: "download", size: 15 }
+                        "Update"
+                    }
+                },
+                state => rsx! {
+                    button { class: "btn", disabled: matches!(state, UpdateState::Checking | UpdateState::Installing),
+                        onclick: move |_| {
+                            spawn(async move {
+                                update.set(UpdateState::Checking);
+                                match updates::check().await {
+                                    Ok(Some(version)) => update.set(UpdateState::Available { version }),
+                                    Ok(None) => update.set(UpdateState::UpToDate),
+                                    Err(why) => update.set(UpdateState::Failed(why)),
+                                }
+                            });
+                        },
+                        Icon { name: "refresh-cw", size: 15 }
+                        "Check for updates"
+                    }
+                },
+            }}
         }
     }
 }

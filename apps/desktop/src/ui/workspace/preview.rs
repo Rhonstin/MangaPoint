@@ -476,7 +476,10 @@ pub fn PreviewTab() -> Element {
                                 chapter: chapter.clone(),
                                 crop_key: page.crop_key.clone(),
                                 draft,
-                                busy: (i + 1 >= p.window.0 && i <= p.window.1 + 1) && (p.busy || page.shot.is_none()),
+                                // Darkened only while this page is being drawn again: a page drawn the
+                                // way it should look is left alone, whatever else is loading.
+                                busy: (i + 1 >= p.window.0 && i <= p.window.1 + 1)
+                                    && (page.shot.is_none() || (p.busy && page.rendered_for != p.signature)),
                             }
                         }
                     }

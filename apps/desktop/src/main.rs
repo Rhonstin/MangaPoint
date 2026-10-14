@@ -11,6 +11,7 @@ mod notify;
 mod queue;
 mod sample;
 mod state;
+mod updates;
 mod ui;
 
 use dioxus::desktop::tao::window::Icon;

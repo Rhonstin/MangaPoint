@@ -983,7 +983,7 @@ fn AddSeries(on_close: EventHandler<()>) -> Element {
                 let has_cover = s.info.as_ref().is_some_and(|i| i.has_cover);
                 rsx! {
                     button { key: "{s.id}", class: "px-add-row",
-                        onclick: move |_| add_export_series(state, id.clone()),
+                        onclick: move |_| { add_export_series(state, id.clone()); on_close.call(()); },
                         div { class: "px-layer-cover",
                             if has_cover { Cover { key_id: saved_cover_key(&s.id) } } else { NoCover {} }
                         }

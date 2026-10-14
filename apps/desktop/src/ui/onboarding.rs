@@ -65,8 +65,15 @@ pub fn Onboarding() -> Element {
     // Nothing to press until the engine is there.
     let show_next = shown != SetupStep::Engine || engine_ready;
 
+    // While one page is sliding out and the next in, nothing else is accepted
+    // (the buttons stay where they are, so a second click would skip a page).
+    let mut moving = use_signal(|| false);
     // The step on show slides out first; only then does the next one come in.
     let go_next = move |_| {
+        if moving() {
+            return;
+        }
+        moving.set(true);
         spawn(async move {
             if shown != SetupStep::Reader {
                 slide_out(true).await;
@@ -83,30 +90,38 @@ pub fn Onboarding() -> Element {
                 _ => set_step(state, SetupStep::Done),
             }
             view.set(None);
+            tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+            moving.set(false);
         });
     };
     let go_back = move |_| {
-        if pos > 0 {
+        if pos > 0 && !moving() {
+            moving.set(true);
             spawn(async move {
                 slide_out(false).await;
                 forward.set(false);
                 view.set(Some(STEPS[pos - 1]));
+                tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+                moving.set(false);
             });
         }
     };
 
     rsx! {
         div { class: "onboard",
-            // A new page is a new element (keyed by its step), so it slides in afresh.
-            for step_key in [pos] {
-                div {
-                    key: "{step_key}",
-                    class: if forward() { "onboard-body from-right" } else { "onboard-body from-left" },
-                    {match shown {
-                        SetupStep::Engine => rsx! { EngineStep {} },
-                        SetupStep::Sources => rsx! { Setup { onboarding: true } },
-                        _ => rsx! { ReaderStep {} },
-                    }}
+            // The stage clips what slides past its edges.
+            div { class: "onboard-stage",
+                // A new page is a new element (keyed by its step), so it slides in afresh.
+                for step_key in [pos] {
+                    div {
+                        key: "{step_key}",
+                        class: if forward() { "onboard-body from-right" } else { "onboard-body from-left" },
+                        {match shown {
+                            SetupStep::Engine => rsx! { EngineStep {} },
+                            SetupStep::Sources => rsx! { Setup { onboarding: true } },
+                            _ => rsx! { ReaderStep {} },
+                        }}
+                    }
                 }
             }
             div { class: "onboard-nav",

@@ -168,9 +168,11 @@ fn noise(x: i32, y: i32) -> f32 {
 fn shows(x: i32, y: i32) -> bool {
     let side = x.min(VIEW_W - 1 - x) as f32;
     let bottom = (VIEW_H - 1 - y) as f32;
+    let top = y as f32;
     let keep = ((side - 2.0) / 40.0)
         .clamp(0.0, 1.0)
-        .min(((bottom - 1.0) / 8.0).clamp(0.0, 1.0));
+        .min(((bottom - 1.0) / 8.0).clamp(0.0, 1.0))
+        .min(((top - 1.0) / 9.0).clamp(0.0, 1.0));
     let r = 0.6 * noise(x, y) + 0.4 * noise(x.div_euclid(2) + 91, y.div_euclid(2) + 17);
     r < keep
 }
@@ -178,7 +180,13 @@ fn shows(x: i32, y: i32) -> bool {
 /// Page-black squares laid over the scene wherever a pixel does not show, so
 /// the scene keeps moving underneath while its edges stay broken up.
 fn edge_cover() -> String {
+    // A black frame one pixel outside the picture: scaled to the window the
+    // outer row would otherwise show through as a thin line.
     let mut out = String::new();
+    out.push_str(&rect(-1, -1, VIEW_W + 2, 1, "#000000"));
+    out.push_str(&rect(-1, VIEW_H, VIEW_W + 2, 1, "#000000"));
+    out.push_str(&rect(-1, 0, 1, VIEW_H, "#000000"));
+    out.push_str(&rect(VIEW_W, 0, 1, VIEW_H, "#000000"));
     for y in 0..VIEW_H {
         let mut x = 0;
         while x < VIEW_W {
@@ -370,7 +378,7 @@ fn build(c: &Palette, day: bool) -> String {
         .map(|p| format!("<g class=\"wf wf{p}\">{}</g>", rects(&frame(p))))
         .collect();
     format!(
-        "<svg class=\"walker-svg\" viewBox=\"0 0 {VIEW_W} {VIEW_H}\" xmlns=\"http://www.w3.org/2000/svg\" shape-rendering=\"crispEdges\">\
+        "<svg class=\"walker-svg\" viewBox=\"-1 -1 {} {}\" xmlns=\"http://www.w3.org/2000/svg\" shape-rendering=\"crispEdges\">\
          {sky}{clouds}\
          <g class=\"w-far\">{}</g>\
          <g class=\"w-mid\">{}</g>\
@@ -380,6 +388,8 @@ fn build(c: &Palette, day: bool) -> String {
          <g transform=\"translate(89 {})\">{cat}</g>\
          {}\
          </svg>",
+        VIEW_W + 2,
+        VIEW_H + 2,
         repeat(&skyline, 120, 3),
         repeat(&street, 96, 4),
         repeat(&near, 96, 4),
@@ -432,6 +442,8 @@ mod tests {
         assert!((60..140).all(|x| (20..50).all(|y| shows(x, y))));
         assert!((0..2).all(|x| (0..VIEW_H).all(|y| !shows(x, y))));
         assert!((0..VIEW_W).all(|x| !shows(x, VIEW_H - 1)));
+        assert!((0..VIEW_W).all(|x| !shows(x, 0)), "the top edge is bare too");
+        assert!((60..140).all(|x| shows(x, 14)), "and thickens quickly");
         // Somewhere in between, some pixels show and some do not.
         let shown = (2..40).flat_map(|x| (10..40).map(move |y| (x, y))).filter(|&(x, y)| shows(x, y)).count();
         assert!(shown > 0 && shown < 38 * 30);

@@ -45,9 +45,11 @@ fn noise(x: i32, y: i32) -> f32 {
 fn shows(x: i32, y: i32) -> bool {
     let side = x.min(W - 1 - x) as f32;
     let bottom = (H - 1 - y) as f32;
+    let top = y as f32;
     let keep = ((side - 2.0) / 24.0)
         .clamp(0.0, 1.0)
-        .min(((bottom - 1.0) / 6.0).clamp(0.0, 1.0));
+        .min(((bottom - 1.0) / 6.0).clamp(0.0, 1.0))
+        .min(((top - 1.0) / 5.0).clamp(0.0, 1.0));
     let r = 0.6 * noise(x, y) + 0.4 * noise(x.div_euclid(2) + 91, y.div_euclid(2) + 17);
     r < keep
 }
@@ -55,6 +57,10 @@ fn shows(x: i32, y: i32) -> bool {
 /// Page-black squares over everything that does not show.
 fn edge_cover() -> String {
     let mut out = String::new();
+    rect(&mut out, -1, -1, W + 2, 1, "#000000");
+    rect(&mut out, -1, H, W + 2, 1, "#000000");
+    rect(&mut out, -1, 0, 1, H, "#000000");
+    rect(&mut out, W, 0, 1, H, "#000000");
     for y in 0..H {
         let mut x = 0;
         while x < W {
@@ -156,7 +162,7 @@ fn markup() -> &'static str {
 pub fn BrowsingCat() -> Element {
     rsx! {
         svg {
-            class: "scene-cat browse-cat", view_box: "0 0 {W} {H}",
+            class: "scene-cat browse-cat", view_box: "-1 -1 {W + 2} {H + 2}",
             role: "img", "aria-label": "A cat looking at websites through a magnifying glass",
             dangerous_inner_html: "{markup()}",
         }
@@ -175,7 +181,8 @@ mod tests {
 
     #[test]
     fn the_edges_break_up_and_the_middle_stays_whole() {
-        assert!((30..90).all(|x| (4..46).all(|y| shows(x, y))));
+        assert!((30..90).all(|x| (8..46).all(|y| shows(x, y))));
+        assert!((0..W).all(|x| !shows(x, 0)), "the top edge is bare too");
         assert!((0..2).all(|x| (0..H).all(|y| !shows(x, y))));
         assert!((0..W).all(|x| !shows(x, H - 1)));
     }
