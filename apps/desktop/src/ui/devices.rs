@@ -504,9 +504,9 @@ fn open_readers_settings(state: AppState) {
     state.go(Page::Settings);
 }
 
-/// One reader in the list on the Export screen. Choosing it makes pages for it;
-/// the chosen one shows its screen size and lets its Wi-Fi address and folder
-/// be changed. Its name and size are changed in Settings.
+/// One reader in the list on the Export screen: its name, and its screen size
+/// on the same row. Choosing it makes pages for it. Its name and size are
+/// changed in Settings.
 #[component]
 fn ReaderItem(id: String, on: bool) -> Element {
     let state = use_context::<AppState>();
@@ -514,57 +514,20 @@ fn ReaderItem(id: String, on: bool) -> Element {
     let Some(device) = s.devices().into_iter().find(|d| d.id == id) else {
         return rsx! {};
     };
-    let setup = s.reader_setup();
-    let wifi_url = setup.wifi_url.clone().unwrap_or_default();
-    let folder = setup.folder.clone();
-    let wifi = setup.wifi;
-    let choose_id = id.clone();
     rsx! {
         div { class: if on { "px-preset on" } else { "px-preset" },
             onclick: move |_| {
                 if !on {
                     let mut settings = state.settings;
-                    settings.write().device = choose_id.clone();
+                    settings.write().device = id.clone();
                     state.save_settings();
                     crate::ui::work::schedule_preview(state, 0);
                 }
             },
             div { class: "px-preset-head",
                 span { class: "grow px-item-name", "{device.name}" }
+                span { class: "px-size", "{device.width} \u{d7} {device.height} px" }
                 if on { Icon { name: "check", size: 14 } }
-            }
-            if on {
-                p { class: "px-desc", "Screen {device.width} \u{d7} {device.height} px" }
-                div { class: "px-fields", onclick: move |e| e.stop_propagation(),
-                    if wifi {
-                        label { class: "px-field",
-                            span { "Wi-Fi address" }
-                            input {
-                                r#type: "text", placeholder: "http://192.168.3.3", value: "{wifi_url}",
-                                onchange: move |e| {
-                                    let v = e.value().trim().to_string();
-                                    let mut settings = state.settings;
-                                    settings.write().update_reader_setup(|r| r.wifi_url = (!v.is_empty()).then_some(v));
-                                    state.save_settings();
-                                },
-                            }
-                        }
-                    }
-                    label { class: "px-field",
-                        span { "Folder on the reader" }
-                        input {
-                            r#type: "text", value: "{folder}",
-                            onchange: move |e| {
-                                let v = e.value().trim().to_string();
-                                if !v.is_empty() {
-                                    let mut settings = state.settings;
-                                    settings.write().update_reader_setup(|r| r.folder = v);
-                                    state.save_settings();
-                                }
-                            },
-                        }
-                    }
-                }
             }
         }
     }

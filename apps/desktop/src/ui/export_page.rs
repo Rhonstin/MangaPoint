@@ -375,6 +375,19 @@ fn PresetsPanel() -> Element {
                         series_settings: settings_now.clone(),
                     }
                 }
+                for e in mine.iter() {
+                    PresetItem {
+                        key: "{e.preset.id}",
+                        kind: PresetKind::Mine,
+                        preset_id: Some(e.preset.id.clone()),
+                        name: e.preset.name.clone(),
+                        description: e.preset.description.clone(),
+                        settings: e.preset.settings.clone(),
+                        on: !last_on && series.preset_id.as_deref() == Some(e.preset.id.as_str()),
+                        series_id: series_id.clone(),
+                        series_settings: settings_now.clone(),
+                    }
+                }
                 button { class: "px-new", title: "Keep this series' settings as a preset of your own",
                     onclick: move |_| {
                         let result = state.edit_presets(|p| p.save_new(&new_name, new_settings.clone()));
@@ -389,19 +402,6 @@ fn PresetsPanel() -> Element {
                         }
                     },
                     Icon { name: "plus", size: 14 } "New preset"
-                }
-                for e in mine.iter() {
-                    PresetItem {
-                        key: "{e.preset.id}",
-                        kind: PresetKind::Mine,
-                        preset_id: Some(e.preset.id.clone()),
-                        name: e.preset.name.clone(),
-                        description: e.preset.description.clone(),
-                        settings: e.preset.settings.clone(),
-                        on: !last_on && series.preset_id.as_deref() == Some(e.preset.id.as_str()),
-                        series_id: series_id.clone(),
-                        series_settings: settings_now.clone(),
-                    }
                 }
             }
         }
@@ -671,6 +671,7 @@ fn SendPanel() -> Element {
         _ => library::ExportMethod::WiFi,
     };
     let both = setup.usb && setup.wifi;
+    let reader_folder = setup.folder.clone();
     // Another reader may not take the way that was chosen: follow what it does take.
     use_effect(move || {
         let setup = state.settings.read().reader_setup();
@@ -734,9 +735,9 @@ fn SendPanel() -> Element {
                 }
             }
             if on_reader {
-                div { class: "reader-box",
+                div { class: "reader-way",
                     if both {
-                        div { class: "seg", style: "margin-bottom: 10px",
+                        div { class: "seg",
                             button {
                                 class: if via == library::ExportMethod::Usb { "on" } else { "" },
                                 onclick: move |_| export_opts.write().target = TargetChoice::Usb, "USB"
@@ -802,22 +803,32 @@ fn SendPanel() -> Element {
                             }
                         },
                         library::ExportMethod::WiFi => rsx! {
-                            div { class: "folder-pick",
-                                span { class: "grow folder-path", title: "{wifi_url}",
-                                    if wifi_url.trim().is_empty() { "No address yet" } else { "{wifi_url}" }
-                                }
-                                button { class: "btn small", disabled: testing() || wifi_url.trim().is_empty(),
-                                    onclick: move |_| {
-                                        let url = wifi_url_to_test.clone();
-                                        spawn(async move {
-                                            testing.set(true);
+                            label { class: "px-field",
+                                span { "Reader address" }
+                                div { class: "row",
+                                    input {
+                                        class: "grow", r#type: "text", placeholder: "http://192.168.3.3", value: "{wifi_url}",
+                                        onchange: move |e| {
+                                            let v = e.value().trim().to_string();
+                                            let mut settings = state.settings;
+                                            settings.write().update_reader_setup(|r| r.wifi_url = (!v.is_empty()).then_some(v));
+                                            state.save_settings();
                                             wifi_test.set(None);
-                                            let result = pipeline::export::check_webdav(&url).await;
-                                            wifi_test.set(Some(result));
-                                            testing.set(false);
-                                        });
-                                    },
-                                    if testing() { "Looking…" } else { "Test" }
+                                        },
+                                    }
+                                    button { class: "btn small", disabled: testing() || wifi_url.trim().is_empty(),
+                                        onclick: move |_| {
+                                            let url = wifi_url_to_test.clone();
+                                            spawn(async move {
+                                                testing.set(true);
+                                                wifi_test.set(None);
+                                                let result = pipeline::export::check_webdav(&url).await;
+                                                wifi_test.set(Some(result));
+                                                testing.set(false);
+                                            });
+                                        },
+                                        if testing() { "Looking…" } else { "Test" }
+                                    }
                                 }
                             }
                             {match &*wifi_test.read() {
@@ -827,6 +838,20 @@ fn SendPanel() -> Element {
                             }}
                         },
                     }}
+                    label { class: "px-field",
+                        span { "Folder on the reader" }
+                        input {
+                            r#type: "text", value: "{reader_folder}",
+                            onchange: move |e| {
+                                let v = e.value().trim().to_string();
+                                if !v.is_empty() {
+                                    let mut settings = state.settings;
+                                    settings.write().update_reader_setup(|r| r.folder = v);
+                                    state.save_settings();
+                                }
+                            },
+                        }
+                    }
                 }
             }
 
