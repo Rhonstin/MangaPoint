@@ -67,8 +67,10 @@ pub enum Page {
     Library,
     /// Choosing, editing and exporting series, full window.
     Export,
-    /// The download queue and the exported files.
+    /// The download queue.
     Downloads,
+    /// The files exported for a reader.
+    Exports,
     /// Choosing what to download from one or more library series.
     Plan,
     Sources,

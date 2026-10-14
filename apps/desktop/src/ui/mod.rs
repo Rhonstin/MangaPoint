@@ -7,6 +7,7 @@ mod devices;
 mod download_dialog;
 mod downloads_page;
 mod export_page;
+mod exports_page;
 mod hang;
 mod icons;
 mod library_page;
@@ -19,15 +20,15 @@ mod search;
 mod settings;
 mod setup;
 mod shelf;
+mod sidebar;
 mod sources_page;
 mod widgets;
 pub mod work;
 mod workspace;
 
 use crate::backend;
-use crate::logic::plural;
 use crate::state::spawn_forever;
-use crate::state::{AppState, BootState, JobKind, Modal, ModalAction, Page};
+use crate::state::{AppState, BootState, Modal, ModalAction, Page};
 use dioxus::desktop::tao::event::{Event, WindowEvent};
 use dioxus::desktop::use_wry_event_handler;
 use dioxus::prelude::*;
@@ -37,8 +38,6 @@ use widgets::{Icon, ProgressBar};
 const CSS: &str = include_str!("../style.css");
 /// Floats the explanation of a question mark above everything else.
 const TOOLTIP_SCRIPT: &str = include_str!("../js/tooltip.js");
-/// Keeps the height of the bars above the page in a CSS variable.
-const LAYOUT_SCRIPT: &str = include_str!("../js/layout.js");
 
 #[component]
 pub fn App() -> Element {
@@ -63,7 +62,6 @@ pub fn App() -> Element {
     use_hook(|| {
         spawn(async move {
             let _ = document::eval(TOOLTIP_SCRIPT).await;
-            let _ = document::eval(LAYOUT_SCRIPT).await;
         });
     });
 
@@ -134,21 +132,19 @@ fn Shell() -> Element {
             }
             NavItem { page: Page::Search, label: "Search", icon: "search" }
             NavItem { page: Page::Library, label: "Library", icon: "book-open" }
+            NavItem { page: Page::Export, label: "Export", icon: "file-down" }
+            NavItem { page: Page::Exports, label: "Exported files", icon: "folder-open" }
+            div { class: "nav-spacer" }
+            sidebar::SidebarJobs {}
             NavItem {
                 page: Page::Downloads, label: "Downloads", icon: "download",
                 badge: (in_queue > 0).then(|| in_queue.to_string()),
             }
-            NavItem { page: Page::Export, label: "Export", icon: "file-down" }
-            div { class: "nav-spacer" }
             NavItem { page: Page::Sources, label: "Sources", icon: "layers" }
             NavItem { page: Page::Settings, label: "Settings", icon: "settings" }
         }
         main { class: "content",
             div { class: "page",
-                div { class: "bars",
-                    JobBar {}
-                    DownloadBar {}
-                }
                 // The search stays built while another page is open, so coming
                 // back to it is instant and it is as it was left.
                 div { class: if page == Page::Search { "keep" } else { "keep gone" },
@@ -160,6 +156,7 @@ fn Shell() -> Element {
                     Page::Series => rsx! { workspace::WorkspacePage {} },
                     Page::Library => rsx! { library_page::LibraryPage {} },
                     Page::Downloads => rsx! { downloads_page::DownloadsPage {} },
+                    Page::Exports => rsx! { exports_page::ExportsPage {} },
                     Page::Plan => rsx! { plan_page::PlanPage {} },
                     Page::Export => rsx! { export_page::ExportPage {} },
                     Page::Sources => rsx! { sources_page::SourcesPage {} },
@@ -205,118 +202,6 @@ fn NavItem(page: Page, label: &'static str, icon: &'static str, badge: Option<St
             Icon { name: icon, size: 17 }
             span { class: "grow", "{label}" }
             if let Some(count) = badge { span { class: "nav-badge", "{count}" } }
-        }
-    }
-}
-
-/// The download queue at a glance, above every screen except its own page.
-#[component]
-fn DownloadBar() -> Element {
-    let state = use_context::<AppState>();
-    if *state.page.read() == Page::Downloads {
-        return rsx! {};
-    }
-    let queue = state.queue.read().clone();
-    let running = queue.running().cloned();
-    let (_, waiting, chapters_left) = queue.counts();
-    let paused = queue.paused;
-    if running.is_none() && !(paused && waiting > 0) {
-        return rsx! {};
-    }
-    rsx! {
-        div { class: "jobbar downloadbar",
-            div { class: "row",
-                Icon { name: "download", size: 16 }
-                div { class: "grow",
-                    if let Some(batch) = &running {
-                        strong { "{batch.title}" }
-                        span { class: "muted", " · {batch.progress.label()}" }
-                        if let Some(v) = batch.progress.pages_per_second() {
-                            span { class: "muted small", " · about {v:.1} pages a second" }
-                        }
-                        if waiting > 0 { span { class: "muted small", " · {waiting} more in line" } }
-                    } else {
-                        strong { "Downloads are paused" }
-                        span { class: "muted", " · {plural(chapters_left, \"chapter\")} waiting" }
-                    }
-                }
-                if paused {
-                    button { class: "btn small", onclick: move |_| work::set_queue_paused(state, false),
-                        Icon { name: "play", size: 14 } "Resume"
-                    }
-                }
-                button { class: "btn small", onclick: move |_| state.go(Page::Downloads), Icon { name: "download", size: 15 } "Downloads" }
-            }
-            if let Some(batch) = &running {
-                div { style: "margin-top: 8px", ProgressBar { fraction: Some(batch.progress.fraction()) } }
-            }
-        }
-    }
-}
-
-/// The running (or just finished) export, shown above every screen.
-#[component]
-fn JobBar() -> Element {
-    let state = use_context::<AppState>();
-    let job = state.job.read().clone();
-    let Some(job) = job else { return rsx! {} };
-    let running = job.result.is_none();
-    let verb = match job.kind {
-        JobKind::Export => "Exporting",
-    };
-    let kind = job.kind;
-    rsx! {
-        div { class: "jobbar",
-            div { class: "row",
-                div { class: "grow",
-                    strong { "{job.title}" }
-                    {match &job.result {
-                        None => rsx! { span { class: "muted", " · {verb} · {job.progress.label()}" } },
-                        Some(Ok(summary)) => rsx! {
-                            span { class: "chip ok", style: "margin-left: 8px", "Done" }
-                            span { class: "muted small", " {summary}" }
-                        },
-                        Some(Err(e)) => rsx! {
-                            span { class: "chip bad", style: "margin-left: 8px", "Stopped" }
-                            span { class: "muted small", " {e}" }
-                        },
-                    }}
-                }
-                if running {
-                    button {
-                        class: "btn small",
-                        disabled: job.progress.stopping,
-                        onclick: move |_| work::cancel_job(state),
-                        Icon { name: "x", size: 14 }
-                        if job.progress.stopping { "Stopping…" } else { "Cancel" }
-                    }
-                } else {
-                    if kind == JobKind::Export && job.result.as_ref().is_some_and(|r| r.is_ok()) {
-                        button {
-                            class: "btn small",
-                            onclick: move |_| state.go(Page::Library),
-                            Icon { name: "book-open", size: 14 }
-                            "Library"
-                        }
-                    }
-                    button {
-                        class: "btn small",
-                        onclick: move |_| {
-                            let mut j = state.job;
-                            j.set(None);
-                        },
-                        "Dismiss"
-                    }
-                }
-            }
-            if running {
-                div { style: "margin-top: 8px",
-                    ProgressBar { fraction: Some(job.progress.fraction()) }
-                }
-                if let Some(note) = &job.progress.note {
-                    p { class: "muted small", style: "margin: 6px 0 0", "{note}" }
-                }
-            }
         }
     }
 }
@@ -439,12 +324,11 @@ fn ToastHost() -> Element {
 
 #[cfg(test)]
 mod script_tests {
-    const SCRIPTS: [(&str, &str); 5] = [
+    const SCRIPTS: [(&str, &str); 4] = [
         ("crop-drag.js", include_str!("../js/crop-drag.js")),
         ("export-split.js", include_str!("../js/export-split.js")),
         ("preview-editor.js", include_str!("../js/preview-editor.js")),
         ("tooltip.js", include_str!("../js/tooltip.js")),
-        ("layout.js", include_str!("../js/layout.js")),
     ];
 
     /// `cropBound` as it is written in HTML: `data-crop-bound`.
