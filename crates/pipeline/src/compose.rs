@@ -11,7 +11,7 @@ use crate::export::{output_file_name, sanitize_component, ExportTarget, Exported
 use crate::options::process_options_for;
 use crate::preview::decode_page;
 use crate::types::{CancelFlag, JobEvent};
-use converter::xtc::{Chapter as XtcChapter, Metadata, WriteError, XtcBuilder};
+use converter::xtc::{Chapter as XtcChapter, Format, Metadata, WriteError, XtcBuilder};
 use converter::{GrayImage, ProcessOptions};
 use device_profiles::DeviceProfile;
 use futures_util::stream::{self, StreamExt};
@@ -127,6 +127,27 @@ impl Drop for Scratch {
 }
 
 /// Split `count` chapters (by position) into groups.
+/// The most pages a file may hold: what the job says, and over Wi-Fi also
+/// what keeps a file under the size the reader can take in one go.
+fn pages_per_file(job: &ExportJob, format: Format) -> usize {
+    let mut cap = job.max_pages_per_file;
+    if matches!(job.target, ExportTarget::WebDav { .. }) {
+        cap = cap.min(wifi_page_cap(job.device.width, job.device.height, format));
+    }
+    cap
+}
+
+/// How many pages of a `width` x `height` screen fit in one file sent over Wi-Fi.
+fn wifi_page_cap(width: u32, height: u32, format: Format) -> usize {
+    let pixels = u64::from(width) * u64::from(height);
+    let page_bytes = match format {
+        Format::Xtc => pixels / 8,
+        Format::Xtch => pixels / 4,
+    }
+    .max(1);
+    (crate::export::WIFI_MAX_FILE_BYTES / page_bytes).max(1) as usize
+}
+
 fn group_ranges(count: usize, grouping: Grouping) -> Vec<std::ops::Range<usize>> {
     let size = match grouping {
         Grouping::Single => count.max(1),
@@ -174,6 +195,7 @@ pub async fn export_series(
     let settings = &job.series.settings;
     let opts = process_options_for(&job.device, settings);
     let format = settings.format;
+    let page_cap = pages_per_file(job, format);
     let mut scratch = Scratch::default();
     let mut volumes: Vec<Volume> = Vec::new();
     let mut total_pages = 0usize;
@@ -256,7 +278,7 @@ pub async fn export_series(
         }
         // Start a new file if this chapter would not fit in the open one.
         if let Some((builder, _)) = &open {
-            if builder.page_count() + images.len() > job.max_pages_per_file {
+            if builder.page_count() + images.len() > page_cap {
                 let (builder, volume) = open.take().expect("checked above");
                 volumes.push(finish_volume(builder, volume, &job.work_dir, &mut scratch)?);
             }
@@ -592,6 +614,19 @@ fn now_secs() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_book_sent_over_wifi_is_cut_into_files_the_reader_can_take() {
+        use converter::xtc::Format;
+        // 480x800 pages are 96,000 bytes in XTCH and 48,000 in XTC.
+        let xtch = wifi_page_cap(480, 800, Format::Xtch);
+        let xtc = wifi_page_cap(480, 800, Format::Xtc);
+        assert_eq!(xtc, xtch * 2);
+        assert!((xtch as u64) * 96_000 <= crate::export::WIFI_MAX_FILE_BYTES);
+        assert!(xtch > 5_000 && xtch < 6_000);
+        // The 235 chapters that took an X4 Pro down (about 2.8 GB) come out as several parts.
+        assert!(2_790_000_000u64 / (xtch as u64 * 96_000) >= 5);
+    }
 
     #[test]
     fn groups_split_chapters_the_way_each_option_says() {

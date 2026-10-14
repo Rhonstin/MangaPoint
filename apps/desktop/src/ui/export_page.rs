@@ -834,7 +834,7 @@ fn SendPanel() -> Element {
                             {match &*wifi_test.read() {
                                 Some(Ok(())) => rsx! { div { class: "reader-note good", "The reader answered." } },
                                 Some(Err(message)) => rsx! { div { class: "reader-note bad", "{message}" } },
-                                None => rsx! { div { class: "reader-note", "Switch on the reader's Wi-Fi file transfer first." } },
+                                None => rsx! { div { class: "reader-note", "Switch on the reader's Wi-Fi file transfer first. Long series are sent in parts of about 500 MB, which is all the reader can take at once." } },
                             }}
                         },
                     }}

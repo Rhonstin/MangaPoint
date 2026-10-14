@@ -35,7 +35,7 @@ impl ExportTarget {
                 write_file(&mount.join(sanitize_component(folder)), filename, data, true)
             }
             ExportTarget::WebDav { base_url, folder } => {
-                upload_webdav(base_url, folder, filename, data).await
+                upload_webdav(base_url, folder, filename, data.to_vec()).await
             }
         }
     }
@@ -57,7 +57,7 @@ impl ExportTarget {
             }
             ExportTarget::WebDav { base_url, folder } => {
                 let data = fs::read(src).map_err(|e| PipelineError::Io(src.to_path_buf(), e))?;
-                upload_webdav(base_url, folder, filename, &data).await
+                upload_webdav(base_url, folder, filename, data).await
             }
         }
     }
@@ -303,11 +303,23 @@ pub async fn check_webdav(base_url: &str) -> std::result::Result<(), String> {
     }
 }
 
+/// The most a single file sent over Wi-Fi may be. The reader's web server has
+/// to take the whole file in one request, and it is a small chip: one file of
+/// 2.8 GB (more than a 32-bit size can say) took an X4 Pro down. Bigger books
+/// are sent in parts of at most this size.
+pub const WIFI_MAX_FILE_BYTES: u64 = 512 * 1024 * 1024;
+
+/// How long a file of `bytes` may take to send: at least ten minutes, and
+/// long enough for a slow link (about 100 KB a second).
+fn upload_timeout(bytes: usize) -> Duration {
+    Duration::from_secs(600.max(bytes as u64 / 100_000))
+}
+
 async fn upload_webdav(
     base_url: &str,
     folder: &str,
     filename: &str,
-    data: &[u8],
+    data: Vec<u8>,
 ) -> Result<ExportedFile> {
     let fail = |m: String| PipelineError::Upload(m);
     if !(base_url.starts_with("http://") || base_url.starts_with("https://")) {
@@ -315,7 +327,7 @@ async fn upload_webdav(
     }
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(600))
+        .timeout(upload_timeout(data.len()))
         .build()
         .map_err(|e| fail(e.to_string()))?;
     let dir_url = format!(
@@ -328,9 +340,10 @@ async fn upload_webdav(
     let _ = client.request(mkcol, &dir_url).send().await;
 
     let file_url = format!("{dir_url}{}", encode_segment(filename));
+    let bytes = data.len() as u64;
     let response = client
         .put(&file_url)
-        .body(data.to_vec())
+        .body(data)
         .send()
         .await
         .map_err(|e| fail(e.to_string()))?;
@@ -338,7 +351,7 @@ async fn upload_webdav(
     if status.is_success() {
         Ok(ExportedFile {
             location: file_url,
-            bytes: data.len() as u64,
+            bytes,
         })
     } else {
         Err(fail(format!("the reader answered {status}")))
@@ -356,6 +369,12 @@ mod tests {
             std::env::temp_dir().join(format!("mangapoint-export-{tag}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&d);
         d
+    }
+
+    #[test]
+    fn a_slow_link_gets_more_time_for_a_big_file() {
+        assert_eq!(upload_timeout(1_000), Duration::from_secs(600));
+        assert_eq!(upload_timeout(512 * 1024 * 1024), Duration::from_secs(5368));
     }
 
     #[test]
