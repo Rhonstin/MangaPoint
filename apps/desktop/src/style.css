@@ -710,10 +710,10 @@ table.chapters th.size, table.chapters td.size { width: 90px; text-align: right;
 .search-stage.idle .searchwrap { max-width: 720px; margin-top: -52px; }
 /* The wide night picture fills the top half; its bottom has broken up into
    black by the middle of the search box, which sits over its last rows. */
-.search-stage.idle .search-hero { margin-top: -22px; }
-.ocean.hero { width: min(100%, 1000px); max-width: none; height: auto; margin: 0 auto; }
+.search-stage.idle .search-hero { margin: -22px -28px 0; }
+.ocean.hero { width: min(100%, 1200px); max-width: none; height: auto; margin: 0 auto; }
 /* Whole pixels: 5 screen pixels to a cell where there is room, 4 or 3 where not. */
-.ocean.hero { width: min(round(down, 100%, 200px), 1000px); }
+.ocean.hero { width: min(round(down, 100%, 240px), 1200px); }
 @media (prefers-reduced-motion: reduce) { .search-stage, .search-hero, .search-stage .searchwrap { transition: none; } }
 
 /* ---- one page for a series: the overview, then the chapters ---- */

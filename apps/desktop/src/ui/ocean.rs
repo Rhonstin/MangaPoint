@@ -14,10 +14,10 @@ use std::sync::OnceLock;
 const W: i32 = 80;
 const H: i32 = 40;
 /// The wide picture for the Search page shows more of the same night around it:
-/// the canvas reaches 60 cells to either side, 50 above and 20 below.
-const X0: i32 = -60;
+/// the canvas reaches 80 cells to either side, 50 above and 20 below.
+const X0: i32 = -80;
 const Y0: i32 = -50;
-const CW: i32 = 200;
+const CW: i32 = 240;
 const CH: i32 = 110;
 
 /// How the edges of a picture break up into the page's black.
@@ -69,7 +69,7 @@ impl Layer {
     /// Dashes of one wave row, repeating every 8 pixels from off the left edge
     /// to off the right edge, so the row can drift by 8 and loop without a seam.
     fn wave_row(&mut self, y: i32, shift: i32, c: &'static str) {
-        for k in -9..=18 {
+        for k in -13..=22 {
             let base = k * 8 + shift;
             self.rect(base, y, 3, 1, c);
             self.rect(base + 5, y, 2, 1, c);
@@ -107,8 +107,8 @@ fn survives(fade: Fade, x: i32, y: i32) -> bool {
             // Cells from each edge: the first two are bare, then it thickens.
             let side = (x - X0).min(X0 + CW - 1 - x) as f32;
             let bottom = (Y0 + CH - 1 - y) as f32;
-            let sides = ((side - 2.0) / 46.0).clamp(0.0, 1.0);
-            let floor = ((bottom - 2.0) / 30.0).clamp(0.0, 1.0);
+            let sides = ((side - 2.0) / 52.0).clamp(0.0, 1.0);
+            let floor = ((bottom - 1.0) / 14.0).clamp(0.0, 1.0);
             sides.min(floor)
         }
     };
@@ -397,7 +397,7 @@ fn wide_surroundings() -> String {
             let x = X0 + (noise(n * 7 + i * 31, 5) * CW as f32) as i32;
             let y = Y0 + (noise(n * 11 + 7, i * 13 + 2) * 62.0) as i32;
             // Not behind the name.
-            if (-44..-24).contains(&y) && (-34..114).contains(&x) {
+            if (-36..-12).contains(&y) && (-34..114).contains(&x) {
                 continue;
             }
             stars.px(x, y, "#dfe6ff");
@@ -440,7 +440,7 @@ fn name() -> String {
     let word = "MANGA POINT";
     let width = (word.chars().count() as i32 * 6 - 1) * SCALE;
     let left = X0 + CW / 2 - width / 2;
-    let top = -42;
+    let top = -31;
     let mut layer = Layer::default();
     // The shadow first, then the letters on top of it.
     for (shift, color) in [(SCALE, "#05070d"), (0, "#f2f0e6")] {
@@ -609,9 +609,9 @@ mod tests {
         assert_eq!(covered(-10, 90, -50, -20), 100 * 30);
         // The edges are bare, and the last rows before the bottom are thin.
         assert_eq!(covered(X0, X0 + 2, 0, 40), 0);
-        assert_eq!(covered(0, 80, Y0 + CH - 2, Y0 + CH), 0);
-        let band = 80 * 10;
-        assert!(covered(0, 80, Y0 + CH - 12, Y0 + CH - 2) < band / 3);
+        assert_eq!(covered(0, 80, Y0 + CH - 1, Y0 + CH), 0);
+        // Whole until late, then thinning toward the last row.
+        assert!(covered(0, 80, Y0 + CH - 6, Y0 + CH - 2) < covered(0, 80, Y0 + CH - 22, Y0 + CH - 18));
     }
 
     #[test]
