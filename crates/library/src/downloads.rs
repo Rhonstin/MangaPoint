@@ -158,6 +158,10 @@ pub struct DownloadedSeries {
     /// Where to find the series again: the sources that carry it. A series can
     /// be in the library with these and no downloaded chapters.
     pub sources: Vec<SavedSource>,
+    /// How many chapters the sources list in all, as last seen; `None` until
+    /// they have been looked up.
+    #[serde(default)]
+    pub chapter_total: Option<usize>,
     /// When it was added to the library (seconds since the Unix epoch).
     pub added_at: u64,
     pub updated_at: u64,
@@ -221,6 +225,7 @@ impl LibraryDb {
                     overridden: Vec::new(),
                     info: None,
                     sources: Vec::new(),
+                    chapter_total: None,
                     added_at: now,
                     updated_at: now,
                 });
@@ -274,6 +279,7 @@ impl LibraryDb {
                 overridden: Vec::new(),
                 info: None,
                 sources,
+                chapter_total: None,
                 added_at: now,
                 updated_at: now,
             }),
@@ -349,6 +355,17 @@ impl LibraryDb {
                 s.preset_id = preset_id.clone();
                 s.overridden.clear();
             }
+        }
+    }
+
+    /// Remember how many chapters a series has in all. True if that changed.
+    pub fn set_chapter_total(&mut self, series_id: &str, total: usize) -> bool {
+        match self.series.iter_mut().find(|s| s.id == series_id) {
+            Some(s) if s.chapter_total != Some(total) => {
+                s.chapter_total = Some(total);
+                true
+            }
+            _ => false,
         }
     }
 

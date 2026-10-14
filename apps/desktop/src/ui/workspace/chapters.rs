@@ -11,7 +11,6 @@ use crate::ui::work::{ask_download, downloaded_keys, merged_key, open_export, re
 use dioxus::prelude::*;
 use pipeline::SourceChoice;
 use search::missing_numbers;
-use std::collections::HashSet;
 
 #[component]
 pub fn ChaptersTab() -> Element {
@@ -205,8 +204,6 @@ pub fn ChaptersTab() -> Element {
             .collect()
     };
     let current_sort = (sort_key, sort_desc);
-    let numbers_all = numbers.clone();
-    let numbers_latest = numbers.clone();
     let numbers_range = numbers.clone();
     let missing_text = {
         let first: Vec<String> = missing.iter().take(12).map(|n| n.to_string()).collect();
@@ -314,9 +311,6 @@ pub fn ChaptersTab() -> Element {
                     oninput: move |e| table.write().filter = e.value(),
                 }
             }
-            button { class: "btn small", onclick: move |_| selected.set((0..numbers_all.len()).collect()), "All" }
-            button { class: "btn small", onclick: move |_| selected.set(logic::latest(&numbers_latest, 10).into_iter().collect()), "Latest 10" }
-            button { class: "btn small", onclick: move |_| selected.set(HashSet::new()), "None" }
             form {
                 class: "row", style: "gap: 6px; margin-left: auto",
                 onsubmit: move |e| {

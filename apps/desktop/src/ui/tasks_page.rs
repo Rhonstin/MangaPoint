@@ -115,7 +115,7 @@ pub fn TasksPage() -> Element {
                 div { class: "q-subhead",
                     h3 { class: "q-title", "Finished" span { class: "muted", " ({finished.len()})" } }
                     span { class: "grow" }
-                    button { class: "btn small ghost", onclick: move |_| state.edit_queue(|q| q.clear_finished()),
+                    button { class: "btn small", onclick: move |_| state.edit_queue(|q| q.clear_finished()),
                         "Clear all"
                     }
                 }
@@ -370,6 +370,22 @@ fn BatchRow(id: u64) -> Element {
         _ => None,
     };
     let cover_key = saved_cover_key(&batch.series_id);
+    let (downloaded, downloaded_bytes) = state
+        .library
+        .read()
+        .find(&batch.series_id)
+        .map_or((0, 0), |s| (s.chapters.len(), s.bytes()));
+    let delete_modal = Modal {
+        title: format!("Delete the downloads of {}?", batch.title),
+        body: format!(
+            "The downloaded chapters ({}) will be deleted from this computer. The series stays in your library, so you can download it again later. Files you already exported are kept.",
+            human_bytes(downloaded_bytes)
+        ),
+        confirm: "Delete downloads".into(),
+        cancel: "Keep".into(),
+        danger: true,
+        action: ModalAction::DeleteDownloads { series_ids: vec![batch.series_id.clone()] },
+    };
     let open_id = series_id.clone();
     let folder_id = series_id.clone();
 
@@ -433,12 +449,12 @@ fn BatchRow(id: u64) -> Element {
                         Icon { name: "x", size: 14 }
                     }
                 } else {
-                    if failed > 0 {
-                        button { class: "btn small", onclick: move |_| retry_batch(state, id),
-                            Icon { name: "rotate-cw", size: 14 } "Try {plural(failed, \"chapter\")} again"
-                        }
-                    }
                     div { class: "q-aside",
+                        if failed > 0 {
+                            button { class: "btn small", onclick: move |_| retry_batch(state, id),
+                                Icon { name: "rotate-cw", size: 14 } "Try {plural(failed, \"chapter\")} again"
+                            }
+                        }
                         if batch.finished_at > 0 {
                             span { class: "q-when", "Completed {ago(now_secs(), batch.finished_at)}" }
                         }
@@ -452,6 +468,12 @@ fn BatchRow(id: u64) -> Element {
                                     }
                                 },
                                 Icon { name: "folder-open", size: 18 } "Open"
+                            }
+                        }
+                        if downloaded > 0 {
+                            button { class: "btn ghost open-big square danger", title: "Delete the downloaded chapters of this series",
+                                onclick: move |_| state.ask(delete_modal.clone()),
+                                Icon { name: "trash", size: 18 }
                             }
                         }
                     }

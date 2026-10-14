@@ -474,6 +474,8 @@ pub(super) async fn run_export(
                     })
                     .collect(),
                 target: describe_target(&target),
+                preset_id: series.preset_id.clone(),
+                settings: Some(series.settings.clone()),
                 at: now_secs(),
             };
             let mut exports = state.exports;

@@ -195,17 +195,6 @@ pub fn select_by_text(text: &str, numbers: &[Option<f64>]) -> Result<Vec<usize>,
         .collect())
 }
 
-/// Indices of the `count` highest-numbered chapters.
-pub fn latest(numbers: &[Option<f64>], count: usize) -> Vec<usize> {
-    let mut numbered: Vec<(usize, f64)> = numbers
-        .iter()
-        .enumerate()
-        .filter_map(|(i, n)| n.map(|n| (i, n)))
-        .collect();
-    numbered.sort_by(|a, b| b.1.total_cmp(&a.1));
-    numbered.into_iter().take(count).map(|(i, _)| i).collect()
-}
-
 // ---- Where files go --------------------------------------------------------
 
 /// Where the user chose to send the result.
@@ -478,36 +467,6 @@ pub fn ago(now_secs: u64, then_secs: u64) -> String {
     format!("{n} {unit}{} ago", if n == 1 { "" } else { "s" })
 }
 
-/// One line saying what a set of conversion settings does, for preset lists.
-pub fn describe_settings(c: &library::ConversionSettings) -> String {
-    use converter::process::{CropMode, Layout};
-    use converter::xtc::{Format, ReadDirection};
-    let direction = match c.direction {
-        ReadDirection::RightToLeft => "right to left",
-        ReadDirection::LeftToRight => "left to right",
-        ReadDirection::TopToBottom => "top to bottom",
-    };
-    let layout = match c.layout {
-        Layout::Auto => "automatic layout",
-        Layout::Manga => "pages",
-        Layout::Webtoon => "long strips",
-    };
-    let format = match c.format {
-        Format::Xtch => "4 grays",
-        Format::Xtc => "black & white",
-    };
-    let trim = match (c.crop, c.margins.is_none()) {
-        (CropMode::Full, true) => "no cropping".to_string(),
-        (CropMode::Full, false) => "fixed margins".to_string(),
-        (CropMode::Margins, true) => "auto trim".to_string(),
-        (CropMode::Margins, false) => "auto trim + fixed margins".to_string(),
-    };
-    format!(
-        "{direction} · {layout} · {trim} · {format} · contrast {}",
-        c.contrast
-    )
-}
-
 /// Turn what a source says about a series into what the Library keeps.
 pub fn series_info_from(
     details: &catalog::MangaDetails,
@@ -640,14 +599,17 @@ pub enum LibraryView {
     All,
     /// Series with chapters on this computer.
     Downloaded,
+    /// Series that have been exported for a reader.
+    Exported,
     /// Series put in the library but not downloaded yet.
     Saved,
 }
 
 impl LibraryView {
-    pub const ALL: [LibraryView; 3] = [
+    pub const ALL: [LibraryView; 4] = [
         LibraryView::All,
         LibraryView::Downloaded,
+        LibraryView::Exported,
         LibraryView::Saved,
     ];
 
@@ -655,14 +617,16 @@ impl LibraryView {
         match self {
             LibraryView::All => "All",
             LibraryView::Downloaded => "Downloaded",
+            LibraryView::Exported => "Exported",
             LibraryView::Saved => "Saved for later",
         }
     }
 
-    pub fn includes(self, series: &library::DownloadedSeries) -> bool {
+    pub fn includes(self, series: &library::DownloadedSeries, exported: bool) -> bool {
         match self {
             LibraryView::All => true,
             LibraryView::Downloaded => !series.chapters.is_empty(),
+            LibraryView::Exported => exported,
             LibraryView::Saved => series.chapters.is_empty(),
         }
     }
@@ -720,6 +684,7 @@ pub fn library_order(
     view: LibraryView,
     sort: LibrarySort,
     filter: &str,
+    exported: &std::collections::HashSet<String>,
 ) -> Vec<usize> {
     let needle = filter.trim().to_lowercase();
     let matches = |s: &library::DownloadedSeries| {
@@ -731,7 +696,7 @@ pub fn library_order(
             })
     };
     let mut order: Vec<usize> = (0..series.len())
-        .filter(|&i| view.includes(&series[i]) && matches(&series[i]))
+        .filter(|&i| view.includes(&series[i], exported.contains(&series[i].id)) && matches(&series[i]))
         .collect();
     match sort {
         LibrarySort::Recent => {
@@ -956,14 +921,6 @@ mod tests {
     }
 
     #[test]
-    fn latest_picks_the_highest_numbers() {
-        let n = vec![Some(1.0), Some(9.0), None, Some(5.0), Some(7.0)];
-        assert_eq!(latest(&n, 2), [1, 4]);
-        assert_eq!(latest(&n, 10).len(), 4);
-        assert!(latest(&[], 3).is_empty());
-    }
-
-    #[test]
     fn export_targets_follow_the_choice_and_settings() {
         let mut s = Settings::default();
         let default_dir = Path::new("/exports");
@@ -1117,36 +1074,6 @@ mod tests {
             ago(5, 50),
             "just now",
             "a clock set back is not a negative time"
-        );
-    }
-}
-
-#[cfg(test)]
-mod preset_tests {
-    use super::*;
-    use library::ConversionSettings;
-
-    #[test]
-    fn settings_are_described_in_one_plain_line() {
-        let manga = describe_settings(&ConversionSettings::default());
-        assert_eq!(
-            manga,
-            "right to left · automatic layout · auto trim · 4 grays · contrast 55"
-        );
-        let c = ConversionSettings {
-            crop: converter::process::CropMode::Full,
-            margins: converter::process::Margins {
-                top: 5,
-                ..Default::default()
-            },
-            layout: converter::process::Layout::Webtoon,
-            direction: converter::xtc::ReadDirection::LeftToRight,
-            format: converter::xtc::Format::Xtc,
-            ..Default::default()
-        };
-        assert_eq!(
-            describe_settings(&c),
-            "left to right · long strips · fixed margins · black & white · contrast 55"
         );
     }
 }
@@ -1376,8 +1303,15 @@ mod library_view_tests {
     #[test]
     fn the_views_split_downloaded_from_saved() {
         let s = shelf();
-        let order = |v| library_order(&s, v, LibrarySort::Title, "");
+        let none = std::collections::HashSet::new();
+        let order = |v| library_order(&s, v, LibrarySort::Title, "", &none);
         assert_eq!(order(LibraryView::All), [1, 0, 3, 2]);
+        assert!(order(LibraryView::Exported).is_empty());
+        let berserk = std::collections::HashSet::from(["berserk".to_string()]);
+        assert_eq!(
+            library_order(&s, LibraryView::Exported, LibrarySort::Title, "", &berserk),
+            [0]
+        );
         assert_eq!(order(LibraryView::Downloaded), [0, 2]);
         assert_eq!(order(LibraryView::Saved), [1, 3]);
     }
@@ -1385,7 +1319,8 @@ mod library_view_tests {
     #[test]
     fn the_sorts_order_as_they_say() {
         let s = shelf();
-        let by = |sort| library_order(&s, LibraryView::All, sort, "");
+        let none = std::collections::HashSet::new();
+        let by = |sort| library_order(&s, LibraryView::All, sort, "", &none);
         assert_eq!(
             by(LibrarySort::Recent),
             [0, 1, 2, 3],
@@ -1407,13 +1342,14 @@ mod library_view_tests {
     #[test]
     fn the_filter_looks_at_the_title_author_and_genres() {
         let s = shelf();
-        let find = |text: &str| library_order(&s, LibraryView::All, LibrarySort::Title, text);
+        let none = std::collections::HashSet::new();
+        let find = |text: &str| library_order(&s, LibraryView::All, LibrarySort::Title, text, &none);
         assert_eq!(find("  ZET "), [2]);
         assert_eq!(find("miura"), [0], "author");
         assert_eq!(find("dark fantasy"), [0], "genre");
         assert!(find("nothing like this").is_empty());
         assert_eq!(
-            library_order(&s, LibraryView::Saved, LibrarySort::Title, "berserk"),
+            library_order(&s, LibraryView::Saved, LibrarySort::Title, "berserk", &none),
             Vec::<usize>::new()
         );
     }
