@@ -49,16 +49,13 @@ pub fn Onboarding() -> Element {
         .choices
         .values()
         .any(|c| *c == library::Choice::Install);
-    let reader_added = !state.settings.read().devices().is_empty();
 
     let next_label = match shown {
-        SetupStep::Engine => "Next",
-        SetupStep::Sources if source_installed => "Next",
-        SetupStep::Sources => "Skip",
-        _ if reader_added => "Finish",
-        _ => "Skip",
+        SetupStep::Engine | SetupStep::Sources => "Next",
+        _ => "Finish",
     };
-    let next_disabled = shown == SetupStep::Engine && !engine_ready;
+    // Nothing to press until the engine is there.
+    let show_next = shown != SetupStep::Engine || engine_ready;
 
     let go_next = move |_| {
         forward.set(true);
@@ -100,9 +97,11 @@ pub fn Onboarding() -> Element {
                     }
                 }
                 div { class: "grow" }
-                button { class: "btn primary", disabled: next_disabled, onclick: go_next,
-                    "{next_label}"
-                    if next_label == "Finish" { Icon { name: "check", size: 15 } } else { Icon { name: "chevron-right", size: 15 } }
+                if show_next {
+                    button { class: "btn primary", onclick: go_next,
+                        "{next_label}"
+                        if next_label == "Finish" { Icon { name: "check", size: 15 } } else { Icon { name: "chevron-right", size: 15 } }
+                    }
                 }
             }
         }

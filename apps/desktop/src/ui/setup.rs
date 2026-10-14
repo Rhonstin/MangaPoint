@@ -85,16 +85,6 @@ pub fn Setup(#[props(default = false)] onboarding: bool) -> Element {
                         if o.available && !installed {
                             div { class: "src-actions",
                                 button {
-                                    class: "btn ghost small",
-                                    onclick: move |_| {
-                                        let mut s = state.sources;
-                                        s.write().choices.insert(id.to_string(), Choice::Skip);
-                                        state.save_sources();
-                                        state.bump_sources();
-                                    },
-                                    "Skip"
-                                }
-                                button {
                                     class: "btn primary small",
                                     onclick: move |_| {
                                         let browser_off = !state.settings.read().browser_support;

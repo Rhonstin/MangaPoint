@@ -1148,11 +1148,12 @@ input.px-name:focus { border-color: var(--accent); background: var(--bg); outlin
 .walker .wf2 { animation-delay: 0.4s; }
 .walker .wf3 { animation-delay: 0.6s; }
 .walker .wf0 { opacity: 1; }
-.walker .w-ground { animation: walk-ground 0.4s linear infinite; }
-.walker .w-near { animation: walk-near 2s linear infinite; }
-.walker .w-far { animation: walk-far 5s linear infinite; }
+/* Everything moves in whole pixels, 5 times a second, in step with the cat's feet. */
+.walker .w-ground { animation: walk-ground 0.8s steps(4) infinite; }
+.walker .w-near { animation: walk-near 2s steps(10) infinite; }
+.walker .w-far { animation: walk-far 6s steps(30) infinite; }
 @keyframes walk-frame { 0% { opacity: 1; } 25% { opacity: 0; } 100% { opacity: 0; } }
-@keyframes walk-ground { from { transform: translateX(0); } to { transform: translateX(-16px); } }
+@keyframes walk-ground { from { transform: translateX(0); } to { transform: translateX(-32px); } }
 @keyframes walk-near { from { transform: translateX(0); } to { transform: translateX(-80px); } }
 @keyframes walk-far { from { transform: translateX(0); } to { transform: translateX(-60px); } }
 @media (prefers-reduced-motion: reduce) { .walker .wf, .walker .w-ground, .walker .w-near, .walker .w-far { animation: none; } .walker .wf0 { opacity: 1; } }

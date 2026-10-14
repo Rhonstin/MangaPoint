@@ -5,6 +5,10 @@
 use dioxus::prelude::*;
 use std::sync::OnceLock;
 
+/// The size of the picture, in its own big pixels.
+const VIEW_W: i32 = 120;
+const VIEW_H: i32 = 48;
+
 const W: usize = 22;
 const H: usize = 13;
 type Grid = [[u8; W]; H];
@@ -131,6 +135,51 @@ fn repeat(unit: &str, period: i32, count: i32) -> String {
         .collect()
 }
 
+/// A repeatable pseudo-random number in 0..1 for a grid position.
+fn noise(x: i32, y: i32) -> f32 {
+    let mut h = (x as u32)
+        .wrapping_mul(374_761_393)
+        .wrapping_add((y as u32).wrapping_mul(668_265_263));
+    h = (h ^ (h >> 13)).wrapping_mul(1_274_126_177);
+    h ^= h >> 16;
+    (h & 0xffff) as f32 / 65_536.0
+}
+
+/// Does the picture's pixel at (`x`, `y`) show? Whole in the middle; toward
+/// the sides and the bottom more and more are missing, in singles and a few
+/// 2x2 clumps, until nothing is left. Decided pixel by pixel, like the
+/// picture on the search page.
+fn shows(x: i32, y: i32) -> bool {
+    let side = x.min(VIEW_W - 1 - x) as f32;
+    let bottom = (VIEW_H - 1 - y) as f32;
+    let keep = ((side - 2.0) / 26.0)
+        .clamp(0.0, 1.0)
+        .min(((bottom - 1.0) / 7.0).clamp(0.0, 1.0));
+    let r = 0.6 * noise(x, y) + 0.4 * noise(x.div_euclid(2) + 91, y.div_euclid(2) + 17);
+    r < keep
+}
+
+/// Page-black squares laid over the scene wherever a pixel does not show, so
+/// the scene keeps moving underneath while its edges stay broken up.
+fn edge_cover() -> String {
+    let mut out = String::new();
+    for y in 0..VIEW_H {
+        let mut x = 0;
+        while x < VIEW_W {
+            if shows(x, y) {
+                x += 1;
+                continue;
+            }
+            let start = x;
+            while x < VIEW_W && !shows(x, y) {
+                x += 1;
+            }
+            out.push_str(&rect(start, y, x - start, 1, "#000000"));
+        }
+    }
+    out
+}
+
 fn scene() -> &'static str {
     static SCENE: OnceLock<String> = OnceLock::new();
     SCENE.get_or_init(|| {
@@ -168,12 +217,14 @@ fn scene() -> &'static str {
              {}{}\
              <g class=\"w-ground\">{}</g>\
              <g transform=\"translate(40 27)\">{cat}</g>\
+             {}\
              </svg>",
             repeat(&buildings, 60, 4),
             repeat(&lamp, 80, 3),
             rect(0, 40, 120, 8, "#151515"),
             rect(0, 40, 120, 1, "#303030"),
             repeat(&joint, 16, 16),
+            edge_cover(),
         )
     })
 }
@@ -195,5 +246,16 @@ mod tests {
         assert_ne!(frames[0], frames[1]);
         assert_ne!(frames[0], frames[2]);
         assert!(scene().contains("w-ground"));
+    }
+
+    #[test]
+    fn the_edges_break_up_and_the_middle_stays_whole() {
+        // Whole around the cat, bare at the far sides and bottom.
+        assert!((40..80).all(|x| (10..38).all(|y| shows(x, y))));
+        assert!((0..2).all(|x| (0..VIEW_H).all(|y| !shows(x, y))));
+        assert!((0..VIEW_W).all(|x| !shows(x, VIEW_H - 1)));
+        // Somewhere in between, some pixels show and some do not.
+        let shown = (2..28).flat_map(|x| (10..30).map(move |y| (x, y))).filter(|&(x, y)| shows(x, y)).count();
+        assert!(shown > 0 && shown < 26 * 20);
     }
 }

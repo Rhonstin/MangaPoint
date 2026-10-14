@@ -129,16 +129,6 @@ pub const DEFAULTS: &[DefaultSource] = &[
         reference_title: None,
         verified_on: VERIFIED,
     },
-    DefaultSource {
-        id: "all.comikey",
-        site: "https://comikey.com",
-        name: "Comikey",
-        description:
-            "Licensed series. Needs browser support (a one-time download of about 270 MB).",
-        requires: Requires::Browser,
-        reference_title: None,
-        verified_on: "needs browser support; not verified",
-    },
 ];
 
 pub fn find(id: &str) -> Option<&'static DefaultSource> {
@@ -173,12 +163,9 @@ mod tests {
     }
 
     #[test]
-    fn only_browser_sources_are_marked_as_needing_it() {
-        let needing: Vec<_> = DEFAULTS
-            .iter()
-            .filter(|d| d.requires == Requires::Browser)
-            .map(|d| d.id)
-            .collect();
-        assert_eq!(needing, vec!["all.comikey"]);
+    fn nothing_recommended_needs_the_browser() {
+        // Sources that need browser support can still be added from the
+        // extension store once it is turned on in Settings; none is recommended.
+        assert!(DEFAULTS.iter().all(|d| d.requires == Requires::Nothing));
     }
 }
