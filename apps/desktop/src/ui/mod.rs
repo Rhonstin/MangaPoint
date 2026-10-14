@@ -37,6 +37,10 @@ use widgets::{Icon, ProgressBar};
 const CSS: &str = include_str!("../style.css");
 /// Floats the explanation of a question mark above everything else.
 const TOOLTIP_SCRIPT: &str = include_str!("../js/tooltip.js");
+/// Keyboard shortcuts.
+const KEYS_SCRIPT: &str = include_str!("../js/keys.js");
+/// Remembers the scroll position of each page.
+const SCROLL_SCRIPT: &str = include_str!("../js/scroll.js");
 
 #[component]
 pub fn App() -> Element {
@@ -61,6 +65,8 @@ pub fn App() -> Element {
     use_hook(|| {
         spawn(async move {
             let _ = document::eval(TOOLTIP_SCRIPT).await;
+            let _ = document::eval(KEYS_SCRIPT).await;
+            let _ = document::eval(SCROLL_SCRIPT).await;
         });
     });
 
@@ -333,11 +339,13 @@ fn ToastHost() -> Element {
 
 #[cfg(test)]
 mod script_tests {
-    const SCRIPTS: [(&str, &str); 4] = [
+    const SCRIPTS: [(&str, &str); 6] = [
         ("crop-drag.js", include_str!("../js/crop-drag.js")),
         ("export-split.js", include_str!("../js/export-split.js")),
         ("preview-editor.js", include_str!("../js/preview-editor.js")),
         ("tooltip.js", include_str!("../js/tooltip.js")),
+        ("keys.js", include_str!("../js/keys.js")),
+        ("scroll.js", include_str!("../js/scroll.js")),
     ];
 
     /// `cropBound` as it is written in HTML: `data-crop-bound`.

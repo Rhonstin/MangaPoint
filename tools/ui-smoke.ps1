@@ -67,6 +67,11 @@ try {
         Start-Sleep -Milliseconds 400
         if (-not (Eval "document.querySelector('.export-screen') !== null")) { throw 'the screen is gone' }
     }
+    Check 'Ctrl+K goes to the search' {
+        Send-Cdp 'Input.dispatchKeyEvent' @{ type='keyDown'; key='k'; code='KeyK'; modifiers=2; windowsVirtualKeyCode=75 } | Out-Null
+        Send-Cdp 'Input.dispatchKeyEvent' @{ type='keyUp'; key='k'; code='KeyK'; modifiers=2; windowsVirtualKeyCode=75 } | Out-Null
+        Wait-Until "document.querySelector('.nav-item.active').innerText.trim() === 'Search'" 10 'the Search page'
+    }
 }
 finally {
     if ($app -and -not $app.HasExited) { Stop-Process -Id $app.Id -Force }
