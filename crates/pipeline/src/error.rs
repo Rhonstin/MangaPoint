@@ -11,6 +11,8 @@ pub enum PipelineError {
     Decode(String),
     #[error("could not build the file: {0}")]
     Xtc(#[from] XtcError),
+    #[error("could not build the EPUB: {0}")]
+    Epub(String),
     #[error("file error on {0}: {1}")]
     Io(PathBuf, std::io::Error),
     #[error("the job was cancelled")]

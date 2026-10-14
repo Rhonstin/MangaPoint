@@ -1,7 +1,6 @@
 //! Getting a finished file onto the reader.
 
 use crate::error::{PipelineError, Result};
-use converter::xtc::Format;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -281,7 +280,7 @@ pub fn output_file_name(
     first: Option<f64>,
     last: Option<f64>,
     part: Option<usize>,
-    format: Format,
+    extension: &str,
 ) -> String {
     let mut name = sanitize_component(series);
     if let Some(p) = part {
@@ -294,7 +293,7 @@ pub fn output_file_name(
         (Some(a), Some(b)) => name.push_str(&format!(" - Ch {}-{}", number(a), number(b))),
         _ => {}
     }
-    format!("{name}.{}", format.extension())
+    format!("{name}.{extension}")
 }
 
 // ---- WebDAV ----------------------------------------------------------------
@@ -396,6 +395,7 @@ async fn upload_webdav(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use converter::xtc::Format;
     use std::io::{Read, Write};
     use std::net::TcpListener;
 
@@ -431,7 +431,7 @@ mod tests {
 
     #[test]
     fn file_names_describe_the_chapters() {
-        let n = |a, b, p| output_file_name("Berserk", a, b, p, Format::Xtch);
+        let n = |a, b, p| output_file_name("Berserk", a, b, p, Format::Xtch.extension());
         assert_eq!(n(Some(1.0), Some(12.0), None), "Berserk - Ch 1-12.xtch");
         assert_eq!(n(Some(5.0), Some(5.0), None), "Berserk - Ch 5.xtch");
         assert_eq!(
@@ -440,7 +440,7 @@ mod tests {
         );
         assert_eq!(n(None, None, None), "Berserk.xtch");
         assert_eq!(
-            output_file_name("A/B", Some(1.0), Some(2.0), None, Format::Xtc),
+            output_file_name("A/B", Some(1.0), Some(2.0), None, Format::Xtc.extension()),
             "A_B - Ch 1-2.xtc"
         );
     }

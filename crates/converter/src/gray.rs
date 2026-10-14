@@ -105,14 +105,19 @@ pub enum Depth {
     One,
     /// Four gray levels (XTCH pages).
     Two,
+    /// The full 256 grays, not reduced at all (pictures inside an EPUB, for
+    /// readers that show many grays).
+    Eight,
 }
 
 impl Depth {
-    /// Highest brightness level: 1 for [`Depth::One`], 3 for [`Depth::Two`].
+    /// Highest brightness level: 1 for [`Depth::One`], 3 for [`Depth::Two`],
+    /// 255 for [`Depth::Eight`].
     pub fn max_level(self) -> u8 {
         match self {
             Depth::One => 1,
             Depth::Two => 3,
+            Depth::Eight => 255,
         }
     }
 }

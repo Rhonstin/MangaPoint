@@ -10,10 +10,47 @@ use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+/// What a book is made as.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum OutputFormat {
+    /// `.xtc`: black and white pages for the Xteink readers.
+    #[default]
+    Xtc,
+    /// `.xtch`: four grays, for the Xteink readers (twice the size, and slower to show).
+    Xtch,
+    /// `.epub`: a fixed-layout book of page pictures, which most readers open.
+    Epub,
+}
+
+impl OutputFormat {
+    pub const ALL: [OutputFormat; 3] = [OutputFormat::Xtc, OutputFormat::Xtch, OutputFormat::Epub];
+
+    /// The file extension, without the dot.
+    pub fn extension(self) -> &'static str {
+        match self {
+            OutputFormat::Xtc => "xtc",
+            OutputFormat::Xtch => "xtch",
+            OutputFormat::Epub => "epub",
+        }
+    }
+
+    /// Its name as shown, and as listed among a reader's file formats.
+    pub fn label(self) -> &'static str {
+        match self {
+            OutputFormat::Xtc => "XTC",
+            OutputFormat::Xtch => "XTCH",
+            OutputFormat::Epub => "EPUB",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ConversionSettings {
+    /// The page format of an XTC or XTCH book. An EPUB ignores it.
     pub format: Format,
+    /// Make an EPUB instead of an XTC or XTCH book.
+    pub epub: bool,
     pub direction: ReadDirection,
     pub layout: Layout,
     /// Trim blank borders automatically.
@@ -43,6 +80,7 @@ impl Default for ConversionSettings {
     fn default() -> Self {
         Self {
             format: Format::Xtc,
+            epub: false,
             direction: ReadDirection::RightToLeft,
             layout: Layout::Auto,
             crop: CropMode::Margins,
@@ -97,6 +135,24 @@ impl ConversionField {
 }
 
 impl ConversionSettings {
+    /// What the book is made as.
+    pub fn output(&self) -> OutputFormat {
+        match (self.epub, self.format) {
+            (true, _) => OutputFormat::Epub,
+            (false, Format::Xtc) => OutputFormat::Xtc,
+            (false, Format::Xtch) => OutputFormat::Xtch,
+        }
+    }
+
+    /// Choose what the book is made as.
+    pub fn set_output(&mut self, output: OutputFormat) {
+        match output {
+            OutputFormat::Xtc => (self.epub, self.format) = (false, Format::Xtc),
+            OutputFormat::Xtch => (self.epub, self.format) = (false, Format::Xtch),
+            OutputFormat::Epub => self.epub = true,
+        }
+    }
+
     /// The settings in which `self` and `other` differ.
     pub fn differing(&self, other: &ConversionSettings) -> Vec<ConversionField> {
         ConversionField::ALL
@@ -112,7 +168,10 @@ impl ConversionSettings {
     /// Take one setting from `from`.
     pub fn copy_field(&mut self, from: &ConversionSettings, field: ConversionField) {
         match field {
-            ConversionField::Format => self.format = from.format,
+            ConversionField::Format => {
+                self.format = from.format;
+                self.epub = from.epub;
+            }
             ConversionField::Direction => self.direction = from.direction,
             ConversionField::Layout => self.layout = from.layout,
             ConversionField::Crop => self.crop = from.crop,
@@ -253,6 +312,8 @@ pub struct ReaderSetup {
     pub reader_dir: Option<PathBuf>,
     /// The file types the reader opens, such as "XTC" and "XTCH".
     pub formats: Vec<String>,
+    /// What the reader runs.
+    pub firmware: Firmware,
 }
 
 impl ReaderSetup {
@@ -286,6 +347,7 @@ impl Default for ReaderSetup {
             folder: "Manga".into(),
             reader_dir: None,
             formats: vec!["XTC".into(), "XTCH".into()],
+            firmware: Firmware::CrossPoint,
         }
     }
 }
@@ -411,6 +473,7 @@ impl Settings {
             wifi_url: self.export.webdav_url.clone(),
             folder: self.export.device_folder.clone(),
             reader_dir: self.export.reader_dir.clone(),
+            firmware: self.firmware,
             ..ReaderSetup::default()
         })
     }
@@ -478,7 +541,9 @@ impl Settings {
         if self.readers_listed {
             return;
         }
-        for known in device_profiles::builtin().into_iter().rev() {
+        // The three readers that used to be built in (the others were added later).
+        let old = [device_profiles::X4_PRO_ID, device_profiles::X4_ID, device_profiles::X3_ID];
+        for known in old.iter().rev().filter_map(|id| device_profiles::known(id)) {
             if !self.custom_devices.iter().any(|d| d.id == known.id) {
                 self.custom_devices.insert(0, known);
             }
@@ -490,6 +555,29 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_output_is_xtc_xtch_or_epub() {
+        let mut c = ConversionSettings::default();
+        assert_eq!(c.output(), OutputFormat::Xtc);
+        c.set_output(OutputFormat::Xtch);
+        assert_eq!((c.output(), c.format, c.epub), (OutputFormat::Xtch, Format::Xtch, false));
+        c.set_output(OutputFormat::Epub);
+        assert_eq!(c.output(), OutputFormat::Epub);
+        // Going back to a page format remembers nothing of the EPUB.
+        c.set_output(OutputFormat::Xtc);
+        assert_eq!((c.output(), c.epub), (OutputFormat::Xtc, false));
+        // Taking the format from a preset takes the EPUB choice with it.
+        let mut epub = ConversionSettings::default();
+        epub.set_output(OutputFormat::Epub);
+        let mut other = ConversionSettings::default();
+        other.copy_field(&epub, ConversionField::Format);
+        assert_eq!(other.output(), OutputFormat::Epub);
+        assert_eq!(other.differing(&epub), Vec::new());
+        // Files from before EPUB existed have no such choice.
+        let old: ConversionSettings = serde_json::from_str(r#"{"format":"Xtch"}"#).unwrap();
+        assert_eq!(old.output(), OutputFormat::Xtch);
+    }
 
     #[test]
     fn defaults_follow_the_plan() {

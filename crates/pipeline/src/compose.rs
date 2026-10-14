@@ -6,6 +6,7 @@
 //! a whole series is fine.
 
 use crate::conversion_cache;
+use crate::epub::{self, EpubBuilder, EpubMeta};
 use crate::error::{PipelineError, Result};
 use crate::export::{output_file_name, sanitize_component, ExportTarget, ExportedFile};
 use crate::options::process_options_for;
@@ -104,6 +105,44 @@ pub struct ExportOutcome {
     pub cached_chapters: usize,
 }
 
+/// A book being built: an XTC or XTCH, or an EPUB.
+enum Book {
+    Xtc(XtcBuilder),
+    Epub(Box<EpubBuilder>),
+}
+
+impl Book {
+    fn page_count(&self) -> usize {
+        match self {
+            Book::Xtc(b) => b.page_count(),
+            Book::Epub(b) => b.page_count(),
+        }
+    }
+
+    /// Add a page made by this kind of book's own encoder.
+    fn add(&mut self, page: &[u8]) -> Result<()> {
+        match self {
+            Book::Xtc(b) => Ok(b.add_encoded_page(page)?),
+            Book::Epub(b) => b.add_page(page),
+        }
+    }
+
+    /// A chapter that starts at page `start` and runs to the last page so far.
+    fn chapter(&mut self, name: &str, start: usize) {
+        match self {
+            Book::Xtc(b) => {
+                let end = b.page_count().saturating_sub(1);
+                b.push_chapter(XtcChapter {
+                    name: name.to_string(),
+                    start_page: start as u16,
+                    end_page: end as u16,
+                })
+            }
+            Book::Epub(b) => b.push_chapter(name, start),
+        }
+    }
+}
+
 /// A finished book waiting in the scratch folder to be sent.
 struct Volume {
     temp: PathBuf,
@@ -130,8 +169,18 @@ impl Drop for Scratch {
 /// what keeps a file under the size the reader can take in one go.
 fn pages_per_file(job: &ExportJob, format: Format) -> usize {
     let mut cap = job.max_pages_per_file;
+    let epub = job.series.settings.epub;
+    if epub {
+        cap = cap.min(epub::MAX_PAGES);
+    }
     if matches!(job.target, ExportTarget::WebDav { .. }) {
-        cap = cap.min(wifi_page_cap(job.device.width, job.device.height, format));
+        let by_size = if epub {
+            let depth = crate::options::output_depth(&job.device, &job.series.settings);
+            (crate::export::WIFI_MAX_FILE_BYTES / epub::typical_page_bytes(depth)).max(1) as usize
+        } else {
+            wifi_page_cap(job.device.width, job.device.height, format)
+        };
+        cap = cap.min(by_size);
     }
     cap
 }
@@ -195,6 +244,7 @@ pub async fn export_series(
     let settings = &job.series.settings;
     let opts = process_options_for(&job.device, settings);
     let format = settings.format;
+    let extension = settings.output().extension();
     let page_cap = pages_per_file(job, format);
     let mut scratch = Scratch::default();
     let mut volumes: Vec<Volume> = Vec::new();
@@ -255,11 +305,11 @@ pub async fn export_series(
 
     // The series' own cover opens every file, so the reader lists it by its cover.
     let cover = if job.cover {
-        cover_page(files, &job.series.id, &chapters[0].key, &opts).await
+        cover_page(files, &job.series.id, &chapters[0].key, &opts, settings.epub).await
     } else {
         None
     };
-    let mut open: Option<(XtcBuilder, Volume)> = None;
+    let mut open: Option<(Book, Volume)> = None;
     let mut open_group = usize::MAX;
     while let Some((group, ci, images)) = converted.next().await {
         let (images, cached) = images?;
@@ -286,20 +336,37 @@ pub async fn export_series(
         if open.is_none() {
             let spool = job.work_dir.join(unique_name("spool"));
             scratch.0.push(spool.clone());
-            let builder = XtcBuilder::new(format)
-                .direction(settings.direction)
-                .metadata(Metadata {
-                    title: job.series.title.clone(),
-                    language: job.language.clone(),
-                    create_time: now_secs() as u32,
-                    cover_page: Some(0),
-                    ..Default::default()
-                })
-                .spool_to(&spool)?;
+            let book = if settings.epub {
+                Book::Epub(Box::new(EpubBuilder::create(
+                    &spool,
+                    EpubMeta {
+                        title: job.series.title.clone(),
+                        language: job.language.clone(),
+                        rtl: settings.direction == converter::xtc::ReadDirection::RightToLeft,
+                        width: job.device.width,
+                        height: job.device.height,
+                        created: now_secs(),
+                    },
+                )?))
+            } else {
+                Book::Xtc(
+                    XtcBuilder::new(format)
+                        .direction(settings.direction)
+                        .metadata(Metadata {
+                            title: job.series.title.clone(),
+                            language: job.language.clone(),
+                            create_time: now_secs() as u32,
+                            cover_page: Some(0),
+                            ..Default::default()
+                        })
+                        .spool_to(&spool)?,
+                )
+            };
             open = Some((
-                builder,
+                book,
+
                 Volume {
-                    temp: PathBuf::new(),
+                    temp: if settings.epub { spool.clone() } else { PathBuf::new() },
                     group,
                     chapter_names: Vec::new(),
                     first_number: None,
@@ -310,18 +377,14 @@ pub async fn export_series(
         let (builder, volume) = open.as_mut().expect("opened above");
         if builder.page_count() == 0 {
             if let Some(cover) = &cover {
-                builder.add_encoded_page(cover)?;
+                builder.add(cover)?;
             }
         }
         let start = builder.page_count();
         for image in &images {
-            builder.add_encoded_page(image)?;
+            builder.add(image)?;
         }
-        builder.push_chapter(XtcChapter {
-            name: chapter.name.clone(),
-            start_page: start as u16,
-            end_page: (builder.page_count() - 1) as u16,
-        });
+        builder.chapter(&chapter.name, start);
         volume.chapter_names.push(chapter.name.clone());
         if volume.first_number.is_none() {
             volume.first_number = chapter.number;
@@ -339,7 +402,7 @@ pub async fn export_series(
     // send them.
     let mut sent = Vec::new();
     for (i, volume) in volumes.iter().enumerate() {
-        let name = volume_name(job, volume, &volumes, i, format.extension());
+        let name = volume_name(job, volume, &volumes, i, extension);
         emit(JobEvent::Writing { file: name.clone() });
         let tx = events.clone();
         sent.push(
@@ -369,6 +432,7 @@ async fn cover_page(
     series_id: &str,
     first_chapter: &str,
     opts: &ProcessOptions,
+    epub: bool,
 ) -> Option<Vec<u8>> {
     let bytes = match tokio::fs::read(files.cover_path(series_id)).await {
         Ok(bytes) if !bytes.is_empty() => bytes,
@@ -387,7 +451,11 @@ async fn cover_page(
         let page = converter::plan::convert_chapter(&[gray], &opts)
             .into_iter()
             .next()?;
-        converter::xtc::encode_page(&page).ok()
+        if epub {
+            epub::encode_page(&page).ok()
+        } else {
+            converter::xtc::encode_page(&page).ok()
+        }
     })
     .await
     .ok()?
@@ -397,16 +465,27 @@ async fn cover_page(
 /// Write a finished book out as its file. A book can be gigabytes, so this
 /// happens on a thread of its own, not the one the app's window runs on.
 async fn finish_volume(
-    builder: XtcBuilder,
+    book: Book,
     volume: Volume,
     work_dir: &Path,
     scratch: &mut Scratch,
 ) -> Result<Volume> {
-    let temp = work_dir.join(unique_name("book"));
-    scratch.0.push(temp.clone());
-    tokio::task::spawn_blocking(move || write_volume(builder, volume, temp))
+    match book {
+        Book::Xtc(builder) => {
+            let temp = work_dir.join(unique_name("book"));
+            scratch.0.push(temp.clone());
+            tokio::task::spawn_blocking(move || write_volume(builder, volume, temp))
+                .await
+                .map_err(|e| PipelineError::Upload(format!("writing the book was interrupted: {e}")))?
+        }
+        // An EPUB has been written to its file as it grew; this closes it.
+        Book::Epub(builder) => tokio::task::spawn_blocking(move || {
+            (*builder).finish()?;
+            Ok(volume)
+        })
         .await
-        .map_err(|e| PipelineError::Upload(format!("writing the book was interrupted: {e}")))?
+        .map_err(|e| PipelineError::Upload(format!("writing the book was interrupted: {e}")))?,
+    }
 }
 
 fn write_volume(builder: XtcBuilder, mut volume: Volume, temp: PathBuf) -> Result<Volume> {
@@ -452,13 +531,12 @@ fn volume_name(
         }
         return format!("{name}.{ext}");
     }
-    let format = job.series.settings.format;
     output_file_name(
         &job.series.title,
         volume.first_number,
         volume.last_number,
         part,
-        format,
+        ext,
     )
 }
 
@@ -487,9 +565,11 @@ async fn convert_chapter(
         )));
     }
     let total = pages.len();
-    let cache_path = files
-        .chapter_dir(series_id, &chapter.key)
-        .join(conversion_cache::FILE_NAME);
+    let cache_path = files.chapter_dir(series_id, &chapter.key).join(if settings.epub {
+        conversion_cache::EPUB_FILE_NAME
+    } else {
+        conversion_cache::FILE_NAME
+    });
     let (source_pages, saved_settings, cache, flag) = (
         pages.clone(),
         settings.clone(),
@@ -497,6 +577,7 @@ async fn convert_chapter(
         cancel.clone(),
     );
     let (width, height, format) = (opts.width, opts.height, settings.format);
+    let (epub, depth) = (settings.epub, opts.depth);
     let crop_configuration = crops.chapter_configuration(&chapter.key);
     let lookup_crops = crop_configuration.clone();
     // A first export has no cache to look up. Hash its decoded snapshot
@@ -511,13 +592,12 @@ async fn convert_chapter(
                 &flag,
             )?;
             let fingerprint = conversion_cache::with_crops(fingerprint, &lookup_crops);
-            Ok::<_, PipelineError>(conversion_cache::load(
-                &cache,
-                &fingerprint,
-                width,
-                height,
-                format,
-            ))
+            Ok::<_, PipelineError>(if epub {
+                let fingerprint = conversion_cache::with_depth(fingerprint, depth);
+                conversion_cache::load_pictures(&cache, &fingerprint)
+            } else {
+                conversion_cache::load(&cache, &fingerprint, width, height, format)
+            })
         })
         .await
         .map_err(|e| PipelineError::Decode(e.to_string()))??
@@ -588,6 +668,11 @@ async fn convert_chapter(
             opts.height,
         );
         let fingerprint = conversion_cache::with_crops(fingerprint, &crop_configuration);
+        let fingerprint = if epub {
+            conversion_cache::with_depth(fingerprint, opts.depth)
+        } else {
+            fingerprint
+        };
         let grays: Vec<_> = decoded.into_iter().map(|(_, gray, _)| gray).collect();
         let images = if crop_configuration.is_empty() {
             converter::plan::convert_chapter(&grays, &opts)
@@ -611,9 +696,17 @@ async fn convert_chapter(
             if cancel.is_cancelled() {
                 return Err(PipelineError::Cancelled);
             }
-            packed.push(converter::xtc::encode_page(&image)?);
+            packed.push(if epub {
+                epub::encode_page(&image)?
+            } else {
+                converter::xtc::encode_page(&image)?
+            });
         }
-        conversion_cache::save(&cache_path, &fingerprint, &packed);
+        if epub {
+            conversion_cache::save_pictures(&cache_path, &fingerprint, &packed);
+        } else {
+            conversion_cache::save(&cache_path, &fingerprint, &packed);
+        }
         Ok::<_, PipelineError>(packed)
     })
     .await

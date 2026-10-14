@@ -46,6 +46,13 @@ pub struct DeviceProfile {
     /// size in pixels the pages are made at.
     #[cfg_attr(feature = "serde", serde(default = "default_ppi"))]
     pub ppi: u32,
+    /// Who makes it, for a reader from the list the app knows; empty for one
+    /// of your own.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub maker: String,
+    /// How many grays the screen shows: 4 on the Xteink readers, 16 on most others.
+    #[cfg_attr(feature = "serde", serde(default = "default_grays"))]
+    pub gray_levels: u8,
     /// Ships with the app, so it cannot be edited or removed.
     #[cfg_attr(feature = "serde", serde(skip))]
     pub builtin: bool,
@@ -70,6 +77,11 @@ fn default_ppi() -> u32 {
 }
 
 #[cfg(feature = "serde")]
+fn default_grays() -> u8 {
+    16
+}
+
+#[cfg(feature = "serde")]
 fn unknown_support() -> SupportTable {
     SupportTable::UNKNOWN
 }
@@ -86,63 +98,152 @@ pub const X4_ID: &str = "xteink-x4";
 pub const X4_PRO_ID: &str = "xteink-x4-pro";
 pub const X3_ID: &str = "xteink-x3";
 
-/// The 4.3" 480x800 panel in the X4. CrossPoint's README lists it and its
-/// parser reads both formats; stock support is community-reported.
-pub fn x4() -> DeviceProfile {
-    DeviceProfile {
-        id: X4_ID.into(),
-        name: "Xteink X4".into(),
-        width: 480,
-        height: 800,
-        ppi: 220,
-        builtin: true,
-        support: SupportTable {
+/// What the app knows about a reader it lists, besides its screen.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct KnownInfo {
+    /// The company that makes it.
+    pub maker: &'static str,
+    /// The screen's diagonal in inches, as the maker gives it.
+    pub diagonal: f32,
+    /// The file types it opens, of those MangaPoint can make: XTC, XTCH, EPUB.
+    pub formats: &'static [&'static str],
+    /// Whether the CrossPoint firmware runs on it. Where it does not, the
+    /// reader runs only its own (stock) firmware.
+    pub crosspoint: bool,
+    /// Something worth knowing about getting files onto it.
+    pub note: &'static str,
+}
+
+struct Entry {
+    id: &'static str,
+    name: &'static str,
+    width: u32,
+    height: u32,
+    ppi: u32,
+    grays: u8,
+    info: KnownInfo,
+}
+
+#[allow(clippy::too_many_arguments)]
+const fn entry(
+    id: &'static str,
+    maker: &'static str,
+    name: &'static str,
+    (width, height, ppi, diagonal): (u32, u32, u32, f32),
+    grays: u8,
+    formats: &'static [&'static str],
+    crosspoint: bool,
+    note: &'static str,
+) -> Entry {
+    Entry {
+        id,
+        name,
+        width,
+        height,
+        ppi,
+        grays,
+        info: KnownInfo {
+            maker,
+            diagonal,
+            formats,
+            crosspoint,
+            note,
+        },
+    }
+}
+
+/// The readers the app knows, with the screen sizes and densities their makers
+/// publish. The Xteink readers come first. Sizes are portrait, in pixels.
+const KNOWN: &[Entry] = &[
+    entry("xteink-x4-pro", "Xteink", "Xteink X4 Pro", (480, 800, 220, 4.3), 4, &["XTC", "XTCH", "EPUB"], true, ""),
+    entry("xteink-x4", "Xteink", "Xteink X4", (480, 800, 220, 4.3), 4, &["XTC", "XTCH", "EPUB"], true, ""),
+    entry("xteink-x3", "Xteink", "Xteink X3", (528, 792, 256, 3.7), 4, &["XTC", "XTCH", "EPUB"], true, ""),
+    entry("kindle-paperwhite-12", "Amazon", "Kindle Paperwhite (12th gen)", (1264, 1680, 300, 7.0), 16, &["EPUB"], false, "Kindles open EPUB files sent with Send to Kindle (the app or e-mail); copying one over USB does not work."),
+    entry("kindle-paperwhite-11", "Amazon", "Kindle Paperwhite (11th gen)", (1236, 1648, 300, 6.8), 16, &["EPUB"], false, "Kindles open EPUB files sent with Send to Kindle (the app or e-mail); copying one over USB does not work."),
+    entry("kindle-paperwhite-10", "Amazon", "Kindle Paperwhite (10th gen)", (1072, 1448, 300, 6.0), 16, &["EPUB"], false, "Kindles open EPUB files sent with Send to Kindle (the app or e-mail); copying one over USB does not work."),
+    entry("kindle-11", "Amazon", "Kindle (11th gen, 2022)", (1072, 1448, 300, 6.0), 16, &["EPUB"], false, "Kindles open EPUB files sent with Send to Kindle (the app or e-mail); copying one over USB does not work."),
+    entry("kindle-10", "Amazon", "Kindle (10th gen, 2019)", (600, 800, 167, 6.0), 16, &["EPUB"], false, "Kindles open EPUB files sent with Send to Kindle (the app or e-mail); copying one over USB does not work."),
+    entry("kindle-oasis-3", "Amazon", "Kindle Oasis (3rd gen)", (1264, 1680, 300, 7.0), 16, &["EPUB"], false, "Kindles open EPUB files sent with Send to Kindle (the app or e-mail); copying one over USB does not work."),
+    entry("kindle-scribe", "Amazon", "Kindle Scribe", (1860, 2480, 300, 10.2), 16, &["EPUB"], false, "Kindles open EPUB files sent with Send to Kindle (the app or e-mail); copying one over USB does not work."),
+    entry("kobo-clara-bw", "Rakuten Kobo", "Kobo Clara BW", (1072, 1448, 300, 6.0), 16, &["EPUB"], false, ""),
+    entry("kobo-clara-colour", "Rakuten Kobo", "Kobo Clara Colour", (1072, 1448, 300, 6.0), 16, &["EPUB"], false, ""),
+    entry("kobo-clara-2e", "Rakuten Kobo", "Kobo Clara 2E", (1072, 1448, 300, 6.0), 16, &["EPUB"], false, ""),
+    entry("kobo-libra-2", "Rakuten Kobo", "Kobo Libra 2", (1264, 1680, 300, 7.0), 16, &["EPUB"], false, ""),
+    entry("kobo-libra-colour", "Rakuten Kobo", "Kobo Libra Colour", (1264, 1680, 300, 7.0), 16, &["EPUB"], false, ""),
+    entry("kobo-sage", "Rakuten Kobo", "Kobo Sage", (1440, 1920, 300, 8.0), 16, &["EPUB"], false, ""),
+    entry("kobo-elipsa-2e", "Rakuten Kobo", "Kobo Elipsa 2E", (1404, 1872, 227, 10.3), 16, &["EPUB"], false, ""),
+    entry("kobo-nia", "Rakuten Kobo", "Kobo Nia", (758, 1024, 212, 6.0), 16, &["EPUB"], false, ""),
+    entry("boox-palma", "Onyx Boox", "Boox Palma", (824, 1648, 300, 6.13), 16, &["EPUB"], false, ""),
+    entry("boox-go-6", "Onyx Boox", "Boox Go 6", (1072, 1448, 300, 6.0), 16, &["EPUB"], false, ""),
+    entry("boox-page", "Onyx Boox", "Boox Page", (1264, 1680, 300, 7.0), 16, &["EPUB"], false, ""),
+    entry("boox-go-10-3", "Onyx Boox", "Boox Go 10.3", (1404, 1872, 227, 10.3), 16, &["EPUB"], false, ""),
+    entry("boox-note-air3", "Onyx Boox", "Boox Note Air3", (1404, 1872, 227, 10.3), 16, &["EPUB"], false, ""),
+    entry("boox-tab-ultra", "Onyx Boox", "Boox Tab Ultra", (1404, 1872, 227, 10.3), 16, &["EPUB"], false, ""),
+    entry("pocketbook-verse", "PocketBook", "PocketBook Verse", (758, 1024, 212, 6.0), 16, &["EPUB"], false, ""),
+    entry("pocketbook-verse-pro", "PocketBook", "PocketBook Verse Pro", (1072, 1448, 300, 6.0), 16, &["EPUB"], false, ""),
+    entry("pocketbook-era", "PocketBook", "PocketBook Era", (1264, 1680, 300, 7.0), 16, &["EPUB"], false, ""),
+    entry("pocketbook-inkpad-4", "PocketBook", "PocketBook InkPad 4", (1404, 1872, 300, 7.8), 16, &["EPUB"], false, ""),
+    entry("remarkable-2", "reMarkable", "reMarkable 2", (1404, 1872, 226, 10.3), 16, &["EPUB"], false, ""),
+];
+
+fn profile_of(e: &Entry) -> DeviceProfile {
+    // What is known of XTC support, where it has been looked into.
+    let support = match e.id {
+        X4_ID => SupportTable {
             stock: Support::CommunityReported,
             crosspoint: Support::Documented,
         },
+        X4_PRO_ID => SupportTable {
+            stock: Support::Unverified,
+            crosspoint: Support::Documented,
+        },
+        _ => SupportTable::UNKNOWN,
+    };
+    DeviceProfile {
+        id: e.id.into(),
+        name: e.name.into(),
+        width: e.width,
+        height: e.height,
+        ppi: e.ppi,
+        maker: e.info.maker.into(),
+        gray_levels: e.grays,
+        builtin: true,
+        support,
     }
+}
+
+/// The 4.3" 480x800 panel in the X4. CrossPoint's README lists it and its
+/// parser reads both formats; stock support is community-reported.
+pub fn x4() -> DeviceProfile {
+    known(X4_ID).expect("the X4 is in the list")
 }
 
 /// The same panel as the X4, with a touchscreen and front light. Xteink's own
 /// spec lists only EPUB/TXT/JPG/BMP, so stock support is unverified.
 pub fn x4_pro() -> DeviceProfile {
-    DeviceProfile {
-        id: X4_PRO_ID.into(),
-        name: "Xteink X4 Pro".into(),
-        width: 480,
-        height: 800,
-        ppi: 220,
-        builtin: true,
-        support: SupportTable {
-            stock: Support::Unverified,
-            crosspoint: Support::Documented,
-        },
-    }
+    known(X4_PRO_ID).expect("the X4 Pro is in the list")
 }
 
 /// The smaller Xteink X3, 528x792. Community converters target it; neither
 /// firmware has been checked against it here.
 pub fn x3() -> DeviceProfile {
-    DeviceProfile {
-        id: X3_ID.into(),
-        name: "Xteink X3".into(),
-        width: 528,
-        height: 792,
-        ppi: 256,
-        builtin: true,
-        support: SupportTable::UNKNOWN,
-    }
+    known(X3_ID).expect("the X3 is in the list")
 }
 
 /// The readers the app knows: what you can pick from when adding one. Adding
 /// one copies it, so it is then yours to change or remove.
 pub fn builtin() -> Vec<DeviceProfile> {
-    vec![x4_pro(), x4(), x3()]
+    KNOWN.iter().map(profile_of).collect()
+}
+
+/// What else is known of a listed reader.
+pub fn known_info(id: &str) -> Option<KnownInfo> {
+    KNOWN.iter().find(|e| e.id == id).map(|e| e.info)
 }
 
 /// A known reader by id, as the app lists it.
 pub fn known(id: &str) -> Option<DeviceProfile> {
-    builtin().into_iter().find(|p| p.id == id)
+    KNOWN.iter().find(|e| e.id == id).map(profile_of)
 }
 
 /// How well `name` answers what was typed: `None` if it does not, otherwise
@@ -211,6 +312,8 @@ impl DeviceProfile {
             width,
             height,
             ppi: DEFAULT_PPI,
+            maker: String::new(),
+            gray_levels: 16,
             builtin: false,
             support: SupportTable::UNKNOWN,
         };
@@ -337,6 +440,46 @@ mod tests {
         assert_eq!(match_rank("PRO x4", "Xteink X4 Pro"), Some(1000));
         assert_eq!(match_rank("kobo", "Xteink X4"), None);
         assert_eq!(match_rank("", "Anything"), Some(0));
+    }
+
+    #[test]
+    fn every_listed_reader_is_consistent() {
+        let all = builtin();
+        assert!(all.len() >= 25, "{} readers", all.len());
+        for (i, p) in all.iter().enumerate() {
+            let info = known_info(&p.id).unwrap();
+            // Ids and names are unique.
+            assert!(all[i + 1..].iter().all(|o| o.id != p.id && o.name != p.name), "{}", p.name);
+            // Width and height with the density come to the maker's diagonal.
+            let (w, h) = p.size_inches();
+            let diagonal = (w * w + h * h).sqrt();
+            assert!(
+                (diagonal - f64::from(info.diagonal)).abs() < 0.16,
+                "{}: {diagonal:.2} in, said to be {}",
+                p.name,
+                info.diagonal
+            );
+            assert!(p.validate(&[]).is_ok(), "{}", p.name);
+            assert!(!info.formats.is_empty() && info.formats.contains(&"EPUB"), "{}", p.name);
+            // Only the Xteink readers take XTC and run CrossPoint.
+            let xteink = info.maker == "Xteink";
+            assert_eq!(info.crosspoint, xteink, "{}", p.name);
+            assert_eq!(info.formats.contains(&"XTC"), xteink, "{}", p.name);
+            assert_eq!(p.gray_levels, if xteink { 4 } else { 16 }, "{}", p.name);
+        }
+    }
+
+    #[test]
+    fn the_popular_readers_are_there_with_the_sizes_their_makers_give() {
+        let size = |id: &str| known(id).map(|p| (p.width, p.height, p.ppi));
+        assert_eq!(size("kindle-paperwhite-12"), Some((1264, 1680, 300)));
+        assert_eq!(size("kindle-paperwhite-11"), Some((1236, 1648, 300)));
+        assert_eq!(size("kobo-libra-2"), Some((1264, 1680, 300)));
+        assert_eq!(size("kobo-elipsa-2e"), Some((1404, 1872, 227)));
+        assert_eq!(size("boox-palma"), Some((824, 1648, 300)));
+        assert_eq!(size("remarkable-2"), Some((1404, 1872, 226)));
+        assert!(known_info(X4_ID).unwrap().crosspoint);
+        assert!(!known_info("kobo-sage").unwrap().crosspoint);
     }
 
     #[test]
