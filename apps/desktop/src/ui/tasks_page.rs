@@ -247,7 +247,8 @@ fn ExportedFiles() -> Element {
                 let first = r.files.first().map(|f| f.path.clone()).unwrap_or_default();
                 let can_open = !first.is_empty() && !first.starts_with("http") && std::path::Path::new(&first).exists();
                 let total: u64 = r.files.iter().map(|f| f.bytes).sum();
-                let place = r.target.strip_prefix("folder ").unwrap_or(&r.target).to_string();
+                let place_full = r.target.strip_prefix("folder ").unwrap_or(&r.target).to_string();
+                let place = short_path(&place_full);
                 let series_id = r.series_id.clone();
                 // One file is deleted from the buttons on the right; several each have their own.
                 let single = (r.files.len() == 1).then(|| (r.id.clone(), first.clone()));
@@ -269,7 +270,7 @@ fn ExportedFiles() -> Element {
                                 span { "{plural(r.chapters, \"chapter\")} · {plural(r.pages, \"page\")}" }
                                 span { "{human_bytes(total)}" }
                             }
-                            div { class: "q-where", title: "{place}", "{place}" }
+                            div { class: "q-when-line", "Exported {ago(now, r.at)}" }
                             if r.files.len() > 1 {
                                 for f in r.files.iter() {
                                     {
@@ -304,11 +305,10 @@ fn ExportedFiles() -> Element {
                             }
                         }
                         div { class: "q-aside",
-                            span { class: "q-when", "Exported {ago(now, r.at)}" }
-                            button { class: "btn primary open-big", disabled: !can_open,
-                                title: if can_open { "Show the file in its folder" } else { "The file is not there any more" },
+                            button { class: "path-link", disabled: !can_open,
+                                title: if can_open { "Show the file in its folder: {place_full}" } else { "The file is not there any more" },
                                 onclick: move |_| show_in_folder(&first),
-                                Icon { name: "folder-open", size: 18 } "Open"
+                                "{place}"
                             }
                             if let Some((record_id, path)) = single {
                                 button { class: "btn ghost open-big square danger", title: "Delete this file",
@@ -390,6 +390,12 @@ fn BatchRow(id: u64) -> Element {
     };
     let open_id = series_id.clone();
     let folder_id = series_id.clone();
+    let folder_full = library_files()
+        .cover_path(&series_id)
+        .parent()
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+    let folder_text = short_path(&folder_full);
 
     rsx! {
         div { class: if running { "q-row running" } else { "q-row" },
@@ -434,6 +440,9 @@ fn BatchRow(id: u64) -> Element {
                             }
                         }
                     }
+                    if batch.finished_at > 0 {
+                        div { class: "q-when-line", "Completed {ago(now_secs(), batch.finished_at)}" }
+                    }
                     for line in skipped_lines.iter() {
                         div { class: "muted small q-line", key: "{line}", "{line}" }
                     }
@@ -472,11 +481,8 @@ fn BatchRow(id: u64) -> Element {
                                 Icon { name: "rotate-cw", size: 14 } "Try {plural(failed, \"chapter\")} again"
                             }
                         }
-                        if batch.finished_at > 0 {
-                            span { class: "q-when", "Completed {ago(now_secs(), batch.finished_at)}" }
-                        }
                         if batch.status == BatchStatus::Done {
-                            button { class: "btn primary open-big", title: "Open the folder this series is kept in",
+                            button { class: "path-link", title: "Open the folder this series is kept in: {folder_full}",
                                 onclick: move |_| {
                                     let dir = library_files().cover_path(&folder_id).parent().map(|p| p.to_path_buf());
                                     if let Some(dir) = dir {
@@ -484,7 +490,7 @@ fn BatchRow(id: u64) -> Element {
                                         open_folder(&dir);
                                     }
                                 },
-                                Icon { name: "folder-open", size: 18 } "Open"
+                                "{folder_text}"
                             }
                         }
                         if downloaded > 0 {
@@ -533,4 +539,15 @@ pub(super) fn ActiveChapters(progress: JobProgress, limit: Option<usize>) -> Ele
             }
         }
     }
+}
+
+/// A long path with its beginning left out, so the folder it ends in shows.
+fn short_path(path: &str) -> String {
+    const MAX: usize = 44;
+    let count = path.chars().count();
+    if count <= MAX {
+        return path.to_string();
+    }
+    let tail: String = path.chars().skip(count - MAX).collect();
+    format!("…{tail}")
 }

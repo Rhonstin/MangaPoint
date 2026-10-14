@@ -254,7 +254,7 @@ pub fn SearchPage() -> Element {
                 }
                 if filters_open() {
                     div { class: "backdrop", onclick: move |_| filters_open.set(false) }
-                    FilterPanel { pending, on_close: move |()| filters_open.set(false) }
+                    FilterPanel { on_close: move |()| filters_open.set(false) }
                 }
                 if open() {
                     div { class: "backdrop", onclick: move |_| close_panel() }
@@ -348,9 +348,6 @@ fn SourcePanel(
 
     rsx! {
         div { class: "popover",
-            div { class: "popover-head",
-                span { class: "muted small grow", "{on} of {total} sources" }
-            }
             div { class: "popover-quick",
                 button { class: "pill small", r#type: "button", onclick: move |_| on_change.call(Vec::new()), "All" }
                 button { class: "pill small", r#type: "button", onclick: move |_| on_change.call(all_ids.clone()), "None" }
@@ -470,24 +467,21 @@ fn toggled(list: &[String], word: &str) -> Vec<String> {
 
 /// The panel for narrowing the results: type, explicit content and genres.
 #[component]
-fn FilterPanel(pending: usize, on_close: EventHandler<()>) -> Element {
+fn FilterPanel(on_close: EventHandler<()>) -> Element {
     let state = use_context::<AppState>();
     let filters = state.search_filters.read().clone();
-    let empty = filters.is_empty();
     let (for_all_types, for_all_genres) = (filters.clone(), filters.clone());
+    let (clear_types, clear_explicit, clear_genres) = (filters.clone(), filters.clone(), filters.clone());
     rsx! {
         div { class: "popover filter-panel",
-            div { class: "popover-head",
-                span { class: "muted small grow",
-                    if pending > 0 { "Checking {pending} more results…" } else { "Types and genres come from each series' details." }
+            div { class: "filter-group first",
+                div { class: "filter-head",
+                    span { class: "filter-label", "Type" }
+                    button { class: "filter-clear", r#type: "button", disabled: filters.types.is_empty(),
+                        onclick: move |_| set_filters(state, SearchFilters { types: Vec::new(), ..clear_types.clone() }),
+                        "Clear"
+                    }
                 }
-                button { class: "btn small ghost", r#type: "button", disabled: empty,
-                    onclick: move |_| set_filters(state, SearchFilters::default()),
-                    "Clear"
-                }
-            }
-            div { class: "filter-group",
-                span { class: "filter-label", "Type" }
                 div { class: "filter-pills",
                     button { r#type: "button", class: if filters.types.is_empty() { "pill small on" } else { "pill small" },
                         onclick: move |_| set_filters(state, SearchFilters { types: Vec::new(), ..for_all_types.clone() }),
@@ -508,7 +502,13 @@ fn FilterPanel(pending: usize, on_close: EventHandler<()>) -> Element {
                 }
             }
             div { class: "filter-group",
-                span { class: "filter-label", "Explicit content" }
+                div { class: "filter-head",
+                    span { class: "filter-label", "Explicit content" }
+                    button { class: "filter-clear", r#type: "button", disabled: filters.explicit == ExplicitFilter::Show,
+                        onclick: move |_| set_filters(state, SearchFilters { explicit: ExplicitFilter::Show, ..clear_explicit.clone() }),
+                        "Clear"
+                    }
+                }
                 div { class: "filter-pills",
                     for (choice, label) in [(ExplicitFilter::Show, "Show"), (ExplicitFilter::Hide, "Hide"), (ExplicitFilter::Only, "Only")] {
                         {
@@ -524,7 +524,13 @@ fn FilterPanel(pending: usize, on_close: EventHandler<()>) -> Element {
                 }
             }
             div { class: "filter-group",
-                span { class: "filter-label", "Genres" }
+                div { class: "filter-head",
+                    span { class: "filter-label", "Genres" }
+                    button { class: "filter-clear", r#type: "button", disabled: filters.genres.is_empty(),
+                        onclick: move |_| set_filters(state, SearchFilters { genres: Vec::new(), ..clear_genres.clone() }),
+                        "Clear"
+                    }
+                }
                 div { class: "filter-pills",
                     button { r#type: "button", class: if filters.genres.is_empty() { "pill small on" } else { "pill small" },
                         onclick: move |_| set_filters(state, SearchFilters { genres: Vec::new(), ..for_all_genres.clone() }),
