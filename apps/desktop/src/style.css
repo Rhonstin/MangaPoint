@@ -351,8 +351,8 @@ td.status, th.status { width: 170px; }
 .cardwrap { align-self: start; position: relative; }
 .cardwrap .popover { left: 14px; right: auto; width: min(480px, 92vw); }
 .searchbox {
-  display: flex; flex-direction: column; gap: 12px; padding: 16px 10px 10px 24px;
-  background: var(--panel); border: 1px solid var(--line-strong); border-radius: 28px;
+  display: flex; flex-direction: column; gap: 10px; padding: 14px 10px 10px 10px;
+  background: var(--panel); border: 1px solid var(--line-strong); border-radius: 30px;
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.6); transition: border-color 0.15s;
 }
 .searchwrap:hover .searchbox, .searchwrap:focus-within .searchbox, .searchwrap.open .searchbox { border-color: #4a4a4a; }
@@ -363,14 +363,14 @@ td.status, th.status { width: 170px; }
 .ghost-sort { padding-right: 30px; }
 .searchbox .searchbox-input {
   width: 100%; border: 0; outline: 0; background: transparent; color: var(--text); font: inherit;
-  font-size: 1.15rem; padding: 4px 0; border-radius: 0; box-shadow: none;
+  font-size: 1.15rem; padding: 4px 0 4px 14px; border-radius: 0; box-shadow: none;
 }
 .searchbox .searchbox-input:focus { border: 0; box-shadow: none; outline: 0; }
 .searchbox-input::placeholder { color: #4d4d4d; }
 .searchbox-input::-webkit-search-cancel-button { display: none; }
 /* The pills and the round button share a row; the button lines up with the last row of pills. */
 .searchbox-row { display: flex; align-items: flex-end; gap: 12px; }
-.pills-flow { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.pills-flow { flex: 1; min-width: 0; min-height: 40px; display: flex; flex-wrap: wrap; align-items: center; align-content: center; gap: 8px; }
 
 /* The sort is a muted blue, as wide as the choice shown. */
 .sort-pill { position: relative; display: inline-flex; align-items: center; }
@@ -403,7 +403,7 @@ td.status, th.status { width: 170px; }
   max-width: 0; opacity: 0; padding-left: 0; padding-right: 0; margin-right: -8px; border-width: 0;
 }
 .search-circle {
-  flex: none; width: 40px; height: 40px; margin-bottom: -5px; border-radius: 50%; border: 0; display: flex; align-items: center;
+  flex: none; width: 40px; height: 40px; border-radius: 50%; border: 0; display: flex; align-items: center;
   justify-content: center; background: var(--accent); color: var(--accent-text); cursor: pointer; transition: background 0.15s, transform 0.1s;
 }
 .searchbox-ghost .search-circle { background: none; }
