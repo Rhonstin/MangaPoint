@@ -163,9 +163,7 @@ pub fn SearchPage() -> Element {
     rsx! {
       div { class: if idle { "search-stage idle arrive" } else { "search-stage arrive" },
         div { class: "search-hero",
-            super::ocean::OceanCat {}
-            h2 { "What are we reading?" }
-            p { class: "muted", "Type a title below and the cat will go looking for it." }
+            super::ocean::OceanHero {}
         }
         // The search box is all there is at the top. It is a grid of two things
         // in one place: an invisible copy of the full-size box, which holds the
