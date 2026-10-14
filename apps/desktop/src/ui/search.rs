@@ -390,7 +390,7 @@ fn SourcePanel(
                 }
                 if shown.is_empty() { p { class: "muted small", style: "padding: 8px", "No source matches that." } }
             }
-            div { class: "row", style: "margin-top: 10px; justify-content: flex-end",
+            div { class: "popover-foot",
                 button { class: "btn primary small", r#type: "button", onclick: move |_| on_close.call(()), "Done" }
             }
         }
@@ -410,7 +410,7 @@ const PLACE_POPOVER: &str = r#"
   p.style.top = top + 'px';
   p.style.left = (box.getBoundingClientRect().left + 14) + 'px';
   p.style.maxHeight = Math.max(160, window.innerHeight - top - 16) + 'px';
-  p.style.overflowY = 'auto';
+  p.style.overflow = 'hidden';
 })();
 "#;
 
@@ -494,6 +494,7 @@ fn FilterPanel(on_close: EventHandler<()>) -> Element {
     let (clear_types, clear_explicit, clear_genres) = (filters.clone(), filters.clone(), filters.clone());
     rsx! {
         div { class: "popover filter-panel", onmounted: move |_| place_popover(),
+            div { class: "filter-body",
             div { class: "filter-group first",
                 div { class: "filter-head",
                     span { class: "filter-label", "Type" }
@@ -570,7 +571,8 @@ fn FilterPanel(on_close: EventHandler<()>) -> Element {
                     }
                 }
             }
-            div { class: "row", style: "margin-top: 12px; justify-content: flex-end",
+            }
+            div { class: "popover-foot",
                 button { class: "btn primary small", r#type: "button", onclick: move |_| on_close.call(()), "Done" }
             }
         }

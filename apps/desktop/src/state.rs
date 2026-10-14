@@ -138,6 +138,8 @@ pub enum ModalAction {
         id: String,
     },
     /// Delete an exported file from disk.
+    /// Every file of one export.
+    DeleteExport { record_id: String },
     DeleteExportedFile {
         record_id: String,
         path: String,

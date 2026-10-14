@@ -128,7 +128,8 @@ pub fn TasksPage() -> Element {
             div { class: "q-sect q-sect-next",
                 h2 { "Exports" }
             }
-            if job.is_some() {
+            // A finished export is the first file in the list below.
+            if job.as_ref().is_some_and(|j| !matches!(j.result, Some(Ok(_)))) {
                 ExportJobRow {}
             }
             ExportedFiles {}
@@ -256,8 +257,18 @@ fn ExportedFiles() -> Element {
                 let menu_open = menu().as_deref() == Some(r.id.as_str());
                 let menu_id = r.id.clone();
                 let (preset_title, preset_settings) = (r.title.clone(), r.settings.clone());
-                // One file is deleted from the buttons on the right; several each have their own.
-                let single = (r.files.len() == 1).then(|| (r.id.clone(), first.clone()));
+                let delete_record = r.id.clone();
+                let delete_modal = Modal {
+                    title: format!("Delete the export of {}?", r.title),
+                    body: format!(
+                        "{} will be deleted from your computer. Your downloaded chapters are not affected.",
+                        plural(r.files.len(), "file")
+                    ),
+                    confirm: "Delete".into(),
+                    cancel: "Keep".into(),
+                    danger: true,
+                    action: ModalAction::DeleteExport { record_id: delete_record },
+                };
                 rsx! {
                     div { class: "q-row q-done", key: "{r.id}",
                         div { class: "q-cover",
@@ -333,14 +344,14 @@ fn ExportedFiles() -> Element {
                                             },
                                             Icon { name: "layers", size: 15 } "Save its settings as a preset"
                                         }
+                                        button { class: "menu-item danger",
+                                            onclick: move |_| {
+                                                menu.set(None);
+                                                state.ask(delete_modal.clone());
+                                            },
+                                            Icon { name: "trash", size: 15 } "Delete"
+                                        }
                                     }
-                                }
-                            }
-                            if let Some((record_id, path)) = single {
-                                button { class: "btn ghost open-big square danger", title: "Delete this file",
-                                    disabled: !can_open,
-                                    onclick: move |_| ask_delete_export(state, record_id.clone(), path.clone()),
-                                    Icon { name: "trash", size: 18 }
                                 }
                             }
                         }
