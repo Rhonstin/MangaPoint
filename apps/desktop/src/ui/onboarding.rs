@@ -26,6 +26,15 @@ fn set_step(state: AppState, step: SetupStep) {
     }
 }
 
+/// Leave a picture of the step on show sliding out of the window (left when
+/// going on, right when going back). Done once it is in place.
+async fn slide_out(forward: bool) {
+    let mut done = document::eval(&format!(
+        "if (window.mpSlideOut) {{ window.mpSlideOut({forward}); }} dioxus.send(true);"
+    ));
+    let _ = done.recv::<bool>().await;
+}
+
 const STEPS: [SetupStep; 3] = [SetupStep::Engine, SetupStep::Sources, SetupStep::Reader];
 
 fn position(step: SetupStep) -> usize {
@@ -57,24 +66,33 @@ pub fn Onboarding() -> Element {
     // Nothing to press until the engine is there.
     let show_next = shown != SetupStep::Engine || engine_ready;
 
+    // The step on show slides out first; only then does the next one come in.
     let go_next = move |_| {
-        forward.set(true);
-        match shown {
-            SetupStep::Engine => set_step(state, SetupStep::Sources),
-            SetupStep::Sources => {
-                if source_installed {
-                    super::setup::finish_sources(state);
-                }
-                set_step(state, SetupStep::Reader);
+        spawn(async move {
+            if shown != SetupStep::Reader {
+                slide_out(true).await;
             }
-            _ => set_step(state, SetupStep::Done),
-        }
-        view.set(None);
+            forward.set(true);
+            match shown {
+                SetupStep::Engine => set_step(state, SetupStep::Sources),
+                SetupStep::Sources => {
+                    if source_installed {
+                        super::setup::finish_sources(state);
+                    }
+                    set_step(state, SetupStep::Reader);
+                }
+                _ => set_step(state, SetupStep::Done),
+            }
+            view.set(None);
+        });
     };
     let go_back = move |_| {
         if pos > 0 {
-            forward.set(false);
-            view.set(Some(STEPS[pos - 1]));
+            spawn(async move {
+                slide_out(false).await;
+                forward.set(false);
+                view.set(Some(STEPS[pos - 1]));
+            });
         }
     };
 
@@ -165,16 +183,22 @@ fn ReaderStep() -> Element {
                 "You can add, change or remove readers any time in Settings."
             }
         }
-        div { class: "reader-pick",
-            DeviceAdder { always_open: !added, on_added: move |_| {} }
-            if added {
-                div { class: "px-label", style: "margin-top: 16px", "Your readers" }
+        // The readers you have, above the search box. The row opens up when the
+        // first one is added, and each one pops in as it is.
+        div { class: if added { "reader-picked has" } else { "reader-picked" },
+            div { class: "reader-picked-in",
                 div { class: "pills",
                     for d in devices {
-                        span { class: "pill on", key: "{d.id}", "{d.name}" }
+                        span { class: "pill on pop", key: "{d.id}",
+                            Icon { name: "check", size: 13 }
+                            "{d.name}"
+                        }
                     }
                 }
             }
+        }
+        div { class: "reader-pick",
+            DeviceAdder { always_open: !added, on_added: move |_| {} }
         }
     }
 }

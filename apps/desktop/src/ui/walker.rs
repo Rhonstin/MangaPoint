@@ -1,13 +1,17 @@
-//! A small pixel-art cat walking along a sidewalk, seen from the side, with
-//! buildings and street lamps drifting past behind it. The whole picture is one
-//! SVG built once; the browser plays it from CSS keyframes (see `style.css`).
+//! A small pixel-art cat walking along a city sidewalk at night, seen from the
+//! side, with a skyline, buildings and street lamps drifting past behind it.
+//! The whole picture is one SVG built once; the browser plays it from CSS
+//! keyframes (see `style.css`). Nothing glides: the cat changes pose six times
+//! in a step cycle, and the street moves in whole pixels in time with its feet.
 
 use dioxus::prelude::*;
 use std::sync::OnceLock;
 
 /// The size of the picture, in its own big pixels.
-const VIEW_W: i32 = 120;
-const VIEW_H: i32 = 48;
+const VIEW_W: i32 = 200;
+const VIEW_H: i32 = 64;
+/// The row the sidewalk starts at (and the cat's feet stand on).
+const GROUND_Y: i32 = 52;
 
 const W: usize = 22;
 const H: usize = 13;
@@ -19,6 +23,9 @@ const SHADE: u8 = b's';
 const LIGHT: u8 = b'l';
 const PINK: u8 = b'p';
 const EYE: u8 = b'e';
+
+/// Poses in one step cycle.
+const FRAMES: usize = 6;
 
 fn color(c: u8) -> &'static str {
     match c {
@@ -45,37 +52,46 @@ fn fill(g: &mut Grid, x0: usize, y0: usize, x1: usize, y1: usize, c: u8) {
     }
 }
 
-/// One of the four steps of the walk. The cat faces right.
-fn frame(phase: usize) -> Grid {
-    let mut g = [[CLEAR; W]; H];
-    // The body sits a pixel lower while the legs are spread.
-    let dy = usize::from(phase.is_multiple_of(2));
-    let tail_up = phase < 2;
-
-    // Tail, swinging.
-    let tail: [(usize, usize); 4] = if tail_up {
-        [(2, 4), (1, 3), (1, 2), (0, 1)]
-    } else {
-        [(2, 5), (1, 5), (0, 5), (0, 4)]
+/// One leg at `phase` of its stride (0..6) with its hip at `hip`: planted and
+/// pushing back through 0, 1, 2; then lifted and swinging forward through 3, 4, 5.
+fn leg(g: &mut Grid, hip: usize, phase: usize, dy: usize, c: u8) {
+    let (x, end) = match phase % FRAMES {
+        0 => (hip + 1, 12),
+        1 => (hip, 12),
+        2 => (hip - 1, 12),
+        3 => (hip - 1, 11),
+        4 => (hip, 10),
+        _ => (hip + 1, 11),
     };
-    for (x, y) in tail {
+    fill(g, x, 9 + dy, x + 1, end, c);
+    fill(g, x, end, x + 1, end, LIGHT);
+}
+
+/// One pose of the walk. The cat faces right and walks on a diagonal gait: a
+/// front leg and the opposite rear leg move together.
+fn frame(f: usize) -> Grid {
+    let mut g = [[CLEAR; W]; H];
+    // The body dips as the feet land, and rises while the legs pass under it.
+    let dy = usize::from(f.is_multiple_of(3));
+
+    // The tail sways up, across and down.
+    const TAILS: [[(usize, usize); 4]; FRAMES] = [
+        [(2, 4), (1, 3), (1, 2), (0, 1)],
+        [(2, 4), (1, 3), (0, 3), (0, 2)],
+        [(2, 4), (1, 4), (0, 4), (0, 3)],
+        [(2, 5), (1, 5), (0, 5), (0, 4)],
+        [(2, 4), (1, 4), (0, 4), (0, 3)],
+        [(2, 4), (1, 3), (0, 3), (0, 2)],
+    ];
+    for (x, y) in TAILS[f] {
         put(&mut g, x, y + dy, SHADE);
     }
 
-    // Legs: far ones darker and behind, near ones in front.
-    // (x, lifted) for front-far, rear-far, front-near, rear-near.
-    let legs: [[(usize, bool); 4]; 4] = [
-        [(11, false), (6, true), (14, false), (3, false)],
-        [(12, false), (5, false), (13, false), (4, false)],
-        [(14, true), (3, false), (11, false), (6, false)],
-        [(12, false), (5, false), (13, false), (4, false)],
-    ];
-    for (i, (x, lifted)) in legs[phase % 4].iter().enumerate() {
-        let c = if i < 2 { SHADE } else { BODY };
-        let end = if *lifted { 11 } else { 12 };
-        fill(&mut g, *x, 9 + dy, x + 1, end, c);
-        fill(&mut g, *x, end, x + 1, end, LIGHT);
-    }
+    // Far legs behind (darker), near legs in front.
+    leg(&mut g, 13, f + 3, dy, SHADE); // front far
+    leg(&mut g, 3, f, dy, SHADE); // rear far
+    leg(&mut g, 13, f, dy, BODY); // front near
+    leg(&mut g, 3, f + 3, dy, BODY); // rear near
 
     // Body, with stripes along the back and a light belly.
     fill(&mut g, 3, 3 + dy, 14, 8 + dy, BODY);
@@ -152,9 +168,9 @@ fn noise(x: i32, y: i32) -> f32 {
 fn shows(x: i32, y: i32) -> bool {
     let side = x.min(VIEW_W - 1 - x) as f32;
     let bottom = (VIEW_H - 1 - y) as f32;
-    let keep = ((side - 2.0) / 26.0)
+    let keep = ((side - 2.0) / 40.0)
         .clamp(0.0, 1.0)
-        .min(((bottom - 1.0) / 7.0).clamp(0.0, 1.0));
+        .min(((bottom - 1.0) / 8.0).clamp(0.0, 1.0));
     let r = 0.6 * noise(x, y) + 0.4 * noise(x.div_euclid(2) + 91, y.div_euclid(2) + 17);
     r < keep
 }
@@ -180,50 +196,98 @@ fn edge_cover() -> String {
     out
 }
 
+/// A building standing on the sidewalk, with rows of windows, some of them lit.
+fn building(x: i32, w: i32, h: i32, wall: &str, dark: &str, lit: &str, seed: i32) -> String {
+    let top = GROUND_Y - h;
+    let mut s = rect(x, top, w, h, wall);
+    let mut wy = top + 3;
+    while wy < GROUND_Y - 6 {
+        let mut wx = x + 3;
+        while wx < x + w - 3 {
+            let on = noise(wx + seed, wy) > 0.8;
+            s.push_str(&rect(wx, wy, 2, 2, if on { lit } else { dark }));
+            wx += 5;
+        }
+        wy += 5;
+    }
+    s
+}
+
 fn scene() -> &'static str {
     static SCENE: OnceLock<String> = OnceLock::new();
     SCENE.get_or_init(|| {
-        // Far away: buildings, with a few lit windows.
-        let mut buildings = String::new();
-        for (x, w, h) in [(0, 14, 22), (16, 10, 30), (28, 16, 18), (46, 12, 26)] {
-            buildings.push_str(&rect(x, 40 - h, w, h, "#101010"));
-            let mut wy = 40 - h + 4;
-            while wy < 36 {
-                buildings.push_str(&rect(x + 3, wy, 2, 2, "#1d1d1d"));
-                if w > 11 {
-                    buildings.push_str(&rect(x + w - 5, wy, 2, 2, "#1d1d1d"));
-                }
-                wy += 6;
+        // Far away: a tall skyline, with aerials on the highest towers.
+        let mut skyline = String::new();
+        for (i, (x, w, h)) in [(0, 16, 34), (18, 12, 24), (32, 20, 42), (54, 14, 28), (70, 18, 38), (90, 12, 22), (104, 14, 30)]
+            .into_iter()
+            .enumerate()
+        {
+            skyline.push_str(&building(x, w, h, "#0d0d0d", "#151515", "#262626", i as i32 * 13));
+            if h > 36 {
+                skyline.push_str(&rect(x + w / 2, GROUND_Y - h - 6, 1, 6, "#0d0d0d"));
+                skyline.push_str(&rect(x + w / 2, GROUND_Y - h - 7, 1, 1, "#3a3a3a"));
             }
         }
-        // Nearer: street lamps.
-        let lamp = [
-            rect(20, 14, 1, 26, "#2e2e2e"),
-            rect(20, 14, 7, 1, "#2e2e2e"),
-            rect(25, 15, 4, 2, "#d8d8d8"),
-            rect(24, 17, 6, 1, "#ffffff22"),
-            rect(23, 18, 8, 1, "#ffffff14"),
+        // Nearer: shops and flats along the street, with awnings.
+        let mut street = String::new();
+        for (i, (x, w, h)) in [(0, 22, 28), (24, 14, 20), (40, 24, 32), (66, 16, 22), (84, 12, 26)]
+            .into_iter()
+            .enumerate()
+        {
+            street.push_str(&building(x, w, h, "#131313", "#1e1e1e", "#383838", 100 + i as i32 * 7));
+            street.push_str(&rect(x, GROUND_Y - 7, w, 2, "#1d1d1d"));
+            street.push_str(&rect(x + 2, GROUND_Y - 5, w - 4, 5, "#0a0a0a"));
+        }
+        // On the sidewalk: a street lamp and a tree.
+        let near = [
+            rect(14, GROUND_Y - 30, 1, 30, "#2e2e2e"),
+            rect(14, GROUND_Y - 30, 8, 1, "#2e2e2e"),
+            rect(20, GROUND_Y - 29, 5, 2, "#d8d8d8"),
+            rect(19, GROUND_Y - 27, 7, 1, "#ffffff22"),
+            rect(18, GROUND_Y - 26, 9, 1, "#ffffff16"),
+            rect(17, GROUND_Y - 25, 11, 1, "#ffffff0d"),
+            rect(60, GROUND_Y - 12, 2, 12, "#2a2a2a"),
+            rect(54, GROUND_Y - 24, 14, 6, "#1b1f1b"),
+            rect(52, GROUND_Y - 20, 18, 6, "#1b1f1b"),
+            rect(55, GROUND_Y - 15, 12, 4, "#1b1f1b"),
         ]
         .concat();
-        // The sidewalk, with a joint between its slabs every 16 pixels.
-        let joint = rect(0, 41, 1, 7, "#222222");
-        let cat: String = (0..4)
+        // The moon and a few stars.
+        let mut sky = String::new();
+        for (dy, from, to) in [(0, 2, 4), (1, 1, 5), (2, 0, 6), (3, 0, 6), (4, 0, 6), (5, 1, 5), (6, 2, 4)] {
+            sky.push_str(&rect(162 + from, 6 + dy, to - from + 1, 1, "#d6d6d6"));
+        }
+        for (x, y) in [(20, 6), (46, 12), (78, 5), (104, 10), (128, 4), (146, 14), (186, 18), (12, 20), (60, 3)] {
+            sky.push_str(&rect(x, y, 1, 1, "#4a4a4a"));
+        }
+        // The sidewalk with a joint between its slabs every 16 pixels, the
+        // curb, and the road with its lane marks every 24.
+        let joint = rect(0, GROUND_Y + 1, 1, 5, "#222222");
+        let lane = rect(0, GROUND_Y + 9, 10, 1, "#3a3a3a");
+        let cat: String = (0..FRAMES)
             .map(|p| format!("<g class=\"wf wf{p}\">{}</g>", rects(&frame(p))))
             .collect();
         format!(
-            "<svg class=\"walker-svg\" viewBox=\"0 0 120 48\" xmlns=\"http://www.w3.org/2000/svg\" shape-rendering=\"crispEdges\">\
+            "<svg class=\"walker-svg\" viewBox=\"0 0 {VIEW_W} {VIEW_H}\" xmlns=\"http://www.w3.org/2000/svg\" shape-rendering=\"crispEdges\">\
+             {sky}\
              <g class=\"w-far\">{}</g>\
+             <g class=\"w-mid\">{}</g>\
              <g class=\"w-near\">{}</g>\
-             {}{}\
-             <g class=\"w-ground\">{}</g>\
-             <g transform=\"translate(40 27)\">{cat}</g>\
+             {}{}{}{}\
+             <g class=\"w-ground\">{}{}</g>\
+             <g transform=\"translate(89 {})\">{cat}</g>\
              {}\
              </svg>",
-            repeat(&buildings, 60, 4),
-            repeat(&lamp, 80, 3),
-            rect(0, 40, 120, 8, "#151515"),
-            rect(0, 40, 120, 1, "#303030"),
+            repeat(&skyline, 120, 3),
+            repeat(&street, 96, 4),
+            repeat(&near, 96, 4),
+            rect(0, GROUND_Y, VIEW_W, VIEW_H - GROUND_Y, "#151515"),
+            rect(0, GROUND_Y, VIEW_W, 1, "#303030"),
+            rect(0, GROUND_Y + 6, VIEW_W, 1, "#272727"),
+            rect(0, GROUND_Y + 7, VIEW_W, VIEW_H - GROUND_Y - 7, "#0c0c0c"),
             repeat(&joint, 16, 16),
+            repeat(&lane, 24, 10),
+            GROUND_Y - H as i32,
             edge_cover(),
         )
     })
@@ -241,21 +305,36 @@ mod tests {
 
     #[test]
     fn every_step_is_drawn_and_they_differ() {
-        let frames: Vec<String> = (0..4).map(|p| rects(&frame(p))).collect();
+        let frames: Vec<String> = (0..FRAMES).map(|p| rects(&frame(p))).collect();
         assert!(frames.iter().all(|f| f.contains("<rect")));
-        assert_ne!(frames[0], frames[1]);
-        assert_ne!(frames[0], frames[2]);
+        for a in 0..FRAMES {
+            for b in a + 1..FRAMES {
+                assert_ne!(frames[a], frames[b], "poses {a} and {b} look the same");
+            }
+        }
         assert!(scene().contains("w-ground"));
     }
 
     #[test]
     fn the_edges_break_up_and_the_middle_stays_whole() {
         // Whole around the cat, bare at the far sides and bottom.
-        assert!((40..80).all(|x| (10..38).all(|y| shows(x, y))));
+        assert!((60..140).all(|x| (20..50).all(|y| shows(x, y))));
         assert!((0..2).all(|x| (0..VIEW_H).all(|y| !shows(x, y))));
         assert!((0..VIEW_W).all(|x| !shows(x, VIEW_H - 1)));
         // Somewhere in between, some pixels show and some do not.
-        let shown = (2..28).flat_map(|x| (10..30).map(move |y| (x, y))).filter(|&(x, y)| shows(x, y)).count();
-        assert!(shown > 0 && shown < 26 * 20);
+        let shown = (2..40).flat_map(|x| (10..40).map(move |y| (x, y))).filter(|&(x, y)| shows(x, y)).count();
+        assert!(shown > 0 && shown < 38 * 30);
+    }
+
+    #[test]
+    fn the_street_loops_without_a_seam() {
+        // What moves does so by a whole number of the pattern's repeats per
+        // cycle: the sidewalk slabs (16) and lane marks (24) by 48, the lamps
+        // and shops (96) by 96, the skyline (120) by 120.
+        for (period, travel) in [(16, 48), (24, 48), (96, 96), (120, 120)] {
+            assert_eq!(travel % period, 0);
+        }
+        // 8, 4 and 2 pixels a pose: the street never moves by part of a pixel.
+        assert_eq!((48 / FRAMES, 96 / 12, 120 / 60), (8, 8, 2));
     }
 }

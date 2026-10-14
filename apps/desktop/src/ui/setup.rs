@@ -128,14 +128,11 @@ pub fn Setup(#[props(default = false)] onboarding: bool) -> Element {
             }
         }
         div { class: "setup-tools",
-            if !installed_any {
-                span { class: "muted small", "Install at least one source to start searching." }
-            }
-            div { class: "grow" }
             button {
-                class: "btn small",
+                class: "btn setup-all",
                 disabled: busy,
                 onclick: install_recommended,
+                Icon { name: "download", size: 15 }
                 if busy { "Installing\u{2026}" } else { "Install all recommended" }
             }
             if !onboarding {

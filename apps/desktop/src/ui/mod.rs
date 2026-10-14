@@ -43,6 +43,8 @@ const TOOLTIP_SCRIPT: &str = include_str!("../js/tooltip.js");
 const KEYS_SCRIPT: &str = include_str!("../js/keys.js");
 /// Remembers the scroll position of each page.
 const SCROLL_SCRIPT: &str = include_str!("../js/scroll.js");
+/// Lets a first-run step slide out of the window.
+const SLIDE_SCRIPT: &str = include_str!("../js/slide.js");
 
 #[component]
 pub fn App() -> Element {
@@ -69,6 +71,7 @@ pub fn App() -> Element {
             let _ = document::eval(TOOLTIP_SCRIPT).await;
             let _ = document::eval(KEYS_SCRIPT).await;
             let _ = document::eval(SCROLL_SCRIPT).await;
+            let _ = document::eval(SLIDE_SCRIPT).await;
         });
     });
 
