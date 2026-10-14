@@ -957,15 +957,3 @@ table.chapters tbody tr[data-cursor] { outline: 2px solid var(--accent); outline
 .as-row { display: flex; align-items: center; gap: 12px; padding: 9px 4px; }
 @media (max-width: 900px) { .as-grid { grid-template-columns: 1fr; } }
 .as-tabs button { white-space: nowrap; flex: 0 0 auto; }
-
-/* ---- the water of the wide picture: rows that drift at their own pace and rise and fall ---- */
-.ocean .swell { animation-name: swell; animation-iteration-count: infinite; }
-@keyframes swell { to { transform: translateX(calc(var(--p) * -1px)); } }
-.ocean .bob { animation: swell-bob 6s step-end infinite; }
-.ocean .bob.b1 { animation-duration: 7.5s; animation-delay: -2s; }
-.ocean .bob.b2 { animation-duration: 5.5s; animation-delay: -4s; }
-@keyframes swell-bob { 0% { transform: translateY(0); } 34% { transform: translateY(1px); } 67% { transform: translateY(0); } }
-.ocean .glitter.a { animation: glitter-a 2.6s step-end infinite; }
-.ocean .glitter.b { animation: glitter-b 2.6s step-end infinite; }
-@keyframes glitter-a { 0% { opacity: 1; } 50% { opacity: 0; } }
-@keyframes glitter-b { 0% { opacity: 0; } 50% { opacity: 1; } }

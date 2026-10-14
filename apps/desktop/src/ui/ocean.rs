@@ -238,14 +238,12 @@ fn backdrop(wide: bool) -> String {
     }
     out.push_str(&group(wide, "glint", 0.4, &glint));
 
-    // Far waves (the wide picture has its own water, see `water`).
-    if !wide {
-        let mut far = Layer::default();
-        far.wave_row(18, 0, "#3a5f86");
-        far.wave_row(21, 4, "#35597f");
-        far.wave_row(25, 2, "#2f5176");
-        out.push_str(&group(wide, "waves far", 1.0, &far));
-    }
+    // Far waves.
+    let mut far = Layer::default();
+    far.wave_row(18, 0, "#3a5f86");
+    far.wave_row(21, 4, "#35597f");
+    far.wave_row(25, 2, "#2f5176");
+    out.push_str(&group(wide, "waves far", 1.0, &far));
     out
 }
 
@@ -363,9 +361,6 @@ fn extras(wide: bool) -> String {
 
 fn near_waves(wide: bool) -> String {
     let mut out = String::new();
-    if wide {
-        return out;
-    }
     let mut mid = Layer::default();
     mid.wave_row(33, 1, "#2a4d73");
     mid.wave_row(35, 5, "#27476c");
@@ -419,101 +414,23 @@ fn wide_surroundings() -> String {
         out.push_str(&group(true, "cloud", 1.0, &cloud));
     }
 
-    out
-}
-
-/// One row of water as uneven dashes (with a lighter spot on some), laid out
-/// to repeat every `period` cells, so the row can drift by a period and loop
-/// without a seam. `seed` makes each row its own.
-fn swell_row(
-    layer: &mut Layer,
-    y: i32,
-    period: i32,
-    seed: i32,
-    lengths: (i32, i32),
-    color: &'static str,
-    crest: &'static str,
-) {
-    let mut dashes: Vec<(i32, i32)> = Vec::new();
-    let mut x = (noise(seed, y) * period as f32 * 0.5) as i32;
-    let mut n = 0;
-    loop {
-        let span = (lengths.1 - lengths.0 + 1) as f32;
-        let len = lengths.0 + (noise(seed + n * 5, y + n) * span) as i32;
-        if x + len > period - 1 {
-            break;
-        }
-        dashes.push((x, len));
-        let gap = 2 + (noise(seed + n * 11 + 3, y * 3 + n) * (period as f32 / 3.0)) as i32;
-        x += len + gap;
-        n += 1;
+    // Waves in the deeper water.
+    let mut deep = Layer::default();
+    for (i, (y, c)) in [
+        (41, "#2a4d73"),
+        (43, "#27476c"),
+        (46, "#244268"),
+        (48, "#213c5d"),
+        (51, "#1d3452"),
+        (54, "#192d47"),
+        (57, "#16263c"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        deep.wave_row(y, (i as i32 * 3) % 8, c);
     }
-    for k in X0.div_euclid(period) - 1..=(X0 + CW).div_euclid(period) + 1 {
-        for (i, &(dx, len)) in dashes.iter().enumerate() {
-            let base = k * period + dx;
-            layer.rect(base, y, len, 1, color);
-            if len >= 4 && i % 2 == 0 {
-                layer.px(base + len / 2, y, crest);
-            }
-        }
-    }
-}
-
-/// The water of the wide picture: rows that get longer and slower toward the
-/// front, each with its own rhythm, drifting one way or the other and rising
-/// and falling a little, with the moon glittering on it. `far` is the water
-/// behind the cat, otherwise the water in front of it.
-fn water(far: bool) -> String {
-    // (row, period, seconds for one cell, left or right, dash lengths, colors)
-    #[allow(clippy::type_complexity)]
-    let rows: [(i32, i32, f32, bool, (i32, i32), &str, &str); 14] = [
-        (18, 10, 0.95, false, (2, 3), "#3f6690", "#6b93bd"),
-        (20, 12, 0.9, true, (2, 4), "#3b628b", "#648db8"),
-        (22, 14, 0.85, false, (2, 4), "#375d86", "#5f88b2"),
-        (25, 16, 0.8, true, (3, 5), "#335880", "#5a82ab"),
-        (31, 18, 0.7, false, (3, 6), "#2f537a", "#557ea6"),
-        (33, 20, 0.65, true, (3, 6), "#2c4e74", "#4f7a9f"),
-        (36, 22, 0.6, false, (4, 7), "#294a6e", "#4a7396"),
-        (39, 24, 0.55, true, (4, 8), "#254567", "#456d8f"),
-        (42, 26, 0.5, false, (5, 9), "#214060", "#406787"),
-        (45, 28, 0.47, true, (5, 10), "#1e3a59", "#3b6080"),
-        (48, 30, 0.44, false, (6, 11), "#1b3552", "#365a78"),
-        (51, 32, 0.4, true, (6, 12), "#18304b", "#315470"),
-        (54, 36, 0.37, false, (7, 13), "#152a43", "#2d4d68"),
-        (57, 40, 0.34, true, (8, 14), "#12253b", "#284560"),
-    ];
-    let mut out = String::new();
-    for (i, &(y, period, seconds, rightward, lengths, color, crest)) in rows.iter().enumerate() {
-        if (y < 28) != far {
-            continue;
-        }
-        let mut layer = Layer::default();
-        swell_row(&mut layer, y, period, 17 + i as i32 * 29, lengths, color, crest);
-        let direction = if rightward { "reverse" } else { "normal" };
-        out.push_str(&format!(
-            "<g class=\"bob b{}\"><g class=\"swell\" style=\"--p:{period};animation-duration:{:.1}s;animation-timing-function:steps({period});animation-direction:{direction}\">{}</g></g>",
-            i % 3,
-            seconds * period as f32,
-            group(true, "", 1.0, &layer)
-        ));
-    }
-    if !far {
-        // The moon glittering on the water in front of the cat: bits of its
-        // path that come and go, two sets taking turns.
-        for (set, class) in ["glitter a", "glitter b"].into_iter().enumerate() {
-            let mut glitter = Layer::default();
-            for (n, y) in (30..58).step_by(2).enumerate() {
-                if n % 2 != set {
-                    continue;
-                }
-                let reach = 2 + (y - 30) * 3 / 10;
-                let w = 1 + (noise(y, 41) * (reach as f32 + 2.0)) as i32;
-                let shift = (noise(y, 77) * 5.0) as i32 - 2;
-                glitter.rect(57 + shift - w / 2, y, w, 1, "#cfd8ea");
-            }
-            out.push_str(&group(true, class, 0.7, &glitter));
-        }
-    }
+    out.push_str(&group(true, "waves mid", 1.0, &deep));
     out
 }
 
@@ -553,13 +470,11 @@ fn hero_markup() -> &'static str {
     static MARKUP: OnceLock<String> = OnceLock::new();
     MARKUP.get_or_init(|| {
         format!(
-            "{}{}{}<g class=\"floater\">{}</g>{}{}{}{}",
+            "{}{}<g class=\"floater\">{}</g>{}{}{}",
             wide_surroundings(),
             backdrop(true),
-            water(true),
             cat(true),
             extras(true),
-            water(false),
             near_waves(true),
             name()
         )
@@ -700,22 +615,9 @@ mod tests {
     }
 
     #[test]
-    fn the_water_rows_repeat_every_period_so_they_can_drift_without_a_seam() {
-        // Every dash of a row has its twin one period along.
-        let mut layer = Layer::default();
-        swell_row(&mut layer, 40, 20, 5, (3, 6), "#111111", "#222222");
-        let cells: std::collections::HashSet<(i32, i32)> =
-            layer.0.iter().map(|&(x, y, _)| (x, y)).collect();
-        assert!(cells.len() > 60);
-        for &(x, y) in cells.iter().filter(|&&(x, _)| (-40..40).contains(&x)) {
-            assert!(cells.contains(&(x + 20, y)), "{x},{y}");
-        }
-    }
-
-    #[test]
     fn the_wide_picture_has_the_name_and_the_same_moving_parts() {
         let m = hero_markup();
-        for class in ["floater", "tail-a", "paws", "swell", "bob b2", "glitter a", "glitter b", "star s2", "cloud", "zz z1"] {
+        for class in ["floater", "tail-a", "paws", "waves near", "waves mid", "star s2", "cloud", "zz z1"] {
             assert!(m.contains(&format!("class=\"{class}\"")), "{class}");
         }
         // The name is plain cream letters with a shadow.
