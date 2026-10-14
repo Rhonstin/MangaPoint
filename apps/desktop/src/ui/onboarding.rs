@@ -79,17 +79,20 @@ pub fn Onboarding() -> Element {
                 slide_out(true).await;
             }
             forward.set(true);
-            match shown {
-                SetupStep::Engine => set_step(state, SetupStep::Sources),
+            // Next is the page after the one on show, even when the setup has
+            // already been further (after going Back to look at an earlier one).
+            let next = match shown {
+                SetupStep::Engine => SetupStep::Sources,
                 SetupStep::Sources => {
                     if source_installed {
                         super::setup::finish_sources(state);
                     }
-                    set_step(state, SetupStep::Reader);
+                    SetupStep::Reader
                 }
-                _ => set_step(state, SetupStep::Done),
-            }
-            view.set(None);
+                _ => SetupStep::Done,
+            };
+            set_step(state, next);
+            view.set((next != SetupStep::Done).then_some(next));
             tokio::time::sleep(std::time::Duration::from_millis(700)).await;
             moving.set(false);
         });

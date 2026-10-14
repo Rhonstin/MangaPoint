@@ -139,15 +139,37 @@ pub fn add_export_series(state: AppState, series_id: String) {
     if !has_chapters {
         return;
     }
+    let samples: Vec<String> = state
+        .library
+        .peek()
+        .series
+        .iter()
+        .filter(|s| s.is_sample())
+        .map(|s| s.id.clone())
+        .collect();
     let mut plan = state.export_plan;
-    let mut p = plan.write();
-    if !p.items.iter().any(|i| i.series_id == series_id) {
+    let replaced_sample = {
+        let mut p = plan.write();
+        if p.items.iter().any(|i| i.series_id == series_id) {
+            return;
+        }
         let excluded = already_exported(state, &series_id);
+        let only_sample = p.items.iter().all(|i| samples.contains(&i.series_id));
         p.items.push(ExportItem {
             series_id,
             excluded,
             ..Default::default()
         });
+        // The sample pages are only there to look around with until a real
+        // series is added: they go, and the new series is the one on show.
+        if only_sample {
+            p.items.retain(|i| !samples.contains(&i.series_id));
+            p.active = 0;
+        }
+        only_sample
+    };
+    if replaced_sample {
+        activate_export_series(state, 0);
     }
 }
 

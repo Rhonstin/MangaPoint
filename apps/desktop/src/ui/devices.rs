@@ -296,7 +296,6 @@ pub fn DeviceAdder(
                             Icon { name: "hard-drive", size: 15 }
                             span { class: "grow", "{k.name}" }
                             span { class: "px-size", "{k.inches_label()}" }
-                            if i == active_now { span { class: "adder-enter", "Enter" } }
                         }
                     }
                     if show_create {
@@ -309,7 +308,6 @@ pub fn DeviceAdder(
                             },
                             Icon { name: "plus", size: 15 }
                             span { class: "grow", "Create \u{201c}{typed_for_row}\u{201d} as your own reader" }
-                            if active_now == known_count { span { class: "adder-enter", "Enter" } }
                         }
                     }
                     if matches.is_empty() && !show_create {

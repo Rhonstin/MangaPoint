@@ -153,7 +153,7 @@ fn markup() -> &'static str {
         rect(&mut s, lx + 5, ly - 4, 1, 1, "#ffffff");
         s.push_str("</g></g>");
         s.push_str(&edge_cover());
-        s
+        super::pixels::compact(&s)
     })
 }
 

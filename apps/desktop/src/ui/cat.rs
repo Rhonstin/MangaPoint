@@ -476,7 +476,7 @@ pub(super) fn toast_markup(look: &str) -> &'static str {
                     px(&mut g, x, y, b't');
                 }
             }
-            format!("{}{}", body_markup(closed), rects(&g))
+            super::pixels::compact(&format!("{}{}", body_markup(closed), rects(&g)))
         };
         [
             make(true, tick_badge, false),

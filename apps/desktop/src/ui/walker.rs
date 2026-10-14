@@ -408,9 +408,9 @@ fn scene(day: bool) -> &'static str {
     static NIGHT_SCENE: OnceLock<String> = OnceLock::new();
     static DAY_SCENE: OnceLock<String> = OnceLock::new();
     if day {
-        DAY_SCENE.get_or_init(|| build(&DAY, true))
+        DAY_SCENE.get_or_init(|| super::pixels::compact(&build(&DAY, true)))
     } else {
-        NIGHT_SCENE.get_or_init(|| build(&NIGHT, false))
+        NIGHT_SCENE.get_or_init(|| super::pixels::compact(&build(&NIGHT, false)))
     }
 }
 

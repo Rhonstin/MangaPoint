@@ -56,6 +56,16 @@ pub fn Setup(#[props(default = false)] onboarding: bool) -> Element {
         });
     };
     let busy = *state.installing.read();
+    // The recommended ones that have not been answered yet: when there are none
+    // (all installed, or turned down), there is nothing for the button to do.
+    let pending = match &*offers.read() {
+        Some(Some(list)) => list
+            .iter()
+            .filter(|o| o.default.requires == Requires::Nothing && o.available && !o.installed && o.choice.is_none())
+            .count(),
+        _ => 1,
+    };
+    let any_installed = state.sources.read().choices.values().any(|c| *c == Choice::Install);
 
     let finish = move |_| {
         finish_sources(state);
@@ -130,10 +140,15 @@ pub fn Setup(#[props(default = false)] onboarding: bool) -> Element {
         div { class: "setup-tools",
             button {
                 class: "btn setup-all",
-                disabled: busy,
+                disabled: busy || pending == 0,
                 onclick: install_recommended,
-                Icon { name: "download", size: 15 }
-                if busy { "Installing\u{2026}" } else { "Install all recommended" }
+                if pending == 0 && !busy {
+                    Icon { name: "check", size: 15 }
+                    if any_installed { "All recommended sources are installed" } else { "Nothing left to install" }
+                } else {
+                    Icon { name: "download", size: 15 }
+                    if busy { "Installing\u{2026}" } else { "Install all recommended" }
+                }
             }
             if !onboarding {
                 button {
