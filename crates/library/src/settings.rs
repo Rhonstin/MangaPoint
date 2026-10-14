@@ -224,6 +224,16 @@ impl DownloadSettings {
     }
 }
 
+/// How the app moves between pages and parts of them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Animations {
+    /// Pages and their parts come up one after another, with fades.
+    #[default]
+    Clean,
+    /// Almost no waiting for anything to move: pages just appear.
+    Snappy,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ExportSettings {
@@ -273,6 +283,8 @@ pub struct Settings {
     pub shrink_downloads: bool,
     /// Show a system notification when a download or an export finishes.
     pub notifications: bool,
+    /// Clean (fades, one part after another) or snappy (pages just appear).
+    pub animations: Animations,
     /// How many chapters and pages to download at once.
     pub download: DownloadSettings,
     /// Where new downloads are kept. `None` means the app's own folder.
@@ -305,6 +317,7 @@ impl Default for Settings {
             browser_support: false,
             shrink_downloads: false,
             notifications: true,
+            animations: Animations::Clean,
             download: DownloadSettings::default(),
             library_dir: None,
             library_dirs: Vec::new(),

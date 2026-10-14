@@ -233,7 +233,7 @@ pub fn export_target(
                 base_url: url.trim().to_string(),
                 folder: settings.export.device_folder.clone(),
             }),
-            _ => Err("Set the reader's Wi-Fi address in Settings first.".into()),
+            _ => Err("Type the reader's Wi-Fi address first (under Send to).".into()),
         },
     }
 }

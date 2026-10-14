@@ -276,6 +276,33 @@ fn encode_segment(s: &str) -> String {
         .collect()
 }
 
+/// Ask the reader's WebDAV share whether it is there. `Ok` means something
+/// answered like a file share; `Err` is a sentence about what went wrong.
+pub async fn check_webdav(base_url: &str) -> std::result::Result<(), String> {
+    let base = base_url.trim();
+    if !(base.starts_with("http://") || base.starts_with("https://")) {
+        return Err("The address should start with http://".to_string());
+    }
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(8))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let propfind = reqwest::Method::from_bytes(b"PROPFIND").expect("valid method");
+    let response = client
+        .request(propfind, format!("{}/", base.trim_end_matches('/')))
+        .header("Depth", "0")
+        .send()
+        .await
+        .map_err(|_| format!("Nothing answered at {base}. Is the reader on, on the same Wi-Fi, and in file transfer mode?"))?;
+    let status = response.status();
+    if status.is_success() || status.as_u16() == 207 {
+        Ok(())
+    } else {
+        Err(format!("Something answered at {base}, but it said {status}."))
+    }
+}
+
 async fn upload_webdav(
     base_url: &str,
     folder: &str,
@@ -554,5 +581,31 @@ mod tests {
         assert_eq!(fs::read(mount.join("Manga").join("My Book.xtc")).unwrap().len(), 4096);
         assert!(!mount.join("Manga").join("My Book.part").exists(), "no half-written file is left");
         let _ = fs::remove_dir_all(mount);
+    }
+
+    /// A one-answer server for a test: replies with `status_line` to the first
+    /// request it gets.
+    fn answer_once(status_line: &'static str) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 2048];
+                let _ = stream.read(&mut buf);
+                let _ = write!(stream, "HTTP/1.1 {status_line}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn the_reader_check_tells_an_answering_share_from_everything_else() {
+        assert!(check_webdav(&answer_once("207 Multi-Status")).await.is_ok());
+        let refused = check_webdav(&answer_once("401 Unauthorized")).await.unwrap_err();
+        assert!(refused.contains("401"), "{refused}");
+        assert!(check_webdav("192.168.1.5").await.unwrap_err().contains("http://"));
+        // Nothing listening at all.
+        let dead = check_webdav("http://127.0.0.1:9").await.unwrap_err();
+        assert!(dead.contains("Nothing answered"), "{dead}");
     }
 }

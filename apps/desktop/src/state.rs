@@ -82,6 +82,7 @@ pub enum SettingsSection {
     Reader,
     Downloads,
     Files,
+    Preferences,
     About,
 }
 

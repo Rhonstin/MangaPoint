@@ -11,10 +11,11 @@ use dioxus::prelude::*;
 use library::{DownloadLimits, DownloadSpeed};
 
 /// The sections, in the order the sidebar lists them.
-const SECTIONS: [(SettingsSection, &str, &str); 4] = [
+const SECTIONS: [(SettingsSection, &str, &str); 5] = [
     (SettingsSection::Reader, "hard-drive", "Your reader"),
     (SettingsSection::Downloads, "download", "Downloads"),
     (SettingsSection::Files, "folder-open", "Files"),
+    (SettingsSection::Preferences, "sliders-horizontal", "Preferences"),
     (SettingsSection::About, "info", "About"),
 ];
 
@@ -277,6 +278,23 @@ pub fn SettingsPage() -> Element {
                                     super::widgets::open_folder(&dir);
                                 },
                                 Icon { name: "folder-open", size: 15 } "Open folder"
+                            }
+                        }
+                    },
+                    SettingsSection::Preferences => rsx! {
+                        Group { title: "Animations" }
+                        Row { label: "Animation style", desc: "Clean fades pages in one part after another. Snappy skips that: pages and menus appear as fast as they can.",
+                            div { class: "seg",
+                                button {
+                                    class: if s.animations == library::Animations::Clean { "on" } else { "" },
+                                    onclick: move |_| { let mut st = state.settings; st.write().animations = library::Animations::Clean; state.save_settings(); },
+                                    "Clean"
+                                }
+                                button {
+                                    class: if s.animations == library::Animations::Snappy { "on" } else { "" },
+                                    onclick: move |_| { let mut st = state.settings; st.write().animations = library::Animations::Snappy; state.save_settings(); },
+                                    "Snappy"
+                                }
                             }
                         }
                     },

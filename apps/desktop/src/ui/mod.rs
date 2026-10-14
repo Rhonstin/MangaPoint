@@ -70,12 +70,13 @@ pub fn App() -> Element {
         });
     });
 
+    let snappy = state.settings.read().animations == library::Animations::Snappy;
     let boot = state.boot.read().clone();
     rsx! {
         style { "{CSS}" }
         style { {include_str!("../page-editor.css")} }
         style { {include_str!("../editor-controls.css")} }
-        div { class: "app",
+        div { class: "app", "data-motion": if snappy { "snappy" } else { "clean" },
             {match boot {
                 // The first run has to download the engine, so it waits on the
                 // splash. Later runs open the app at once; only what needs the

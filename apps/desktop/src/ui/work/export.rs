@@ -511,6 +511,8 @@ pub(super) async fn run_export(
             // Files sent to a drive were flushed to it before they got their names.
             if matches!(target, ExportTarget::Device { .. }) {
                 summary.push_str(". Safe to unplug.");
+            } else if matches!(target, ExportTarget::WebDav { .. }) {
+                summary.push_str(". Sent to the reader.");
             }
             crate::notify::finished(state, "Export finished", &format!("{}: {summary}", series.title));
             if let Some(view) = job.write().as_mut() {
