@@ -64,6 +64,7 @@ fn main() {
     }
 
     init_logging();
+    notify::register();
     // Ctrl+C in the terminal would otherwise leave the catalog server running
     // and holding its database, so the next start could not open it.
     let _ = ctrlc::set_handler(|| {
