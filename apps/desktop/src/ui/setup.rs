@@ -1,7 +1,7 @@
 //! First run: choose which sources to install.
 
 use super::ask_enable_browser;
-use super::scenes::SearchCat;
+use super::browse::BrowsingCat;
 use super::widgets::{Chip, Icon};
 use crate::backend;
 use crate::state::spawn_forever;
@@ -119,7 +119,7 @@ pub fn Setup(#[props(default = false)] onboarding: bool) -> Element {
     rsx! {
         div { class: "onboard-head",
             if onboarding {
-                div { class: "step-hero", SearchCat {} }
+                div { class: "step-hero", BrowsingCat {} }
             }
             h1 { "Choose your sources" }
             p { class: "muted",

@@ -9,7 +9,7 @@ use std::sync::OnceLock;
 
 /// The size of the picture, in its own big pixels.
 const VIEW_W: i32 = 200;
-const VIEW_H: i32 = 64;
+const VIEW_H: i32 = 62;
 /// The row the sidewalk starts at (and the cat's feet stand on).
 const GROUND_Y: i32 = 52;
 
@@ -213,90 +213,201 @@ fn building(x: i32, w: i32, h: i32, wall: &str, dark: &str, lit: &str, seed: i32
     s
 }
 
-fn scene() -> &'static str {
-    static SCENE: OnceLock<String> = OnceLock::new();
-    SCENE.get_or_init(|| {
-        // Far away: a tall skyline, with aerials on the highest towers.
-        let mut skyline = String::new();
-        for (i, (x, w, h)) in [(0, 16, 34), (18, 12, 24), (32, 20, 42), (54, 14, 28), (70, 18, 38), (90, 12, 22), (104, 14, 30)]
-            .into_iter()
-            .enumerate()
-        {
-            skyline.push_str(&building(x, w, h, "#0d0d0d", "#151515", "#262626", i as i32 * 13));
-            if h > 36 {
-                skyline.push_str(&rect(x + w / 2, GROUND_Y - h - 6, 1, 6, "#0d0d0d"));
-                skyline.push_str(&rect(x + w / 2, GROUND_Y - h - 7, 1, 1, "#3a3a3a"));
-            }
-        }
-        // Nearer: shops and flats along the street, with awnings.
-        let mut street = String::new();
-        for (i, (x, w, h)) in [(0, 22, 28), (24, 14, 20), (40, 24, 32), (66, 16, 22), (84, 12, 26)]
-            .into_iter()
-            .enumerate()
-        {
-            street.push_str(&building(x, w, h, "#131313", "#1e1e1e", "#383838", 100 + i as i32 * 7));
-            street.push_str(&rect(x, GROUND_Y - 7, w, 2, "#1d1d1d"));
-            street.push_str(&rect(x + 2, GROUND_Y - 5, w - 4, 5, "#0a0a0a"));
-        }
-        // On the sidewalk: a street lamp and a tree.
-        let near = [
-            rect(14, GROUND_Y - 30, 1, 30, "#2e2e2e"),
-            rect(14, GROUND_Y - 30, 8, 1, "#2e2e2e"),
-            rect(20, GROUND_Y - 29, 5, 2, "#d8d8d8"),
-            rect(19, GROUND_Y - 27, 7, 1, "#ffffff22"),
-            rect(18, GROUND_Y - 26, 9, 1, "#ffffff16"),
-            rect(17, GROUND_Y - 25, 11, 1, "#ffffff0d"),
-            rect(60, GROUND_Y - 12, 2, 12, "#2a2a2a"),
-            rect(54, GROUND_Y - 24, 14, 6, "#1b1f1b"),
-            rect(52, GROUND_Y - 20, 18, 6, "#1b1f1b"),
-            rect(55, GROUND_Y - 15, 12, 4, "#1b1f1b"),
-        ]
-        .concat();
-        // The moon and a few stars.
-        let mut sky = String::new();
-        for (dy, from, to) in [(0, 2, 4), (1, 1, 5), (2, 0, 6), (3, 0, 6), (4, 0, 6), (5, 1, 5), (6, 2, 4)] {
-            sky.push_str(&rect(162 + from, 6 + dy, to - from + 1, 1, "#d6d6d6"));
-        }
-        for (x, y) in [(20, 6), (46, 12), (78, 5), (104, 10), (128, 4), (146, 14), (186, 18), (12, 20), (60, 3)] {
-            sky.push_str(&rect(x, y, 1, 1, "#4a4a4a"));
-        }
-        // The sidewalk with a joint between its slabs every 16 pixels, the
-        // curb, and the road with its lane marks every 24.
-        let joint = rect(0, GROUND_Y + 1, 1, 5, "#222222");
-        let lane = rect(0, GROUND_Y + 9, 10, 1, "#3a3a3a");
-        let cat: String = (0..FRAMES)
-            .map(|p| format!("<g class=\"wf wf{p}\">{}</g>", rects(&frame(p))))
-            .collect();
-        format!(
-            "<svg class=\"walker-svg\" viewBox=\"0 0 {VIEW_W} {VIEW_H}\" xmlns=\"http://www.w3.org/2000/svg\" shape-rendering=\"crispEdges\">\
-             {sky}\
-             <g class=\"w-far\">{}</g>\
-             <g class=\"w-mid\">{}</g>\
-             <g class=\"w-near\">{}</g>\
-             {}{}{}{}\
-             <g class=\"w-ground\">{}{}</g>\
-             <g transform=\"translate(89 {})\">{cat}</g>\
-             {}\
-             </svg>",
-            repeat(&skyline, 120, 3),
-            repeat(&street, 96, 4),
-            repeat(&near, 96, 4),
-            rect(0, GROUND_Y, VIEW_W, VIEW_H - GROUND_Y, "#151515"),
-            rect(0, GROUND_Y, VIEW_W, 1, "#303030"),
-            rect(0, GROUND_Y + 6, VIEW_W, 1, "#272727"),
-            rect(0, GROUND_Y + 7, VIEW_W, VIEW_H - GROUND_Y - 7, "#0c0c0c"),
-            repeat(&joint, 16, 16),
-            repeat(&lane, 24, 10),
-            GROUND_Y - H as i32,
-            edge_cover(),
-        )
-    })
+/// The colours of one scene.
+struct Palette {
+    /// Bands of sky from the top down; empty leaves the page's black.
+    sky: &'static [&'static str],
+    star: &'static str,
+    sun: &'static str,
+    far_wall: &'static str,
+    far_dark: &'static str,
+    far_lit: &'static str,
+    mid_wall: &'static str,
+    mid_dark: &'static str,
+    mid_lit: &'static str,
+    awning: &'static str,
+    shop: &'static str,
+    pole: &'static str,
+    lamp: &'static str,
+    glow: bool,
+    trunk: &'static str,
+    leaves: &'static str,
+    ground: &'static str,
+    edge: &'static str,
+    joint: &'static str,
+    curb: &'static str,
+    road: &'static str,
+    lane: &'static str,
 }
 
-/// The cat walking along the street.
+const NIGHT: Palette = Palette {
+    sky: &[],
+    star: "#4a4a4a",
+    sun: "#d6d6d6",
+    far_wall: "#0d0d0d",
+    far_dark: "#151515",
+    far_lit: "#262626",
+    mid_wall: "#131313",
+    mid_dark: "#1e1e1e",
+    mid_lit: "#383838",
+    awning: "#1d1d1d",
+    shop: "#0a0a0a",
+    pole: "#2e2e2e",
+    lamp: "#d8d8d8",
+    glow: true,
+    trunk: "#2a2a2a",
+    leaves: "#1b1f1b",
+    ground: "#151515",
+    edge: "#303030",
+    joint: "#222222",
+    curb: "#272727",
+    road: "#0c0c0c",
+    lane: "#3a3a3a",
+};
+
+const DAY: Palette = Palette {
+    sky: &["#4f86b4", "#5f95c0", "#72a4cb", "#88b4d4", "#a0c4dc"],
+    star: "#ffffff00",
+    sun: "#ffe58a",
+    far_wall: "#7f95aa",
+    far_dark: "#6f86a0",
+    far_lit: "#a8bfd4",
+    mid_wall: "#8f8a86",
+    mid_dark: "#6c7686",
+    mid_lit: "#c9d6e2",
+    awning: "#b5604f",
+    shop: "#5a5450",
+    pole: "#4a4a4e",
+    lamp: "#4a4a4e",
+    glow: false,
+    trunk: "#6a4b34",
+    leaves: "#4f8a4e",
+    ground: "#b9b4aa",
+    edge: "#d3cfc5",
+    joint: "#9e998f",
+    curb: "#8a857b",
+    road: "#55565c",
+    lane: "#d8d8d8",
+};
+
+fn build(c: &Palette, day: bool) -> String {
+    // Far away: a tall skyline, with aerials on the highest towers.
+    let mut skyline = String::new();
+    for (i, (x, w, h)) in [(0, 16, 34), (18, 12, 24), (32, 20, 42), (54, 14, 28), (70, 18, 38), (90, 12, 22), (104, 14, 30)]
+        .into_iter()
+        .enumerate()
+    {
+        skyline.push_str(&building(x, w, h, c.far_wall, c.far_dark, c.far_lit, i as i32 * 13));
+        if h > 36 {
+            skyline.push_str(&rect(x + w / 2, GROUND_Y - h - 6, 1, 6, c.far_wall));
+            skyline.push_str(&rect(x + w / 2, GROUND_Y - h - 7, 1, 1, if day { "#e8e8e8" } else { "#3a3a3a" }));
+        }
+    }
+    // Nearer: shops and flats along the street, with awnings.
+    let mut street = String::new();
+    for (i, (x, w, h)) in [(0, 22, 28), (24, 14, 20), (40, 24, 32), (66, 16, 22), (84, 12, 26)]
+        .into_iter()
+        .enumerate()
+    {
+        street.push_str(&building(x, w, h, c.mid_wall, c.mid_dark, c.mid_lit, 100 + i as i32 * 7));
+        street.push_str(&rect(x, GROUND_Y - 7, w, 2, c.awning));
+        street.push_str(&rect(x + 2, GROUND_Y - 5, w - 4, 5, c.shop));
+    }
+    // On the sidewalk: a street lamp and a tree.
+    let mut near = vec![
+        rect(14, GROUND_Y - 30, 1, 30, c.pole),
+        rect(14, GROUND_Y - 30, 8, 1, c.pole),
+        rect(20, GROUND_Y - 29, 5, 2, c.lamp),
+        rect(60, GROUND_Y - 12, 2, 12, c.trunk),
+        rect(54, GROUND_Y - 24, 14, 6, c.leaves),
+        rect(52, GROUND_Y - 20, 18, 6, c.leaves),
+        rect(55, GROUND_Y - 15, 12, 4, c.leaves),
+    ];
+    if c.glow {
+        near.push(rect(19, GROUND_Y - 27, 7, 1, "#ffffff22"));
+        near.push(rect(18, GROUND_Y - 26, 9, 1, "#ffffff16"));
+        near.push(rect(17, GROUND_Y - 25, 11, 1, "#ffffff0d"));
+    }
+    let near = near.concat();
+    // The sky: bands in the day, a few stars at night; the moon or the sun.
+    let mut sky = String::new();
+    if !c.sky.is_empty() {
+        let band = GROUND_Y / c.sky.len() as i32 + 1;
+        for (i, colour) in c.sky.iter().enumerate() {
+            sky.push_str(&rect(0, i as i32 * band, VIEW_W, band, colour));
+        }
+    }
+    for (dy, from, to) in [(0, 2, 4), (1, 1, 5), (2, 0, 6), (3, 0, 6), (4, 0, 6), (5, 1, 5), (6, 2, 4)] {
+        sky.push_str(&rect(132 + from, 1 + dy, to - from + 1, 1, c.sun));
+    }
+    if day {
+        // Short rays round the sun.
+        for (x, y) in [(135, 9), (127, 4), (143, 4)] {
+            sky.push_str(&rect(x, y, 1, 2, c.sun));
+        }
+    } else {
+        for (x, y) in [(20, 6), (46, 12), (78, 5), (104, 10), (128, 4), (146, 14), (186, 18), (12, 20), (60, 3)] {
+            sky.push_str(&rect(x, y, 1, 1, c.star));
+        }
+    }
+    // Clouds drifting by, in the day.
+    let mut clouds = String::new();
+    if day {
+        let cloud = [
+            rect(6, 12, 14, 3, "#f4f8fb"),
+            rect(9, 10, 8, 2, "#f4f8fb"),
+            rect(52, 20, 18, 3, "#f4f8fb"),
+            rect(56, 18, 9, 2, "#f4f8fb"),
+        ]
+        .concat();
+        clouds = format!("<g class=\"w-cloud\">{}</g>", repeat(&cloud, 100, 4));
+    }
+    // The sidewalk with a joint between its slabs every 16 pixels, the curb,
+    // and the road with its lane marks every 24.
+    let joint = rect(0, GROUND_Y + 1, 1, 5, c.joint);
+    let lane = rect(0, GROUND_Y + 8, 10, 1, c.lane);
+    let cat: String = (0..FRAMES)
+        .map(|p| format!("<g class=\"wf wf{p}\">{}</g>", rects(&frame(p))))
+        .collect();
+    format!(
+        "<svg class=\"walker-svg\" viewBox=\"0 0 {VIEW_W} {VIEW_H}\" xmlns=\"http://www.w3.org/2000/svg\" shape-rendering=\"crispEdges\">\
+         {sky}{clouds}\
+         <g class=\"w-far\">{}</g>\
+         <g class=\"w-mid\">{}</g>\
+         <g class=\"w-near\">{}</g>\
+         {}{}{}{}\
+         <g class=\"w-ground\">{}{}</g>\
+         <g transform=\"translate(89 {})\">{cat}</g>\
+         {}\
+         </svg>",
+        repeat(&skyline, 120, 3),
+        repeat(&street, 96, 4),
+        repeat(&near, 96, 4),
+        rect(0, GROUND_Y, VIEW_W, VIEW_H - GROUND_Y, c.ground),
+        rect(0, GROUND_Y, VIEW_W, 1, c.edge),
+        rect(0, GROUND_Y + 6, VIEW_W, 1, c.curb),
+        rect(0, GROUND_Y + 7, VIEW_W, VIEW_H - GROUND_Y - 7, c.road),
+        repeat(&joint, 16, 16),
+        repeat(&lane, 24, 10),
+        GROUND_Y - H as i32,
+        edge_cover(),
+    )
+}
+
+fn scene(day: bool) -> &'static str {
+    static NIGHT_SCENE: OnceLock<String> = OnceLock::new();
+    static DAY_SCENE: OnceLock<String> = OnceLock::new();
+    if day {
+        DAY_SCENE.get_or_init(|| build(&DAY, true))
+    } else {
+        NIGHT_SCENE.get_or_init(|| build(&NIGHT, false))
+    }
+}
+
+/// The cat walking along the street, at night or (with `day`) in daylight.
 #[component]
-pub fn WalkingCat() -> Element {
-    rsx! { div { class: "walker", dangerous_inner_html: scene() } }
+pub fn WalkingCat(#[props(default = false)] day: bool) -> Element {
+    rsx! { div { class: "walker", dangerous_inner_html: scene(day) } }
 }
 
 #[cfg(test)]
@@ -312,7 +423,7 @@ mod tests {
                 assert_ne!(frames[a], frames[b], "poses {a} and {b} look the same");
             }
         }
-        assert!(scene().contains("w-ground"));
+        assert!(scene(false).contains("w-ground") && scene(true).contains("w-cloud"));
     }
 
     #[test]

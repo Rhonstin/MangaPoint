@@ -1,6 +1,7 @@
 //! The app's screens.
 
 pub mod cat;
+mod browse;
 mod chapter_table;
 mod conversion;
 mod devices;

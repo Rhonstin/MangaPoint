@@ -42,6 +42,10 @@ pub struct DeviceProfile {
     /// Width of the page as the reader shows it, in pixels (portrait).
     pub width: u32,
     pub height: u32,
+    /// Pixels per inch of the screen: what turns its size in inches into the
+    /// size in pixels the pages are made at.
+    #[cfg_attr(feature = "serde", serde(default = "default_ppi"))]
+    pub ppi: u32,
     /// Ships with the app, so it cannot be edited or removed.
     #[cfg_attr(feature = "serde", serde(skip))]
     pub builtin: bool,
@@ -55,6 +59,14 @@ pub struct DeviceProfile {
 pub struct SupportTable {
     pub stock: Support,
     pub crosspoint: Support,
+}
+
+/// The density of the Xteink screens, used until a reader says otherwise.
+pub const DEFAULT_PPI: u32 = 220;
+
+#[cfg(feature = "serde")]
+fn default_ppi() -> u32 {
+    DEFAULT_PPI
 }
 
 #[cfg(feature = "serde")]
@@ -82,6 +94,7 @@ pub fn x4() -> DeviceProfile {
         name: "Xteink X4".into(),
         width: 480,
         height: 800,
+        ppi: 220,
         builtin: true,
         support: SupportTable {
             stock: Support::CommunityReported,
@@ -98,6 +111,7 @@ pub fn x4_pro() -> DeviceProfile {
         name: "Xteink X4 Pro".into(),
         width: 480,
         height: 800,
+        ppi: 220,
         builtin: true,
         support: SupportTable {
             stock: Support::Unverified,
@@ -114,6 +128,7 @@ pub fn x3() -> DeviceProfile {
         name: "Xteink X3".into(),
         width: 528,
         height: 792,
+        ppi: 256,
         builtin: true,
         support: SupportTable::UNKNOWN,
     }
@@ -195,6 +210,7 @@ impl DeviceProfile {
             name: name.chars().take(40).collect(),
             width,
             height,
+            ppi: DEFAULT_PPI,
             builtin: false,
             support: SupportTable::UNKNOWN,
         };
@@ -226,6 +242,18 @@ impl DeviceProfile {
             Firmware::Stock => self.support.stock,
             Firmware::CrossPoint => self.support.crosspoint,
         }
+    }
+
+    /// The screen's width and height in inches.
+    pub fn size_inches(&self) -> (f64, f64) {
+        let ppi = f64::from(self.ppi.max(1));
+        (f64::from(self.width) / ppi, f64::from(self.height) / ppi)
+    }
+
+    /// `2.18 x 3.64 in`.
+    pub fn inches_label(&self) -> String {
+        let (w, h) = self.size_inches();
+        format!("{w:.2} \u{d7} {h:.2} in")
     }
 
     /// `480 x 800`.
@@ -309,6 +337,16 @@ mod tests {
         assert_eq!(match_rank("PRO x4", "Xteink X4 Pro"), Some(1000));
         assert_eq!(match_rank("kobo", "Xteink X4"), None);
         assert_eq!(match_rank("", "Anything"), Some(0));
+    }
+
+    #[test]
+    fn screens_are_described_in_inches() {
+        let (w, h) = x4_pro().size_inches();
+        assert_eq!((format!("{w:.2}"), format!("{h:.2}")), ("2.18".into(), "3.64".into()));
+        assert_eq!(x4().inches_label(), "2.18 \u{d7} 3.64 in");
+        // The X3's 528x792 at 256 ppi is the 3.7 inch screen it is sold with.
+        let (w, h) = x3().size_inches();
+        assert!(((w * w + h * h).sqrt() - 3.7).abs() < 0.05);
     }
 
     #[test]

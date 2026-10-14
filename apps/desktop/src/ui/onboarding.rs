@@ -4,7 +4,6 @@
 
 use super::devices::DeviceAdder;
 use super::setup::Setup;
-use super::shelf::ShelfCat;
 use super::walker::WalkingCat;
 use super::widgets::{Icon, ProgressBar};
 use crate::backend;
@@ -98,14 +97,17 @@ pub fn Onboarding() -> Element {
 
     rsx! {
         div { class: "onboard",
-            div {
-                class: if forward() { "onboard-body from-right" } else { "onboard-body from-left" },
-                key: "{pos}",
-                {match shown {
-                    SetupStep::Engine => rsx! { EngineStep {} },
-                    SetupStep::Sources => rsx! { Setup { onboarding: true } },
-                    _ => rsx! { ReaderStep {} },
-                }}
+            // A new page is a new element (keyed by its step), so it slides in afresh.
+            for step_key in [pos] {
+                div {
+                    key: "{step_key}",
+                    class: if forward() { "onboard-body from-right" } else { "onboard-body from-left" },
+                    {match shown {
+                        SetupStep::Engine => rsx! { EngineStep {} },
+                        SetupStep::Sources => rsx! { Setup { onboarding: true } },
+                        _ => rsx! { ReaderStep {} },
+                    }}
+                }
             }
             div { class: "onboard-nav",
                 if pos > 0 {
@@ -176,7 +178,7 @@ fn ReaderStep() -> Element {
     let added = !devices.is_empty();
     rsx! {
         div { class: "onboard-head",
-            div { class: "step-hero", ShelfCat {} }
+            div { class: "step-hero", WalkingCat { day: true } }
             h1 { "Choose your reader" }
             p { class: "muted",
                 "Pages are made at the size of your reader\u{2019}s screen. Search for it, or type a name to add one of your own. "
