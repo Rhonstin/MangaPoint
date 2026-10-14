@@ -1,6 +1,7 @@
 //! First run: choose which sources to install.
 
 use super::ask_enable_browser;
+use super::scenes::SearchCat;
 use super::widgets::{Chip, Icon};
 use crate::backend;
 use crate::state::spawn_forever;
@@ -8,6 +9,23 @@ use crate::state::{AppState, Page};
 use dioxus::prelude::*;
 use library::Choice;
 use sources::{Requires, SourceManager};
+
+/// The sources step is done: whatever was not answered counts as skipped.
+pub fn finish_sources(state: AppState) {
+    let mut sources_state = state.sources.read().clone();
+    if let Some(client) = state.client() {
+        SourceManager::new(&*client).finish_onboarding(&mut sources_state);
+    }
+    let installed = sources_state
+        .choices
+        .values()
+        .filter(|c| **c == Choice::Install)
+        .count();
+    let mut s = state.sources;
+    s.set(sources_state);
+    state.save_sources();
+    tracing::info!("First-run setup finished: {installed} source(s) installed");
+}
 
 #[component]
 pub fn Setup(#[props(default = false)] onboarding: bool) -> Element {
@@ -40,24 +58,8 @@ pub fn Setup(#[props(default = false)] onboarding: bool) -> Element {
     let busy = *state.installing.read();
 
     let finish = move |_| {
-        let mut sources_state = state.sources.read().clone();
-        if let Some(client) = state.client() {
-            SourceManager::new(&*client).finish_onboarding(&mut sources_state);
-        }
-        let installed = sources_state
-            .choices
-            .values()
-            .filter(|c| **c == Choice::Install)
-            .count();
-        let mut s = state.sources;
-        s.set(sources_state);
-        state.save_sources();
-        tracing::info!("First-run setup finished: {installed} source(s) installed");
-        if onboarding {
-            super::onboarding::set_step(state, library::SetupStep::Reader);
-        } else {
-            state.go(Page::Search);
-        }
+        finish_sources(state);
+        state.go(Page::Search);
     };
 
     let rows = match &*offers.read() {
@@ -125,36 +127,30 @@ pub fn Setup(#[props(default = false)] onboarding: bool) -> Element {
         .any(|c| *c == Choice::Install);
 
     rsx! {
-        div { class: "rise-in",
+        div { class: "onboard-head",
+            if onboarding {
+                div { class: "step-hero", SearchCat {} }
+            }
             h1 { "Choose your sources" }
             p { class: "muted",
                 "Sources are the websites MangaPoint searches. Pick the ones you want; you can change this any time in Sources. "
                 "These all passed our full test (search, chapters and page images) when we last checked."
             }
-            if !loaded {
-                p { class: "muted", "Loading the list\u{2026}" }
+        }
+        div { class: "setup-tools",
+            if !installed_any {
+                span { class: "muted small", "Install at least one source to start searching." }
             }
-            div { class: "setup-list", {rows.into_iter()} }
-            div { class: "onboard-foot",
+            div { class: "grow" }
+            button {
+                class: "btn small",
+                disabled: busy,
+                onclick: install_recommended,
+                if busy { "Installing\u{2026}" } else { "Install all recommended" }
+            }
+            if !onboarding {
                 button {
-                    class: "btn",
-                    disabled: busy,
-                    onclick: install_recommended,
-                    if busy { "Installing\u{2026}" } else { "Install all recommended" }
-                }
-                if !installed_any {
-                    span { class: "muted small", "Install at least one source to start searching." }
-                }
-                div { class: "grow" }
-                if onboarding {
-                    button {
-                        class: "btn ghost onboard-skip",
-                        onclick: move |_| super::onboarding::set_step(state, library::SetupStep::Reader),
-                        "Skip this step"
-                    }
-                }
-                button {
-                    class: "btn primary",
+                    class: "btn primary small",
                     disabled: !installed_any,
                     onclick: finish,
                     Icon { name: "check", size: 15 }
@@ -162,5 +158,9 @@ pub fn Setup(#[props(default = false)] onboarding: bool) -> Element {
                 }
             }
         }
+        if !loaded {
+            p { class: "muted", "Loading the list\u{2026}" }
+        }
+        div { class: "setup-list", {rows.into_iter()} }
     }
 }

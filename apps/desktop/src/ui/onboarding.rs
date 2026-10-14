@@ -4,6 +4,7 @@
 
 use super::devices::DeviceAdder;
 use super::setup::Setup;
+use super::shelf::ShelfCat;
 use super::walker::WalkingCat;
 use super::widgets::{Icon, ProgressBar};
 use crate::backend;
@@ -11,79 +12,98 @@ use crate::state::{spawn_forever, AppState, BootState};
 use dioxus::prelude::*;
 use library::SetupStep;
 
-/// Which step is on show when it is not the one the setup has reached: the
-/// tabs let you go back to look at or change an earlier one.
+/// Which step is on show when it is not the one the setup has reached: Back
+/// goes to an earlier one, to look at or change it.
 type View = Signal<Option<SetupStep>>;
 
-/// Move first-run setup on to `step` and remember it. It never goes back, and
-/// the screen follows it.
-pub fn set_step(state: AppState, step: SetupStep) {
+/// Move first-run setup on to `step` and remember it. It never goes back.
+fn set_step(state: AppState, step: SetupStep) {
     let reached = state.settings.peek().setup_step;
     if step == SetupStep::Done || position(step) > position(reached) {
         let mut settings = state.settings;
         settings.write().setup_step = step;
         state.save_settings();
     }
-    if let Some(mut view) = try_consume_context::<View>() {
-        view.set(None);
-    }
 }
 
-const STEPS: [(SetupStep, &str); 3] = [
-    (SetupStep::Engine, "Engine"),
-    (SetupStep::Sources, "Sources"),
-    (SetupStep::Reader, "Reader"),
-];
+const STEPS: [SetupStep; 3] = [SetupStep::Engine, SetupStep::Sources, SetupStep::Reader];
 
 fn position(step: SetupStep) -> usize {
-    STEPS.iter().position(|(s, _)| *s == step).unwrap_or(STEPS.len())
+    STEPS.iter().position(|s| *s == step).unwrap_or(STEPS.len())
 }
 
 #[component]
 pub fn Onboarding() -> Element {
     let state = use_context::<AppState>();
     let reached = state.settings.read().setup_step;
-    let view: View = use_context_provider(|| Signal::new(None));
+    let mut view: View = use_signal(|| None);
+    // Which way the page came in from, so it slides in from that side.
+    let mut forward = use_signal(|| true);
     let shown = view().filter(|s| position(*s) <= position(reached)).unwrap_or(reached);
+    let pos = position(shown);
 
-    // The engine step is over as soon as the engine is up.
-    use_effect(move || {
-        let ready = matches!(*state.boot.read(), BootState::Ready);
-        if ready && state.settings.peek().setup_step == SetupStep::Engine {
-            set_step(state, SetupStep::Sources);
+    let engine_ready = matches!(*state.boot.read(), BootState::Ready);
+    let source_installed = state
+        .sources
+        .read()
+        .choices
+        .values()
+        .any(|c| *c == library::Choice::Install);
+    let reader_added = !state.settings.read().devices().is_empty();
+
+    let next_label = match shown {
+        SetupStep::Engine => "Next",
+        SetupStep::Sources if source_installed => "Next",
+        SetupStep::Sources => "Skip",
+        _ if reader_added => "Finish",
+        _ => "Skip",
+    };
+    let next_disabled = shown == SetupStep::Engine && !engine_ready;
+
+    let go_next = move |_| {
+        forward.set(true);
+        match shown {
+            SetupStep::Engine => set_step(state, SetupStep::Sources),
+            SetupStep::Sources => {
+                if source_installed {
+                    super::setup::finish_sources(state);
+                }
+                set_step(state, SetupStep::Reader);
+            }
+            _ => set_step(state, SetupStep::Done),
         }
-    });
+        view.set(None);
+    };
+    let go_back = move |_| {
+        if pos > 0 {
+            forward.set(false);
+            view.set(Some(STEPS[pos - 1]));
+        }
+    };
 
     rsx! {
         div { class: "onboard",
-            div { class: "onboard-tabs", role: "tablist",
-                for (i, (step, label)) in STEPS.iter().copied().enumerate() {
-                    {
-                        let locked = i > position(reached);
-                        let class = if step == shown { "onboard-tab on" } else if locked { "onboard-tab locked" } else { "onboard-tab" };
-                        rsx! {
-                            button {
-                                key: "{label}", class, role: "tab", disabled: locked,
-                                "aria-selected": "{step == shown}",
-                                onclick: {
-                                    let mut view = view;
-                                    move |_| view.set(Some(step))
-                                },
-                                span { class: "num",
-                                    if i < position(reached) { Icon { name: "check", size: 12 } } else { "{i + 1}" }
-                                }
-                                "{label}"
-                            }
-                        }
-                    }
-                }
-            }
-            div { class: "onboard-body", key: "{position(shown)}",
+            div {
+                class: if forward() { "onboard-body from-right" } else { "onboard-body from-left" },
+                key: "{pos}",
                 {match shown {
                     SetupStep::Engine => rsx! { EngineStep {} },
                     SetupStep::Sources => rsx! { Setup { onboarding: true } },
                     _ => rsx! { ReaderStep {} },
                 }}
+            }
+            div { class: "onboard-nav",
+                if pos > 0 {
+                    button { class: "btn ghost", onclick: go_back,
+                        Icon { name: "arrow-left", size: 15 }
+                        "Back"
+                    }
+                }
+                div { class: "grow" }
+                button { class: "btn primary", disabled: next_disabled, onclick: go_next,
+                    "{next_label}"
+                    if next_label == "Finish" { Icon { name: "check", size: 15 } } else { Icon { name: "chevron-right", size: 15 } }
+                }
             }
         }
     }
@@ -97,7 +117,7 @@ fn EngineStep() -> Element {
     let boot = state.boot.read().clone();
     let folder = crate::state::paths().suwayomi_dir().display().to_string();
     rsx! {
-        div { class: "engine-step rise-in",
+        div { class: "engine-step",
             WalkingCat {}
             {match boot {
                 BootState::NeedsEngine => rsx! {
@@ -138,33 +158,21 @@ fn ReaderStep() -> Element {
     let devices = state.settings.read().devices();
     let added = !devices.is_empty();
     rsx! {
-        div { class: "rise-in",
+        div { class: "onboard-head",
+            div { class: "step-hero", ShelfCat {} }
             h1 { "Choose your reader" }
             p { class: "muted",
                 "Pages are made at the size of your reader\u{2019}s screen. Search for it, or type a name to add one of your own. "
                 "You can add, change or remove readers any time in Settings."
             }
-            div { style: "margin: 18px 0 8px; min-height: 330px",
-                DeviceAdder { always_open: !added, on_added: move |_| {} }
-            }
+        }
+        div { class: "reader-pick",
+            DeviceAdder { always_open: !added, on_added: move |_| {} }
             if added {
                 div { class: "px-label", style: "margin-top: 16px", "Your readers" }
                 div { class: "pills",
                     for d in devices {
                         span { class: "pill on", key: "{d.id}", "{d.name}" }
-                    }
-                }
-            }
-            div { class: "onboard-foot",
-                div { class: "grow" }
-                button {
-                    class: if added { "btn primary" } else { "btn" },
-                    onclick: move |_| set_step(state, SetupStep::Done),
-                    if added {
-                        Icon { name: "check", size: 15 }
-                        "Finish"
-                    } else {
-                        "Skip for now"
                     }
                 }
             }
