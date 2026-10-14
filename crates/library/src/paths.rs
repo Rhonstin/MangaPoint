@@ -79,6 +79,14 @@ impl AppPaths {
     pub fn exports_file(&self) -> PathBuf {
         self.root.join("exports.json")
     }
+    /// The download queue: what is waiting, and what has finished.
+    pub fn queue_file(&self) -> PathBuf {
+        self.root.join("queue.json")
+    }
+    /// An export that has not finished, so it can go on after the app was closed.
+    pub fn export_job_file(&self) -> PathBuf {
+        self.root.join("export_job.json")
+    }
     pub fn presets_file(&self) -> PathBuf {
         self.root.join("presets.json")
     }

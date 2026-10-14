@@ -5,7 +5,7 @@ mod chapter_table;
 mod conversion;
 mod devices;
 mod download_dialog;
-mod downloads_page;
+mod tasks_page;
 mod export_page;
 mod hang;
 mod icons;
@@ -19,15 +19,15 @@ mod search;
 mod settings;
 mod setup;
 mod shelf;
+mod sidebar;
 mod sources_page;
 mod widgets;
 pub mod work;
 mod workspace;
 
 use crate::backend;
-use crate::logic::plural;
 use crate::state::spawn_forever;
-use crate::state::{AppState, BootState, JobKind, Modal, ModalAction, Page};
+use crate::state::{AppState, BootState, Modal, ModalAction, Page};
 use dioxus::desktop::tao::event::{Event, WindowEvent};
 use dioxus::desktop::use_wry_event_handler;
 use dioxus::prelude::*;
@@ -131,25 +131,32 @@ fn Shell() -> Element {
             }
             NavItem { page: Page::Search, label: "Search", icon: "search" }
             NavItem { page: Page::Library, label: "Library", icon: "book-open" }
-            NavItem {
-                page: Page::Downloads, label: "Downloads", icon: "download",
-                badge: (in_queue > 0).then(|| in_queue.to_string()),
-            }
             NavItem { page: Page::Export, label: "Export", icon: "file-down" }
             div { class: "nav-spacer" }
+            sidebar::SidebarJobs {}
+            NavItem {
+                page: Page::Tasks, label: "Tasks", icon: "list-checks",
+                badge: (in_queue > 0).then(|| in_queue.to_string()),
+            }
             NavItem { page: Page::Sources, label: "Sources", icon: "layers" }
             NavItem { page: Page::Settings, label: "Settings", icon: "settings" }
         }
         main { class: "content",
             div { class: "page",
-                JobBar {}
-                DownloadBar {}
+                // The search stays built while another page is open, so coming
+                // back to it is instant and it is as it was left.
+                div { class: if page == Page::Search { "keep" } else { "keep gone" },
+                    search::SearchPage {}
+                }
+                div { class: if page == Page::Library { "keep" } else { "keep gone" },
+                    library_page::LibraryPage {}
+                }
                 {match page {
                     Page::Setup => rsx! { setup::Setup {} },
-                    Page::Search => rsx! { search::SearchPage {} },
+                    Page::Search => rsx! {},
                     Page::Series => rsx! { workspace::WorkspacePage {} },
-                    Page::Library => rsx! { library_page::LibraryPage {} },
-                    Page::Downloads => rsx! { downloads_page::DownloadsPage {} },
+                    Page::Library => rsx! {},
+                    Page::Tasks => rsx! { tasks_page::TasksPage {} },
                     Page::Plan => rsx! { plan_page::PlanPage {} },
                     Page::Export => rsx! { export_page::ExportPage {} },
                     Page::Sources => rsx! { sources_page::SourcesPage {} },
@@ -171,6 +178,12 @@ fn NavItem(page: Page, label: &'static str, icon: &'static str, badge: Option<St
         .read()
         .as_ref()
         .is_some_and(|w| w.origin == Page::Library);
+    // On the Export screen the series that was open waits to be put back.
+    let open_from = if current == Page::Export {
+        state.parked_workspace.read().as_ref().map(|w| w.origin)
+    } else {
+        state.workspace.read().as_ref().map(|w| w.origin)
+    };
     let active = current == page
         || (page == Page::Search && current == Page::Series && !opened_from_library)
         || (page == Page::Library && current == Page::Series && opened_from_library)
@@ -181,122 +194,19 @@ fn NavItem(page: Page, label: &'static str, icon: &'static str, badge: Option<St
         "nav-item"
     };
     rsx! {
-        button { class: "{class}", onclick: move |_| state.go(page),
+        button { class: "{class}",
+            onclick: move |_| {
+                // A series left open is where you come back to; pressing the
+                // tab it belongs to while looking at it goes to the list.
+                match open_from {
+                    Some(origin) if origin == page && current == Page::Series => state.close_series(page),
+                    Some(origin) if origin == page && current != Page::Series => state.go(Page::Series),
+                    _ => state.go(page),
+                }
+            },
             Icon { name: icon, size: 17 }
             span { class: "grow", "{label}" }
             if let Some(count) = badge { span { class: "nav-badge", "{count}" } }
-        }
-    }
-}
-
-/// The download queue at a glance, above every screen except its own page.
-#[component]
-fn DownloadBar() -> Element {
-    let state = use_context::<AppState>();
-    if *state.page.read() == Page::Downloads {
-        return rsx! {};
-    }
-    let queue = state.queue.read().clone();
-    let running = queue.running().cloned();
-    let (_, waiting, chapters_left) = queue.counts();
-    let paused = queue.paused;
-    if running.is_none() && !(paused && waiting > 0) {
-        return rsx! {};
-    }
-    rsx! {
-        div { class: "jobbar downloadbar",
-            div { class: "row",
-                Icon { name: "download", size: 16 }
-                div { class: "grow",
-                    if let Some(batch) = &running {
-                        strong { "{batch.title}" }
-                        span { class: "muted", " · {batch.progress.label()}" }
-                        if let Some(v) = batch.progress.pages_per_second() {
-                            span { class: "muted small", " · about {v:.1} pages a second" }
-                        }
-                        if waiting > 0 { span { class: "muted small", " · {waiting} more in line" } }
-                    } else {
-                        strong { "Downloads are paused" }
-                        span { class: "muted", " · {plural(chapters_left, \"chapter\")} waiting" }
-                    }
-                }
-                if paused {
-                    button { class: "btn small", onclick: move |_| work::set_queue_paused(state, false),
-                        Icon { name: "play", size: 14 } "Resume"
-                    }
-                }
-                button { class: "btn small", onclick: move |_| state.go(Page::Downloads), Icon { name: "download", size: 15 } "Downloads" }
-            }
-            if let Some(batch) = &running {
-                div { style: "margin-top: 8px", ProgressBar { fraction: Some(batch.progress.fraction()) } }
-            }
-        }
-    }
-}
-
-/// The running (or just finished) export, shown above every screen.
-#[component]
-fn JobBar() -> Element {
-    let state = use_context::<AppState>();
-    let job = state.job.read().clone();
-    let Some(job) = job else { return rsx! {} };
-    let running = job.result.is_none();
-    let verb = match job.kind {
-        JobKind::Export => "Exporting",
-    };
-    let kind = job.kind;
-    rsx! {
-        div { class: "jobbar",
-            div { class: "row",
-                div { class: "grow",
-                    strong { "{job.title}" }
-                    {match &job.result {
-                        None => rsx! { span { class: "muted", " · {verb} · {job.progress.label()}" } },
-                        Some(Ok(summary)) => rsx! {
-                            span { class: "chip ok", style: "margin-left: 8px", "Done" }
-                            span { class: "muted small", " {summary}" }
-                        },
-                        Some(Err(e)) => rsx! {
-                            span { class: "chip bad", style: "margin-left: 8px", "Stopped" }
-                            span { class: "muted small", " {e}" }
-                        },
-                    }}
-                }
-                if running {
-                    button {
-                        class: "btn small",
-                        disabled: job.progress.stopping,
-                        onclick: move |_| work::cancel_job(state),
-                        Icon { name: "x", size: 14 }
-                        if job.progress.stopping { "Stopping…" } else { "Cancel" }
-                    }
-                } else {
-                    if kind == JobKind::Export && job.result.as_ref().is_some_and(|r| r.is_ok()) {
-                        button {
-                            class: "btn small",
-                            onclick: move |_| state.go(Page::Library),
-                            Icon { name: "book-open", size: 14 }
-                            "Library"
-                        }
-                    }
-                    button {
-                        class: "btn small",
-                        onclick: move |_| {
-                            let mut j = state.job;
-                            j.set(None);
-                        },
-                        "Dismiss"
-                    }
-                }
-            }
-            if running {
-                div { style: "margin-top: 8px",
-                    ProgressBar { fraction: Some(job.progress.fraction()) }
-                }
-                if let Some(note) = &job.progress.note {
-                    p { class: "muted small", style: "margin: 6px 0 0", "{note}" }
-                }
-            }
         }
     }
 }
@@ -362,6 +272,7 @@ fn run_action(state: AppState, action: ModalAction) {
                 work::delete_downloads(state, series_ids)
             }
             ModalAction::DeletePreset { id } => presets::delete_preset(state, id),
+            ModalAction::DeleteExport { record_id } => work::delete_export(state, record_id),
             ModalAction::DeleteExportedFile { record_id, path } => {
                 work::delete_exported_file(state, record_id, path)
             }

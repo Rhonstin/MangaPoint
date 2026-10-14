@@ -51,6 +51,9 @@ pub async fn boot(state: AppState) {
             }
             info!("Ready");
             boot.set(BootState::Ready);
+            // Downloads that were waiting when the app closed carry on.
+            crate::ui::work::ensure_queue_running(state);
+            crate::ui::work::restore_export(state);
         }
         Err(message) => {
             error!("{message}");

@@ -64,7 +64,7 @@ fn main() {
         .with_window_icon(Icon::from_rgba(rgba, w, h).ok())
         .with_title("MangaPoint")
         .with_inner_size(LogicalSize::new(1480.0, 940.0))
-        .with_min_inner_size(LogicalSize::new(860.0, 560.0));
+        .with_min_inner_size(LogicalSize::new(1280.0, 720.0));
     let mut config = Config::new().with_window(window).with_menu(None);
     // Developer switch: let tools such as an automated UI test connect to the
     // app's web view. Off unless MANGAPOINT_DEBUG_PORT is set; the port only

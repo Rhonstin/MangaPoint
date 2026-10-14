@@ -6,7 +6,7 @@ mod downloads;
 mod overview;
 pub(super) mod preview;
 
-use super::widgets::{cover_key, Chip, Cover, EmptyState, Icon};
+use super::widgets::{cover_key, Chip, Cover, EmptyState, Icon, NoCover};
 use super::work::{add_open_series_to_library, load_saved_cover, saved_cover_key};
 use crate::state::{AppState, Modal, ModalAction, Page};
 use dioxus::prelude::*;
@@ -73,17 +73,20 @@ pub fn WorkspacePage() -> Element {
         .unwrap_or_default();
 
     rsx! {
-        button { class: "btn ghost small", onclick: move |_| state.go(origin),
+        button { class: "btn ghost small", onclick: move |_| state.close_series(origin),
             Icon { name: "arrow-left", size: 16 }
             "{back_label}"
         }
         div { class: "spacer" }
-        if !in_library { div { class: "page-head",
-            if let Some(key) = cover {
-                div { style: "width: 72px; flex: none; border-radius: 8px; overflow: hidden", Cover { key_id: key } }
+        if !in_library { div { class: "overview found",
+            div { class: "overview-cover",
+                if let Some(key) = cover { Cover { key_id: key } } else { NoCover {} }
             }
-            div { class: "grow",
-                h1 { "{ws.title}" }
+            div { class: "overview-body",
+                div { class: "overview-title",
+                    h1 { "{ws.title}" }
+                    SeriesActions { series_id: ws.series_id.clone(), title: ws.title.clone() }
+                }
                 div { class: "row wrap",
                     for (i, name) in source_chips.iter().enumerate() {
                         Chip {
@@ -97,7 +100,6 @@ pub fn WorkspacePage() -> Element {
                     }
                 }
             }
-            SeriesActions { series_id: ws.series_id.clone(), title: ws.title.clone() }
         } }
 
         // The overview of a series in your library, and below it every chapter.

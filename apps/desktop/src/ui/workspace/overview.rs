@@ -1,8 +1,7 @@
 //! Tab 0: what the series is, and what you have of it.
 
-use crate::logic::describe_settings;
 use crate::state::AppState;
-use crate::ui::widgets::{Chip, Cover, EmptyState, Icon, NoCover};
+use crate::ui::widgets::{Busy, Chip, Cover, EmptyState, Icon, NoCover};
 use crate::ui::work::{ensure_series_info, load_saved_cover, saved_cover_key};
 use dioxus::prelude::*;
 
@@ -10,6 +9,8 @@ use dioxus::prelude::*;
 pub fn OverviewTab() -> Element {
     let state = use_context::<AppState>();
     let mut expanded = use_signal(|| false);
+    // Whether the description is cut short, measured on the page.
+    let mut cut_short = use_signal(|| false);
 
     let Some(ws) = state.workspace.read().clone() else {
         return rsx! {};
@@ -39,7 +40,8 @@ pub fn OverviewTab() -> Element {
         .as_ref()
         .map(|i| i.description.clone())
         .unwrap_or_default();
-    let long_text = description.chars().count() > 360;
+    let desc_id = format!("desc-{}", series.id);
+    let measure_id = desc_id.clone();
     let by_line = info
         .as_ref()
         .map(|i| match (i.author.is_empty(), i.artist.is_empty()) {
@@ -77,14 +79,37 @@ pub fn OverviewTab() -> Element {
                     }
                 }
                 if !description.is_empty() {
-                    p { class: if expanded() || !long_text { "description" } else { "description clamp" }, "{description}" }
-                    if long_text {
-                        button { class: "btn ghost small", onclick: move |_| expanded.set(!expanded()),
+                    for key in [description.len()] {
+                        p {
+                            key: "{key}",
+                            id: "{desc_id}",
+                            class: if expanded() { "description" } else { "description clamp" },
+                            onmounted: {
+                                let measure_id = measure_id.clone();
+                                move |_| {
+                                    let measure_id = measure_id.clone();
+                                    spawn(async move {
+                                        tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+                                        let script = format!(
+                                            "const e = document.getElementById('{measure_id}'); dioxus.send(!!e && e.scrollHeight > e.clientHeight + 1);"
+                                        );
+                                        let mut measure = document::eval(&script);
+                                        if let Ok(cut) = measure.recv::<bool>().await {
+                                            cut_short.set(cut);
+                                        }
+                                    });
+                                }
+                            },
+                            "{description}"
+                        }
+                    }
+                    if cut_short() || expanded() {
+                        span { class: "read-more", onclick: move |_| expanded.set(!expanded()),
                             if expanded() { "Show less" } else { "Read more" }
                         }
                     }
                 } else if loading {
-                    p { class: "muted", style: "margin-top: 12px", span { class: "spin", Icon { name: "loader-circle", size: 14 } } " Loading the details…" }
+                    p { class: "muted", style: "margin-top: 12px", Busy { label: "Loading the details…" } }
                 } else if info.is_none() {
                     p { class: "muted small", style: "margin-top: 12px",
                         "The details of this series haven't been loaded yet. They need the catalog to be running."
@@ -97,14 +122,6 @@ pub fn OverviewTab() -> Element {
                 if series.chapters.is_empty() {
                     p { class: "muted", style: "margin: 14px 0 0",
                         "Not downloaded yet. Tick chapters below to download them."
-                    }
-                }
-                div { class: "meta-block",
-                    h3 { "Converted as" }
-                    div { class: "row wrap",
-                        for part in describe_settings(&series.settings).split(" · ").map(str::to_string) {
-                            Chip { key: "{part}", text: part.clone() }
-                        }
                     }
                 }
             }

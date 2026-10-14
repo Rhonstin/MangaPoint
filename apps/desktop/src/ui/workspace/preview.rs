@@ -2,7 +2,7 @@
 //! PDF viewer, with the original beside each converted page.
 use super::crop_editor::SourceCanvas;
 use crate::state::{AppState, Shot, Zoom};
-use crate::ui::widgets::{EmptyState, Icon};
+use crate::ui::widgets::{Busy, EmptyState, Icon};
 use crate::ui::work::{prepare_preview, schedule_preview, select_preview_page};
 use converter::plan::Source;
 use dioxus::prelude::*;
@@ -303,8 +303,7 @@ pub fn PreviewTab() -> Element {
                 div { class: "editor-toolbar-actions",
                     span { class: "editor-status",
                         if p.busy {
-                            span { class: "spin", Icon { name: "loader-circle", size: 13 } }
-                            " Updating…"
+                            Busy { label: "Updating…", size: 28 }
                         } else {
                             Icon { name: "check", size: 13 }
                             " Ready"

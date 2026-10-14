@@ -1,9 +1,9 @@
 //! The Library: the series you keep (downloaded or saved for later). Exported
 //! files are listed on the Downloads page.
 
-use super::widgets::{open_folder, Cover, EmptyState, Icon, NoCover};
+use super::widgets::{open_folder, Chip, Cover, EmptyState, Icon, NoCover};
 use super::work::{
-    ensure_series_info, load_saved_cover, open_export, open_plan, open_series_from_library,
+    ensure_series_info, fill_chapter_totals, load_saved_cover, open_export, open_plan, open_series_from_library,
     saved_cover_key,
 };
 use crate::logic::{human_bytes, library_order, plural, LibrarySort, LibraryView};
@@ -26,11 +26,14 @@ pub fn LibraryPage() -> Element {
     // library changes.
     use_effect(move || {
         let _catalog_ready = state.services.read().is_some();
+        // How many chapters each series has in all, looked up in the background.
+        fill_chapter_totals(state);
         let series: Vec<(String, bool, bool)> = state
             .library
             .read()
             .series
             .iter()
+            .filter(|s| !s.is_sample())
             .map(|s| {
                 (
                     s.id.clone(),
@@ -50,7 +53,14 @@ pub fn LibraryPage() -> Element {
     let mut library = state.library.read().clone();
     library.series.retain(|s| !s.is_sample());
     let total = library.total_bytes();
-    let order = library_order(&library.series, view(), sort(), &filter.read());
+    let exported: HashSet<String> = state
+        .exports
+        .read()
+        .records
+        .iter()
+        .map(|r| r.series_id.clone())
+        .collect();
+    let order = library_order(&library.series, view(), sort(), &filter.read(), &exported);
     let downloaded_count = library
         .series
         .iter()
@@ -58,7 +68,6 @@ pub fn LibraryPage() -> Element {
         .count();
     let saved_count = library.series.len() - downloaded_count;
     let queue = state.queue.read().clone();
-    let (running, waiting, chapters_left) = queue.counts();
 
     // The ticked series that are still shown, in the order shown.
     let chosen: Vec<&library::DownloadedSeries> = order
@@ -142,17 +151,6 @@ pub fn LibraryPage() -> Element {
             }
         }
 
-        if running + waiting > 0 {
-            div { class: "lib-strip", onclick: move |_| state.go(Page::Downloads),
-                Icon { name: "download", size: 16 }
-                span { class: "grow",
-                    "Downloading: {plural(chapters_left, \"chapter\")} to go"
-                    if waiting > 0 { " · {waiting} more in line" }
-                }
-                span { class: "muted small", "See the queue" }
-            }
-        }
-
         if library.series.is_empty() {
             EmptyState {
                 title: "Your library is empty",
@@ -191,6 +189,12 @@ pub fn LibraryPage() -> Element {
                         message: "No series in this view has that in its name. Try fewer letters.",
                         compact: true,
                     }
+                } else if view() == LibraryView::Exported {
+                    EmptyState {
+                        title: "Nothing exported yet",
+                        message: "Series you export for your reader show up here.",
+                        shelf: true,
+                    }
                 } else if view() == LibraryView::Saved {
                     EmptyState {
                         title: "Nothing saved for later",
@@ -216,11 +220,25 @@ pub fn LibraryPage() -> Element {
                         let cover_key = saved_cover_key(&s.id);
                         let chapters = s.chapters.len();
                         let size = human_bytes(s.bytes());
-                        let sub = if chapters == 0 {
-                            "Not downloaded yet".to_string()
-                        } else {
-                            format!("{} · {size}", plural(chapters, "chapter"))
+                        let sub = match (chapters, s.chapter_total) {
+                            (0, Some(total)) => format!("{} · not downloaded", plural(total, "chapter")),
+                            (0, None) => "Not downloaded yet".to_string(),
+                            (done, Some(total)) if total >= done => format!("{done} of {total} chapters · {size}"),
+                            _ => format!("{} · {size}", plural(chapters, "chapter")),
                         };
+                        let about = s
+                            .info
+                            .as_ref()
+                            .map(|i| {
+                                let mut parts: Vec<String> = Vec::new();
+                                if !i.status.is_empty() {
+                                    parts.push(i.status.clone());
+                                }
+                                parts.extend(i.genres.iter().take(2).cloned());
+                                parts.join(" · ")
+                            })
+                            .unwrap_or_default();
+                        let is_exported = exported.contains(&s.id);
                         let queued = queue.series_has_work(&s.id);
                         let menu_id = s.id.clone();
                         let menu_open = menu().as_deref() == Some(s.id.as_str());
@@ -265,9 +283,6 @@ pub fn LibraryPage() -> Element {
                                         }
                                     },
                                     if has_cover { Cover { key_id: cover_key } } else { NoCover {} }
-                                    span { class: if chapters == 0 { "poster-badge saved" } else { "poster-badge" },
-                                        if chapters == 0 { "Saved" } else { "{chapters} ch" }
-                                    }
                                     if queued {
                                         span { class: "poster-badge queued", title: "Downloading",
                                             Icon { name: "download", size: 12 }
@@ -324,6 +339,19 @@ pub fn LibraryPage() -> Element {
                                 }
                                 strong { class: "poster-title", title: "{s.title}", "{s.title}" }
                                 span { class: "muted small", "{sub}" }
+                                if !about.is_empty() {
+                                    span { class: "muted small poster-about", title: "{about}", "{about}" }
+                                }
+                                div { class: "poster-tags",
+                                    if chapters > 0 {
+                                        Chip { text: "Downloaded", kind: Some("ok".to_string()) }
+                                    } else {
+                                        Chip { text: "Saved for later" }
+                                    }
+                                    if is_exported {
+                                        Chip { text: "Exported", kind: Some("accent".to_string()) }
+                                    }
+                                }
                             }
                         }
                     }

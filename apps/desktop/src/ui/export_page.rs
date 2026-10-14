@@ -205,6 +205,17 @@ fn PresetsPanel() -> Element {
         .is_some_and(|e| e.preset.settings != series.settings);
     let series_id = series.id.clone();
     let settings_now = series.settings.clone();
+    // How this series was converted the last time it was exported, if that
+    // differs from how it is set now.
+    let last_export = state
+        .exports
+        .read()
+        .records
+        .iter()
+        .rev()
+        .find(|r| r.series_id == series.id && r.settings.is_some())
+        .cloned()
+        .filter(|r| r.settings.as_ref() != Some(&series.settings));
     let rename_key = format!(
         "{}-{nonce}",
         current.as_ref().map_or("none", |e| e.preset.id.as_str())
@@ -226,6 +237,19 @@ fn PresetsPanel() -> Element {
 
     rsx! {
         Panel { title: "Presets", icon: "layers", id: "presets", height: 190,
+            if let Some(record) = last_export {
+                {
+                    let (sid, preset, settings) = (series_id.clone(), record.preset_id.clone(), record.settings.clone().unwrap_or_default());
+                    rsx! {
+                        div { class: "px-note",
+                            span { class: "muted small", "Not what the last export of this series used." }
+                            button { class: "btn small", onclick: move |_| apply_to_series(state, &sid, preset.clone(), settings.clone()),
+                                Icon { name: "rotate-ccw", size: 14 } "Use the last export's settings"
+                            }
+                        }
+                    }
+                }
+            }
             div { class: "px-list",
                 for e in entries.iter() {
                     {
@@ -713,7 +737,7 @@ fn ExportFooter() -> Element {
                 class: "btn primary big", style: "margin-top: 10px",
                 disabled: chapters == 0 || busy || (opts.grouping == GroupingChoice::EveryN && !every_n_valid),
                 onclick: move |_| start_export_plan(state),
-                if exporting { Icon { name: "loader-circle", size: 18 } "Exporting…" }
+                if exporting { "Exporting…" }
                 else if busy { "Something else is running…" }
                 else if chapters == 0 { "Nothing to export yet" }
                 else { Icon { name: "file-down", size: 18 } "Export {plural(series_count, \"series\")}" }

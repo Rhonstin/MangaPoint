@@ -42,6 +42,9 @@ pub fn open_series_from_search(state: AppState, ranked: RankedSeries) {
             .as_ref()
             .is_some_and(|w| w.series_id == series_id);
         if still_here {
+            if let Some(loaded) = &result {
+                remember_chapter_total(state, &series_id, loaded.merged.len());
+            }
             let mut chapters = state.chapters;
             chapters.set(match result {
                 Some(loaded) => ChaptersState::Ready(Rc::new(loaded)),
@@ -93,6 +96,9 @@ pub fn open_series_from_library(state: AppState, series_id: &str) {
             .as_ref()
             .is_some_and(|w| w.series_id == id);
         if still_here {
+            if let Some(Ok(loaded)) = &result {
+                remember_chapter_total(state, &id, loaded.merged.len());
+            }
             let mut chapters = state.chapters;
             chapters.set(match result {
                 Some(Ok(loaded)) => ChaptersState::Ready(Rc::new(loaded)),
@@ -208,6 +214,64 @@ pub fn saved_sources_of(members: &[ScoredMember]) -> Vec<library::SavedSource> {
         .collect()
 }
 
+/// Remember how many chapters a library series has in all, to show next to
+/// how many are downloaded.
+pub fn remember_chapter_total(state: AppState, series_id: &str, total: usize) {
+    if total == 0 {
+        return;
+    }
+    let changed = {
+        let mut library = state.library;
+        let changed = library.write().set_chapter_total(series_id, total);
+        changed
+    };
+    if changed {
+        state.save_library();
+    }
+}
+
+static TOTALS_BUSY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static TOTALS_TRIED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// Look up, quietly and one after another, how many chapters each library
+/// series has, for the ones that do not know yet. Each is tried once a run.
+pub fn fill_chapter_totals(state: AppState) {
+    use std::sync::atomic::Ordering;
+    if state.client().is_none() || TOTALS_BUSY.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    spawn_forever(async move {
+        loop {
+            let next = {
+                let tried = TOTALS_TRIED.lock().map(|t| t.clone()).unwrap_or_default();
+                state
+                    .library
+                    .peek()
+                    .series
+                    .iter()
+                    .find(|s| {
+                        s.chapter_total.is_none()
+                            && !s.sources.is_empty()
+                            && !s.is_sample()
+                            && !tried.contains(&s.id)
+                    })
+                    .map(|s| (s.id.clone(), s.title.clone(), s.sources.clone()))
+            };
+            let Some((id, title, sources)) = next else {
+                break;
+            };
+            if let Ok(mut tried) = TOTALS_TRIED.lock() {
+                tried.push(id.clone());
+            }
+            let members = members_from_saved(&sources, &title);
+            if let Some(loaded) = load_chapters(state, members).await {
+                remember_chapter_total(state, &id, loaded.merged.len());
+            }
+        }
+        TOTALS_BUSY.store(false, Ordering::SeqCst);
+    });
+}
+
 /// Put a series in the library without downloading anything.
 pub fn add_to_library(state: AppState, title: &str, sources: Vec<library::SavedSource>) {
     let (defaults, preset) = state.new_series_defaults();
@@ -251,6 +315,9 @@ pub fn add_open_series_to_library(state: AppState) {
             .unwrap_or_default(),
     };
     add_to_library(state, &ws.title, sources);
+    if let ChaptersState::Ready(loaded) = &*state.chapters.peek() {
+        remember_chapter_total(state, &ws.series_id, loaded.merged.len());
+    }
 }
 
 /// The key a series' saved cover is kept under in `state.covers`.
@@ -289,7 +356,7 @@ pub fn load_saved_cover(state: AppState, series_id: &str) {
         };
         let url = format!("data:{mime};base64,{}", STANDARD.encode(&bytes));
         let mut covers = state.covers;
-        covers.write().insert(key, url);
+        covers.write().insert(key, url.into());
     });
 }
 
@@ -301,7 +368,7 @@ pub fn ensure_series_info(state: AppState, series_id: &str) {
     let Some(series) = state.library.peek().find(series_id).cloned() else {
         return;
     };
-    if series.info.is_some() || state.info_busy.peek().contains(series_id) {
+    if series.info.is_some() || series.is_sample() || state.info_busy.peek().contains(series_id) {
         return;
     }
     let Some(client) = state.client() else {

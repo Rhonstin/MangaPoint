@@ -2675,6 +2675,8 @@ dependencies = [
  "pipeline",
  "rfd",
  "search",
+ "serde",
+ "serde_json",
  "sha2",
  "sources",
  "sysinfo",

@@ -6,12 +6,11 @@ use crate::queue::QueuedChapter;
 use crate::state::{AppState, ChaptersState, Modal, ModalAction, Page, PendingDownload};
 use crate::ui::chapter_table::{ChapterGrid, GridRow};
 use crate::ui::search::run_search;
-use crate::ui::widgets::{Chip, EmptyState, Icon, ProgressBar};
+use crate::ui::widgets::{Chip, EmptyState, Icon, Loading, ProgressBar};
 use crate::ui::work::{ask_download, downloaded_keys, merged_key, open_export, retry_batch};
 use dioxus::prelude::*;
 use pipeline::SourceChoice;
 use search::missing_numbers;
-use std::collections::HashSet;
 
 #[component]
 pub fn ChaptersTab() -> Element {
@@ -52,9 +51,8 @@ pub fn ChaptersTab() -> Element {
         }
         ChaptersState::Loading => {
             return rsx! {
-                div { class: "card row",
-                    Icon { name: "loader-circle", size: 18 }
-                    span { class: "muted", "Loading chapters from your sources…" }
+                div { class: "card",
+                    Loading { label: "Loading chapters from your sources…" }
                 }
             };
         }
@@ -206,8 +204,6 @@ pub fn ChaptersTab() -> Element {
             .collect()
     };
     let current_sort = (sort_key, sort_desc);
-    let numbers_all = numbers.clone();
-    let numbers_latest = numbers.clone();
     let numbers_range = numbers.clone();
     let missing_text = {
         let first: Vec<String> = missing.iter().take(12).map(|n| n.to_string()).collect();
@@ -280,7 +276,7 @@ pub fn ChaptersTab() -> Element {
                 }
             }
             if working || failed_count > 0 {
-                button { class: "btn", onclick: move |_| state.go(Page::Downloads),
+                button { class: "btn", onclick: move |_| state.go(Page::Tasks),
                     Icon { name: "download", size: 16 } "All downloads"
                 }
             }
@@ -315,9 +311,6 @@ pub fn ChaptersTab() -> Element {
                     oninput: move |e| table.write().filter = e.value(),
                 }
             }
-            button { class: "btn small", onclick: move |_| selected.set((0..numbers_all.len()).collect()), "All" }
-            button { class: "btn small", onclick: move |_| selected.set(logic::latest(&numbers_latest, 10).into_iter().collect()), "Latest 10" }
-            button { class: "btn small", onclick: move |_| selected.set(HashSet::new()), "None" }
             form {
                 class: "row", style: "gap: 6px; margin-left: auto",
                 onsubmit: move |e| {
@@ -420,7 +413,7 @@ pub fn ChaptersTab() -> Element {
                     }
                 }
                 if to_download == 0 && queued_picked > 0 {
-                    button { class: "btn primary", onclick: move |_| state.go(Page::Downloads),
+                    button { class: "btn primary", onclick: move |_| state.go(Page::Tasks),
                         Icon { name: "download", size: 16 } "View downloads"
                     }
                 } else if to_download == 0 {

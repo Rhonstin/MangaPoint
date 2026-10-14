@@ -140,6 +140,37 @@ pub fn delete_exported_file(state: AppState, record_id: String, path: String) {
     }
 }
 
+/// Delete every file of one export from disk (the ones already gone are
+/// simply forgotten) and take it off the list.
+pub fn delete_export(state: AppState, record_id: String) {
+    let files: Vec<String> = state
+        .exports
+        .peek()
+        .records
+        .iter()
+        .find(|r| r.id == record_id)
+        .map(|r| r.files.iter().map(|f| f.path.clone()).collect())
+        .unwrap_or_default();
+    let mut failed = 0;
+    for path in files {
+        let there = !path.starts_with("http") && std::path::Path::new(&path).exists();
+        if there {
+            if let Err(e) = library::delete_exported_file(std::path::Path::new(&path)) {
+                warn!("Could not delete {path}: {e}");
+                failed += 1;
+                continue;
+            }
+            info!("Deleted {path}");
+        }
+        let mut exports = state.exports;
+        exports.write().forget_file(&record_id, &path);
+    }
+    state.save_exports();
+    if failed > 0 {
+        state.error(format!("{failed} file(s) could not be deleted."));
+    }
+}
+
 /// Forget an exported file that is no longer on disk.
 pub fn forget_exported_file(state: AppState, record_id: String, path: String) {
     let mut exports = state.exports;

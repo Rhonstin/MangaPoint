@@ -68,6 +68,8 @@ pub struct ExportJob {
     /// Rebuild chapters even when cached pages exist, for diagnostics and
     /// first-export benchmarks. Newly converted pages still refresh caches.
     pub force_conversion: bool,
+    /// Open every file with the series cover (or, without one, its first page).
+    pub cover: bool,
 }
 
 impl ExportJob {
@@ -88,6 +90,7 @@ impl ExportJob {
             work_dir,
             max_pages_per_file: DEFAULT_MAX_PAGES_PER_FILE,
             force_conversion: false,
+            cover: true,
         }
     }
 }
@@ -229,7 +232,11 @@ pub async fn export_series(
         .buffered(chapter_concurrency());
 
     // The series' own cover opens every file, so the reader lists it by its cover.
-    let cover = cover_page(files, &job.series.id, &opts).await;
+    let cover = if job.cover {
+        cover_page(files, &job.series.id, &chapters[0].key, &opts).await
+    } else {
+        None
+    };
     let mut open: Option<(XtcBuilder, Volume)> = None;
     let mut open_group = usize::MAX;
     while let Some((group, ci, images)) = converted.next().await {
@@ -323,14 +330,22 @@ pub async fn export_series(
 }
 
 /// The saved cover of a series as one page for the device: the whole picture,
-/// fitted to the screen, uncropped. `None` if it has no cover or it cannot be
+/// fitted to the screen, uncropped. A series without a cover uses the first
+/// page of its first chapter. `None` if there is neither, or it cannot be
 /// read, in which case the file simply starts with the first chapter.
 async fn cover_page(
     files: &LibraryFiles,
     series_id: &str,
+    first_chapter: &str,
     opts: &ProcessOptions,
 ) -> Option<Vec<u8>> {
-    let bytes = tokio::fs::read(files.cover_path(series_id)).await.ok()?;
+    let bytes = match tokio::fs::read(files.cover_path(series_id)).await {
+        Ok(bytes) if !bytes.is_empty() => bytes,
+        _ => {
+            let first = files.page_files(series_id, first_chapter).into_iter().next()?;
+            tokio::fs::read(first).await.ok()?
+        }
+    };
     let mut opts = opts.clone();
     opts.layout = converter::process::Layout::Manga;
     opts.crop = converter::process::CropMode::Full;

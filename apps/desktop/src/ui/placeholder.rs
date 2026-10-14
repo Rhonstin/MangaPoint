@@ -39,25 +39,6 @@ fn glyph(c: char) -> [&'static str; 7] {
     }
 }
 
-/// A cat sitting with its back to us, looking at the moon.
-/// `#` fur, `o` shadow, `e` eye, `n` nose, `w` light fur.
-const CAT: [&str; 14] = [
-    ".#.......#....",
-    ".##.....##....",
-    ".###...###....",
-    ".#########....",
-    ".#e#####e#....",
-    ".#####n###....",
-    "..#######w....",
-    "..########....",
-    ".###########.#",
-    ".#####w#####.#",
-    ".####www####.#",
-    ".###########.#",
-    ".oo#######oo##",
-    "..oo.....oo...",
-];
-
 struct Canvas {
     out: String,
 }
@@ -109,19 +90,10 @@ impl Canvas {
         }
     }
 
+    /// The mascot, as it is in the logo, sitting on the ground.
     fn cat(&mut self, left: i32, top: i32) {
-        for (row, line) in CAT.iter().enumerate() {
-            for (col, c) in line.chars().enumerate() {
-                let color = match c {
-                    '#' => "#9d9d9d",
-                    'w' => "#d4d4d4",
-                    'o' => "#5c5c5c",
-                    'e' => "#f6d34a",
-                    'n' => "#e59aa6",
-                    _ => continue,
-                };
-                self.rect(left + col as i32, top + row as i32, 1, 1, color);
-            }
+        for (x, y, color) in super::cat::mascot_pixels() {
+            self.rect(left + x as i32, top + y as i32, 1, 1, color);
         }
     }
 }
@@ -178,7 +150,7 @@ fn build() -> String {
     for (x, y) in [(5, 41), (33, 38), (9, 46), (36, 47)] {
         c.rect(x, y, 1, 1, "#e6d96a");
     }
-    c.cat(13, 40);
+    c.cat(2, 22);
     // The name, over the sky.
     c.text("MANGA", 4);
     c.text("POINT", 13);
@@ -228,6 +200,6 @@ mod tests {
         for c in "MANGAPOINT".chars() {
             assert!(glyph(c).iter().all(|row| row.len() == 5), "{c}");
         }
-        assert!(CAT.iter().all(|row| row.len() == 14));
+        assert!(super::super::cat::mascot_pixels().len() > 200);
     }
 }
