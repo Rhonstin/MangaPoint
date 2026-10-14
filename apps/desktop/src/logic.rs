@@ -636,6 +636,27 @@ impl SearchFilters {
         !self.types.is_empty() || !self.genres.is_empty()
     }
 
+    /// What to show on the folded pills: each choice made, or "All types" and
+    /// "All genres" while there is none.
+    pub fn pills(&self) -> Vec<String> {
+        let mut out: Vec<String> = if self.types.is_empty() {
+            vec!["All types".into()]
+        } else {
+            self.types.clone()
+        };
+        match self.explicit {
+            ExplicitFilter::Show => {}
+            ExplicitFilter::Hide => out.push("No explicit".into()),
+            ExplicitFilter::Only => out.push("Explicit only".into()),
+        }
+        if self.genres.is_empty() {
+            out.push("All genres".into());
+        } else {
+            out.extend(self.genres.iter().cloned());
+        }
+        out
+    }
+
     /// Short words for each choice made, for the pills.
     pub fn labels(&self) -> Vec<String> {
         let mut out: Vec<String> = self.types.clone();
@@ -1402,6 +1423,9 @@ mod library_view_tests {
         assert!(only.allows(None, true) && !only.allows(Some(&tags(&["Action"])), false));
         assert_eq!(manhwa_action.labels(), ["Manhwa", "Action"]);
         assert_eq!(hide.labels(), ["No explicit"]);
+        assert_eq!(none.pills(), ["All types", "All genres"]);
+        assert_eq!(hide.pills(), ["All types", "No explicit", "All genres"]);
+        assert_eq!(manhwa_action.pills(), ["Manhwa", "Action"]);
     }
 
     #[test]

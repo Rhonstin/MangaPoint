@@ -79,7 +79,7 @@ pub fn SearchPage() -> Element {
             })
             .collect();
         let pending = if filters.needs_tags() {
-            (0..view.ranked.len().min(60))
+            (0..view.ranked.len().min(TAG_LOOKUPS))
                 .filter(|&i| !tags.contains_key(&key(i)))
                 .count()
         } else {
@@ -87,10 +87,11 @@ pub fn SearchPage() -> Element {
         };
         (kept, pending)
     };
-    // Types and genres are read from the details of the results, which are
-    // looked up once a filter needs them.
+    // Types and genres are read from the details of the results. They are
+    // looked up in the background as soon as a search is done, so switching
+    // the filters afterwards only shows what is already loaded.
     use_effect(move || {
-        if !state.search_filters.read().needs_tags() {
+        if state.search.read().searching {
             return;
         }
         let wanted: Vec<(String, i64)> = state
@@ -98,7 +99,7 @@ pub fn SearchPage() -> Element {
             .read()
             .ranked
             .iter()
-            .take(60)
+            .take(TAG_LOOKUPS)
             .map(|s| (s.best().candidate.source_id.clone(), s.best().candidate.manga_id))
             .filter(|k| !state.search_tags.peek().contains_key(k))
             .collect();
@@ -106,11 +107,12 @@ pub fn SearchPage() -> Element {
             fetch_tags(state, wanted);
         }
     });
-    let filter_labels = filters.labels();
-    let filter_button = if filter_labels.is_empty() {
+    let filter_pills = filters.pills();
+    let chosen = filters.labels().len();
+    let filter_button = if chosen == 0 {
         "Filters".to_string()
     } else {
-        format!("Filters · {}", filter_labels.len())
+        format!("Filters · {chosen}")
     };
     let included: Vec<SourceInfo> = sources
         .iter()
@@ -171,7 +173,7 @@ pub fn SearchPage() -> Element {
                 div { class: "searchbox-row",
                     div { class: "pills-flow",
                         span { class: "ghost-sort", "Sort: {sort.label()}" }
-                        for label in filter_labels.iter() {
+                        for label in filter_pills.iter() {
                             span { class: "ghost-pill", key: "{label}", "{label}" }
                         }
                         for source in included.iter() {
@@ -226,7 +228,7 @@ pub fn SearchPage() -> Element {
                                 "{filter_button}"
                                 Icon { name: "chevron-down", size: 14 }
                             }
-                            for label in filter_labels.iter() {
+                            for label in filter_pills.iter() {
                                 span { class: "src-pill fil-pill", key: "{label}", "{label}" }
                             }
                             button {
@@ -347,8 +349,7 @@ fn SourcePanel(
     rsx! {
         div { class: "popover",
             div { class: "popover-head",
-                strong { class: "grow", "Search these sources" }
-                span { class: "muted small", "{on} of {total}" }
+                span { class: "muted small grow", "{on} of {total} sources" }
             }
             div { class: "popover-quick",
                 button { class: "pill small", r#type: "button", onclick: move |_| on_change.call(Vec::new()), "All" }
@@ -402,6 +403,9 @@ fn SourcePanel(
     }
 }
 
+/// How many results get their genres looked up.
+const TAG_LOOKUPS: usize = 150;
+
 /// Look up the genres of some search results (a few at a time), so the type
 /// and genre filters can tell them apart. A series whose details cannot be
 /// read is kept with none, so it is not asked for again.
@@ -427,7 +431,7 @@ fn fetch_tags(state: AppState, wanted: Vec<(String, i64)>) {
     }
     spawn_forever(async move {
         futures_util::stream::iter(todo)
-            .for_each_concurrent(4, |key| {
+            .for_each_concurrent(6, |key| {
                 let client = client.clone();
                 async move {
                     let tags = match tokio::time::timeout(
@@ -470,11 +474,13 @@ fn FilterPanel(pending: usize, on_close: EventHandler<()>) -> Element {
     let state = use_context::<AppState>();
     let filters = state.search_filters.read().clone();
     let empty = filters.is_empty();
+    let (for_all_types, for_all_genres) = (filters.clone(), filters.clone());
     rsx! {
         div { class: "popover filter-panel",
             div { class: "popover-head",
-                strong { class: "grow", "Narrow the results" }
-                if pending > 0 { span { class: "muted small", "checking {pending}…" } }
+                span { class: "muted small grow",
+                    if pending > 0 { "Checking {pending} more results…" } else { "Types and genres come from each series' details." }
+                }
                 button { class: "btn small ghost", r#type: "button", disabled: empty,
                     onclick: move |_| set_filters(state, SearchFilters::default()),
                     "Clear"
@@ -483,6 +489,10 @@ fn FilterPanel(pending: usize, on_close: EventHandler<()>) -> Element {
             div { class: "filter-group",
                 span { class: "filter-label", "Type" }
                 div { class: "filter-pills",
+                    button { r#type: "button", class: if filters.types.is_empty() { "pill small on" } else { "pill small" },
+                        onclick: move |_| set_filters(state, SearchFilters { types: Vec::new(), ..for_all_types.clone() }),
+                        "All"
+                    }
                     for t in SERIES_TYPES {
                         {
                             let next = SearchFilters { types: toggled(&filters.types, t), ..filters.clone() };
@@ -516,6 +526,10 @@ fn FilterPanel(pending: usize, on_close: EventHandler<()>) -> Element {
             div { class: "filter-group",
                 span { class: "filter-label", "Genres" }
                 div { class: "filter-pills",
+                    button { r#type: "button", class: if filters.genres.is_empty() { "pill small on" } else { "pill small" },
+                        onclick: move |_| set_filters(state, SearchFilters { genres: Vec::new(), ..for_all_genres.clone() }),
+                        "All"
+                    }
                     for g in COMMON_GENRES {
                         {
                             let next = SearchFilters { genres: toggled(&filters.genres, g), ..filters.clone() };
@@ -530,8 +544,7 @@ fn FilterPanel(pending: usize, on_close: EventHandler<()>) -> Element {
                     }
                 }
             }
-            div { class: "row", style: "margin-top: 12px",
-                span { class: "muted small grow", "Types and genres are read from each series' details." }
+            div { class: "row", style: "margin-top: 12px; justify-content: flex-end",
                 button { class: "btn primary small", r#type: "button", onclick: move |_| on_close.call(()), "Done" }
             }
         }
