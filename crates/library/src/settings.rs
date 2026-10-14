@@ -233,15 +233,16 @@ pub enum ExportMethod {
     Usb,
     /// Over Wi-Fi, to the reader's own file transfer.
     WiFi,
-    /// Nothing sends files to it: they go to a folder on this computer.
-    None,
 }
 
 /// What belongs to one reader about getting files onto it. Kept per reader.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ReaderSetup {
-    pub method: ExportMethod,
+    /// Files can be sent over a cable or from its SD card.
+    pub usb: bool,
+    /// Files can be sent over Wi-Fi.
+    pub wifi: bool,
     /// The reader's address on Wi-Fi, for [`ExportMethod::WiFi`].
     pub wifi_url: Option<String>,
     /// The folder files go into on the reader, for USB and Wi-Fi.
@@ -252,10 +253,33 @@ pub struct ReaderSetup {
     pub formats: Vec<String>,
 }
 
+impl ReaderSetup {
+    /// The ways this reader takes files, USB first.
+    pub fn methods(&self) -> Vec<ExportMethod> {
+        let mut all = Vec::new();
+        if self.usb {
+            all.push(ExportMethod::Usb);
+        }
+        if self.wifi {
+            all.push(ExportMethod::WiFi);
+        }
+        all
+    }
+
+    /// Whether `method` is one of the ways this reader takes files.
+    pub fn allows(&self, method: ExportMethod) -> bool {
+        match method {
+            ExportMethod::Usb => self.usb,
+            ExportMethod::WiFi => self.wifi,
+        }
+    }
+}
+
 impl Default for ReaderSetup {
     fn default() -> Self {
         Self {
-            method: ExportMethod::Usb,
+            usb: true,
+            wifi: false,
             wifi_url: None,
             folder: "Manga".into(),
             reader_dir: None,
@@ -562,18 +586,18 @@ mod tests {
         s.export.webdav_url = Some("http://192.168.3.3".into());
         // Without a setup of its own, the older settings are what it starts from.
         let first = s.reader_setup();
-        assert_eq!(first.method, ExportMethod::Usb);
+        assert_eq!(first.methods(), [ExportMethod::Usb]);
         assert_eq!(first.folder, "Books");
         assert_eq!(first.wifi_url.as_deref(), Some("http://192.168.3.3"));
         assert_eq!(first.formats, ["XTC", "XTCH"]);
         s.update_reader_setup(|r| {
-            r.method = ExportMethod::WiFi;
+            r.wifi = true;
             r.folder = "Manga".into();
         });
-        assert_eq!(s.reader_setup().method, ExportMethod::WiFi);
+        assert_eq!(s.reader_setup().methods(), [ExportMethod::Usb, ExportMethod::WiFi]);
         // Another reader is not affected.
         s.device = "my-reader".into();
-        assert_eq!(s.reader_setup().method, ExportMethod::Usb);
+        assert_eq!(s.reader_setup().methods(), [ExportMethod::Usb]);
         // It is kept in the file and comes back.
         let json = serde_json::to_string(&s).unwrap();
         let back: Settings = serde_json::from_str(&json).unwrap();

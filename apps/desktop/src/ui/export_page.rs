@@ -5,7 +5,7 @@
 //! folds away to give the others room.
 
 use super::conversion::ConversionControls;
-use super::devices::DeviceSelect;
+use super::devices::ReaderPicker;
 use super::presets;
 use super::widgets::{pick_folder, Chip, Cover, Icon, NoCover};
 use super::work::{
@@ -438,7 +438,6 @@ fn EditPanel() -> Element {
 
     rsx! {
         Panel { title: "Edit", icon: "sliders-horizontal", id: "edit",
-            DeviceSelect {}
             CropSection { identity: "{chapter}/{key}", draft, crop_key: key.clone(), saved }
             ConversionControls {
                 value: series.settings.clone(),
@@ -629,27 +628,17 @@ fn ChaptersPanel() -> Element {
 
 // ---- right: where it goes and how it is split ------------------------
 
-/// Open Settings on the reader's own page (how it receives files).
-fn open_reader_settings(state: AppState) {
-    let mut section = state.settings_section;
-    section.set(crate::state::SettingsSection::Reader);
-    state.go(crate::state::Page::Settings);
-}
-
 #[component]
 fn SendPanel() -> Element {
     let state = use_context::<AppState>();
-    let starts_on_usb = matches!(state.export_opts.peek().target, TargetChoice::Reader)
-        && state.settings.peek().reader_setup().method == library::ExportMethod::Usb;
+    let starts_on_usb = matches!(state.export_opts.peek().target, TargetChoice::Usb);
     let mut drives = use_signal(move || if starts_on_usb { removable_drives() } else { Vec::new() });
     // Drives are only looked for while the reader is sent to by USB, every few
     // seconds, and not at all once this screen is left (the loop ends with it).
     use_future(move || async move {
         loop {
             tokio::time::sleep(Duration::from_secs(3)).await;
-            let usb = matches!(state.export_opts.peek().target, TargetChoice::Reader)
-                && state.settings.peek().reader_setup().method == library::ExportMethod::Usb;
-            if !usb {
+            if !matches!(state.export_opts.peek().target, TargetChoice::Usb) {
                 continue;
             }
             if let Ok(now) = tokio::task::spawn_blocking(removable_drives).await {
@@ -674,15 +663,37 @@ fn SendPanel() -> Element {
     let reader_dir = setup.reader_dir.clone();
     let reader_text = reader_dir.as_ref().map(|d| d.display().to_string());
     let reader_there = reader_dir.as_ref().is_some_and(|d| d.exists());
-    let on_reader = matches!(opts.target, TargetChoice::Reader);
+    let on_reader = !matches!(opts.target, TargetChoice::Folder);
+    // The way of reaching the reader: the one chosen if this reader takes it.
+    let via = match opts.target {
+        TargetChoice::WiFi if setup.wifi => library::ExportMethod::WiFi,
+        _ if setup.usb => library::ExportMethod::Usb,
+        _ => library::ExportMethod::WiFi,
+    };
+    let both = setup.usb && setup.wifi;
+    // Another reader may not take the way that was chosen: follow what it does take.
+    use_effect(move || {
+        let setup = state.settings.read().reader_setup();
+        let target = state.export_opts.read().target.clone();
+        let fixed = match target {
+            TargetChoice::Usb if !setup.usb => Some(TargetChoice::WiFi),
+            TargetChoice::WiFi if !setup.wifi => Some(TargetChoice::Usb),
+            _ => None,
+        };
+        if let Some(fixed) = fixed {
+            let mut opts = state.export_opts;
+            opts.write().target = fixed;
+        }
+    });
     let wifi_url = setup.wifi_url.clone().unwrap_or_default();
     let wifi_url_to_test = wifi_url.clone();
-    let reader_folder = setup.folder.clone();
-    let method = setup.method;
     let every_n_valid = opts.every_n.trim().parse::<usize>().is_ok_and(|n| n >= 1);
 
     rsx! {
-        Panel { title: "Send to", icon: "file-down", id: "send", height: 440,
+        Panel { title: "Send to", icon: "file-down", id: "send", height: 560,
+            div { class: "px-label", "Reader" }
+            ReaderPicker {}
+            div { class: "px-label", style: "margin-top: 16px", "Send to" }
             div { class: "seg stack",
                 button {
                     class: if matches!(opts.target, TargetChoice::Folder) { "on" } else { "" },
@@ -693,7 +704,7 @@ fn SendPanel() -> Element {
                     class: if on_reader { "on" } else { "" },
                     onclick: move |_| {
                         if !on_reader {
-                            export_opts.write().target = TargetChoice::Reader;
+                            export_opts.write().target = if setup.usb { TargetChoice::Usb } else { TargetChoice::WiFi };
                             spawn(async move {
                                 if let Ok(now) = tokio::task::spawn_blocking(removable_drives).await {
                                     drives.set(now);
@@ -724,7 +735,19 @@ fn SendPanel() -> Element {
             }
             if on_reader {
                 div { class: "reader-box",
-                    {match method {
+                    if both {
+                        div { class: "seg", style: "margin-bottom: 10px",
+                            button {
+                                class: if via == library::ExportMethod::Usb { "on" } else { "" },
+                                onclick: move |_| export_opts.write().target = TargetChoice::Usb, "USB"
+                            }
+                            button {
+                                class: if via == library::ExportMethod::WiFi { "on" } else { "" },
+                                onclick: move |_| export_opts.write().target = TargetChoice::WiFi, "Wi-Fi"
+                            }
+                        }
+                    }
+                    {match via {
                         library::ExportMethod::Usb => rsx! {
                             div { class: "folder-pick",
                                 span { class: "grow folder-path", title: "{reader_text.clone().unwrap_or_default()}",
@@ -803,19 +826,7 @@ fn SendPanel() -> Element {
                                 None => rsx! { div { class: "reader-note", "Switch on the reader's Wi-Fi file transfer first." } },
                             }}
                         },
-                        library::ExportMethod::None => rsx! {
-                            div { class: "reader-note", "This reader has no way of receiving files set up." }
-                            button { class: "btn small", style: "margin-top: 8px", onclick: move |_| open_reader_settings(state),
-                                Icon { name: "hard-drive", size: 14 } "Set it up in Your reader"
-                            }
-                        },
                     }}
-                    if method != library::ExportMethod::None {
-                        div { class: "reader-note",
-                            "Files go into the “{reader_folder}” folder. "
-                            button { class: "link-btn", onclick: move |_| open_reader_settings(state), "Change" }
-                        }
-                    }
                 }
             }
 

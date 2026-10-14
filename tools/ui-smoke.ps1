@@ -40,12 +40,13 @@ try {
         $after = Eval "document.querySelectorAll('.px-panel.collapsed').length"
         if ($after -le $before) { throw "still $before collapsed panels" }
     }
-    Check 'a built-in reader is copied when its size changes, and the lock keeps the shape' {
-        Mouse-Click '.size-boxes .btn.icon'
-        Eval "(() => { const el = document.querySelector('.size-boxes input'); const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set; set.call(el, '240'); el.dispatchEvent(new Event('change', { bubbles: true })); return true; })()" | Out-Null
-        Wait-Until "[...document.querySelectorAll('.size-boxes input')].map(i => i.value).join('x') === '240x400'" 15 'the boxes to read 240x400'
-        $reader = Eval "document.querySelector('.panel-section select').selectedOptions[0].textContent"
-        if ($reader -notmatch 'My reader') { throw "the chosen reader is '$reader'" }
+    Check 'the Export page lists the readers, with no size boxes, and New device goes to Settings' {
+        Wait-Until "document.querySelectorAll('.px-scroll .px-preset').length >= 1" 15 'the reader list'
+        if (Eval "document.querySelectorAll('.size-boxes').length") { throw 'size boxes are on the Export screen' }
+        Mouse-Click '.px-new' 'New device'
+        Wait-Until "document.querySelector('.size-boxes.labelled') !== null" 15 'the reader page in Settings'
+        Mouse-Click '.nav-item' 'export'
+        Wait-Until "document.querySelector('.export-screen') !== null" 30 'the Export screen'
     }
     Check 'a column bar can be dragged' {
         $w0 = Eval "document.querySelector('.export-side.left').getBoundingClientRect().width"

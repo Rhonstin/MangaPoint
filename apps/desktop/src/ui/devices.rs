@@ -4,7 +4,8 @@ use super::widgets::{Help, Icon};
 use crate::state::AppState;
 use device_profiles::{DeviceError, DeviceProfile, Firmware};
 use dioxus::prelude::*;
-use library::{ExportMethod, ReaderSetup};
+use crate::state::{Page, SettingsSection};
+use library::ReaderSetup;
 
 /// The file types a reader can be said to open.
 const FORMAT_OPTIONS: [&str; 2] = ["XTC", "XTCH"];
@@ -41,12 +42,10 @@ fn FormatTags(value: Vec<String>, on_change: EventHandler<Vec<String>>) -> Eleme
                     let name = v.clone();
                     let rest: Vec<String> = value.iter().filter(|x| *x != v).cloned().collect();
                     rsx! {
-                        span { class: "tag", key: "{name}",
+                        span { class: "tag", key: "{name}", role: "button", title: "Remove {name}",
+                            onclick: move |_| on_change.call(rest.clone()),
                             "{name}"
-                            button { class: "tag-x", r#type: "button", title: "Remove {name}",
-                                onclick: move |_| on_change.call(rest.clone()),
-                                Icon { name: "x", size: 11 }
-                            }
+                            span { class: "tag-x", Icon { name: "x", size: 11 } }
                         }
                     }
                 }
@@ -94,6 +93,27 @@ fn FormatTags(value: Vec<String>, on_change: EventHandler<Vec<String>>) -> Eleme
     }
 }
 
+/// Options of which any number can be on, looking like the one-of-several
+/// rows but each with a box that is ticked when it is on.
+#[component]
+fn MultiSeg(items: Vec<(String, bool)>, on_toggle: EventHandler<usize>) -> Element {
+    rsx! {
+        div { class: "seg multi", role: "group",
+            for (i, (label, on)) in items.iter().enumerate() {
+                button {
+                    key: "{label}", r#type: "button", role: "checkbox", "aria-checked": "{on}",
+                    class: if *on { "on" } else { "" },
+                    onclick: move |_| on_toggle.call(i),
+                    span { class: "mark",
+                        if *on { Icon { name: "check", size: 12 } }
+                    }
+                    "{label}"
+                }
+            }
+        }
+    }
+}
+
 /// A name for a new reader that no other reader has.
 fn unused_name(existing: &[DeviceProfile]) -> String {
     let taken = |name: &str| {
@@ -110,45 +130,6 @@ fn unused_name(existing: &[DeviceProfile]) -> String {
     name
 }
 
-/// Change the chosen reader, if the result is allowed. Changing a built-in
-/// reader makes a reader of your own with the change, and chooses it. A
-/// refused change says why and puts the old value back on the screen.
-fn edit_current(state: AppState, mut nonce: Signal<u32>, edit: impl FnOnce(&mut DeviceProfile)) {
-    let mut settings = state.settings;
-    let result = {
-        let mut st = settings.write();
-        let others = st.devices();
-        let base = st.device_profile();
-        if base.builtin {
-            DeviceProfile::custom(&others, &unused_name(&others), base.width, base.height).and_then(
-                |mut copy| {
-                    edit(&mut copy);
-                    copy.validate(&others)?;
-                    st.device = copy.id.clone();
-                    st.custom_devices.push(copy);
-                    Ok(())
-                },
-            )
-        } else {
-            let mut updated = base;
-            edit(&mut updated);
-            updated.validate(&others).map(|()| {
-                if let Some(slot) = st.custom_devices.iter_mut().find(|d| d.id == updated.id) {
-                    *slot = updated;
-                }
-            })
-        }
-    };
-    match result {
-        Ok(()) => state.save_settings(),
-        Err(e) => {
-            state.error(e.to_string());
-            let again = *nonce.peek() + 1;
-            nonce.set(again);
-        }
-    }
-}
-
 /// The other edge of a screen when one edge is typed and the shape is kept.
 fn keep_shape(typed: u32, old_typed: u32, old_other: u32) -> u32 {
     if old_typed == 0 {
@@ -157,69 +138,12 @@ fn keep_shape(typed: u32, old_typed: u32, old_other: u32) -> u32 {
     (typed as f64 * old_other as f64 / old_typed as f64).round() as u32
 }
 
-/// The width and height of the chosen reader as two boxes, and a lock that
-/// keeps the shape while one of them changes.
-#[component]
-fn ReaderSize(nonce: Signal<u32>, on_change: Option<EventHandler<()>>) -> Element {
-    let state = use_context::<AppState>();
-    let mut locked = use_signal(|| false);
-    let current = state.settings.read().device_profile();
-    let key = format!("{}-{}", current.id, nonce());
-    let (w0, h0) = (current.width, current.height);
-    let changed = move || {
-        if let Some(handler) = on_change {
-            handler.call(());
-        }
-    };
-    let lock_class = if locked() { "btn icon on" } else { "btn icon" };
-    let lock_icon = if locked() { "lock" } else { "lock-open" };
-    let lock_title = if locked() {
-        "The shape is kept while you change a size. Click to unlock."
-    } else {
-        "Lock the shape, so changing one size changes the other"
-    };
-    let pressed = if locked() { "true" } else { "false" };
-    rsx! {
-        div { class: "size-boxes",
-            input {
-                key: "w-{key}",
-                r#type: "number", min: "{device_profiles::MIN_EDGE}", max: "{device_profiles::MAX_EDGE}",
-                value: "{current.width}", title: "Width in pixels", "aria-label": "Width in pixels",
-                onchange: move |e| {
-                    let w = e.value().trim().parse::<u32>().unwrap_or(0);
-                    let h = if locked() { keep_shape(w, w0, h0) } else { h0 };
-                    edit_current(state, nonce, |d| { d.width = w; d.height = h; });
-                    changed();
-                },
-            }
-            span { class: "muted", "\u{d7}" }
-            input {
-                key: "h-{key}",
-                r#type: "number", min: "{device_profiles::MIN_EDGE}", max: "{device_profiles::MAX_EDGE}",
-                value: "{current.height}", title: "Height in pixels", "aria-label": "Height in pixels",
-                onchange: move |e| {
-                    let h = e.value().trim().parse::<u32>().unwrap_or(0);
-                    let w = if locked() { keep_shape(h, h0, w0) } else { w0 };
-                    edit_current(state, nonce, |d| { d.width = w; d.height = h; });
-                    changed();
-                },
-            }
-            button { class: "{lock_class}", title: "{lock_title}", "aria-pressed": "{pressed}",
-                onclick: move |_| locked.set(!locked()),
-                Icon { name: lock_icon, size: 16 }
-            }
-        }
-    }
-}
-
 /// What the reader form holds before it is saved.
 #[derive(Clone, PartialEq, Debug)]
 struct ReaderDraft {
     name: String,
     width: u32,
     height: u32,
-    /// The preset new series start from; empty for the default.
-    preset: String,
     firmware: Firmware,
     /// How the reader receives files, and the file types it opens.
     setup: ReaderSetup,
@@ -253,14 +177,8 @@ fn apply_reader(settings: &mut library::Settings, draft: &ReaderDraft) -> Result
         }
         base.id.clone()
     };
-    let id_for_setup = id.clone();
-    if draft.preset.is_empty() {
-        settings.device_presets.remove(&id);
-    } else {
-        settings.device_presets.insert(id, draft.preset.clone());
-    }
     settings.firmware = draft.firmware;
-    settings.reader_setups.insert(id_for_setup, draft.setup.clone());
+    settings.reader_setups.insert(id, draft.setup.clone());
     Ok(())
 }
 
@@ -332,11 +250,6 @@ fn ReaderForm(revision: Signal<u32>) -> Element {
         name: current.name.clone(),
         width: current.width,
         height: current.height,
-        preset: s
-            .device_presets
-            .get(&current.id)
-            .cloned()
-            .unwrap_or_default(),
         firmware: s.firmware,
         setup: s.reader_setup(),
     };
@@ -346,7 +259,6 @@ fn ReaderForm(revision: Signal<u32>) -> Element {
     let mut name = use_signal(|| saved.name.clone());
     let mut width = use_signal(|| saved.width.to_string());
     let mut height = use_signal(|| saved.height.to_string());
-    let mut preset = use_signal(|| saved.preset.clone());
     let mut firmware = use_signal(|| saved.firmware);
     let mut locked = use_signal(|| false);
 
@@ -354,14 +266,12 @@ fn ReaderForm(revision: Signal<u32>) -> Element {
         name: name(),
         width: width().trim().parse().unwrap_or(0),
         height: height().trim().parse().unwrap_or(0),
-        preset: preset(),
         firmware: firmware(),
         setup: setup(),
     };
     let dirty = draft != saved;
     let wifi_url_now = setup().wifi_url.clone().unwrap_or_default();
     let wifi_url_to_test = wifi_url_now.clone();
-    let presets = state.presets.read().all();
     let (w0, h0) = (saved.width, saved.height);
     let remove_id = current.id.clone();
     let lock_class = if locked() { "btn icon on" } else { "btn icon" };
@@ -384,40 +294,60 @@ fn ReaderForm(revision: Signal<u32>) -> Element {
             } else {
                 div { class: "title-input fixed", title: "A built-in reader keeps its name", "{current.name}" }
             }
-            div { class: "size-boxes",
-                input {
-                    r#type: "number", min: "{device_profiles::MIN_EDGE}", max: "{device_profiles::MAX_EDGE}",
-                    value: "{width}", title: "Width in pixels", "aria-label": "Width in pixels",
-                    oninput: move |e| {
-                        let typed = e.value();
-                        if locked() {
-                            if let Ok(w) = typed.trim().parse::<u32>() {
-                                height.set(keep_shape(w, w0, h0).to_string());
-                            }
-                        }
-                        width.set(typed);
-                    },
-                }
-                span { class: "muted", "\u{d7}" }
-                input {
-                    r#type: "number", min: "{device_profiles::MIN_EDGE}", max: "{device_profiles::MAX_EDGE}",
-                    value: "{height}", title: "Height in pixels", "aria-label": "Height in pixels",
-                    oninput: move |e| {
-                        let typed = e.value();
-                        if locked() {
-                            if let Ok(h) = typed.trim().parse::<u32>() {
-                                width.set(keep_shape(h, h0, w0).to_string());
-                            }
-                        }
-                        height.set(typed);
-                    },
-                }
-                button { class: "{lock_class}", title: "{lock_title}", "aria-pressed": "{pressed}",
-                    onclick: move |_| locked.set(!locked()),
-                    Icon { name: lock_icon, size: 16 }
+        }
+
+        div { class: "sx-row",
+            div { class: "sx-text",
+                div { class: "sx-label", "Screen size"
+                    Help { text: "The size of the reader's screen in pixels (dots), as its maker lists it. Pages are made exactly this size, so nothing is scaled again on the reader. Changing the size of a built-in reader saves a reader of your own." }
                 }
             }
-            Help { text: "Pages are made exactly this size, so nothing is scaled again on the reader. Changing the size of a built-in reader saves a reader of your own." }
+            div { class: "sx-control",
+                div { class: "size-boxes labelled",
+                    label { class: "size-field",
+                        span { "Width" }
+                        div { class: "unit-box",
+                            input {
+                                r#type: "number", min: "{device_profiles::MIN_EDGE}", max: "{device_profiles::MAX_EDGE}",
+                                value: "{width}", "aria-label": "Screen width in pixels",
+                                oninput: move |e| {
+                                    let typed = e.value();
+                                    if locked() {
+                                        if let Ok(w) = typed.trim().parse::<u32>() {
+                                            height.set(keep_shape(w, w0, h0).to_string());
+                                        }
+                                    }
+                                    width.set(typed);
+                                },
+                            }
+                            span { class: "unit", "px" }
+                        }
+                    }
+                    label { class: "size-field",
+                        span { "Height" }
+                        div { class: "unit-box",
+                            input {
+                                r#type: "number", min: "{device_profiles::MIN_EDGE}", max: "{device_profiles::MAX_EDGE}",
+                                value: "{height}", "aria-label": "Screen height in pixels",
+                                oninput: move |e| {
+                                    let typed = e.value();
+                                    if locked() {
+                                        if let Ok(h) = typed.trim().parse::<u32>() {
+                                            width.set(keep_shape(h, h0, w0).to_string());
+                                        }
+                                    }
+                                    height.set(typed);
+                                },
+                            }
+                            span { class: "unit", "px" }
+                        }
+                    }
+                    button { class: "{lock_class}", title: "{lock_title}", "aria-pressed": "{pressed}",
+                        onclick: move |_| locked.set(!locked()),
+                        Icon { name: lock_icon, size: 16 }
+                    }
+                }
+            }
         }
 
         div { class: "sx-row",
@@ -430,22 +360,6 @@ fn ReaderForm(revision: Signal<u32>) -> Element {
                 FormatTags {
                     value: setup().formats.clone(),
                     on_change: move |list: Vec<String>| setup.write().formats = list,
-                }
-            }
-        }
-        div { class: "sx-row",
-            div { class: "sx-text",
-                div { class: "sx-label", "Preset for this reader"
-                    Help { text: "New series made for this reader start from this preset." }
-                }
-            }
-            div { class: "sx-control",
-                select {
-                    onchange: move |e| preset.set(e.value()),
-                    option { value: "", selected: preset().is_empty(), "Use the default" }
-                    for p in presets {
-                        option { key: "{p.preset.id}", value: "{p.preset.id}", selected: p.preset.id == preset(), "{p.preset.name}" }
-                    }
                 }
             }
         }
@@ -467,27 +381,25 @@ fn ReaderForm(revision: Signal<u32>) -> Element {
         div { class: "sx-row",
             div { class: "sx-text",
                 div { class: "sx-label", "Export method"
-                    Help { text: "How files get to this reader. Where they go is chosen by the reader, not each time." }
+                    Help { text: "How files can get to this reader. Pick every way that works for it; when you export you choose which one to use." }
                 }
             }
             div { class: "sx-control",
-                div { class: "seg",
-                    button {
-                        class: if setup().method == ExportMethod::Usb { "on" } else { "" },
-                        onclick: move |_| setup.write().method = ExportMethod::Usb, "USB"
-                    }
-                    button {
-                        class: if setup().method == ExportMethod::WiFi { "on" } else { "" },
-                        onclick: move |_| setup.write().method = ExportMethod::WiFi, "Wi-Fi"
-                    }
-                    button {
-                        class: if setup().method == ExportMethod::None { "on" } else { "" },
-                        onclick: move |_| setup.write().method = ExportMethod::None, "None"
-                    }
+                MultiSeg {
+                    items: vec![("USB".to_string(), setup().usb), ("Wi-Fi".to_string(), setup().wifi)],
+                    on_toggle: move |i: usize| {
+                        // At least one stays on: there has to be a way to reach the reader.
+                        let mut s = setup.write();
+                        if i == 0 {
+                            if !s.usb || s.wifi { s.usb = !s.usb; }
+                        } else if !s.wifi || s.usb {
+                            s.wifi = !s.wifi;
+                        }
+                    },
                 }
             }
         }
-        if setup().method == ExportMethod::WiFi {
+        if setup().wifi {
             div { class: "sx-row",
                 div { class: "sx-text",
                     div { class: "sx-label", "Reader address"
@@ -524,24 +436,19 @@ fn ReaderForm(revision: Signal<u32>) -> Element {
                 None => rsx! {},
             }}
         }
-        if setup().method == ExportMethod::Usb {
-            p { class: "sx-note", "When you export, plug the reader in with USB (drive mode), or put its SD card in this computer. You pick the drive on the Export screen." }
+        if setup().usb {
+            p { class: "sx-note", "For USB, plug the reader in (drive mode) or put its SD card in this computer. You pick the drive on the Export screen." }
         }
-        if setup().method == ExportMethod::None {
-            p { class: "sx-note", "Nothing is sent to this reader. Exports go to a folder on this computer, and you move the files yourself." }
-        }
-        if setup().method != ExportMethod::None {
-            div { class: "sx-row",
-                div { class: "sx-text",
-                    div { class: "sx-label", "Folder on the reader"
-                        Help { text: "Files go into this folder on the reader. It is made if it is not there." }
-                    }
+        div { class: "sx-row",
+            div { class: "sx-text",
+                div { class: "sx-label", "Folder on the reader"
+                    Help { text: "Files go into this folder on the reader. It is made if it is not there." }
                 }
-                div { class: "sx-control",
-                    input {
-                        r#type: "text", value: "{setup().folder}",
-                        oninput: move |e| setup.write().folder = e.value(),
-                    }
+            }
+            div { class: "sx-control",
+                input {
+                    r#type: "text", value: "{setup().folder}",
+                    oninput: move |e| setup.write().folder = e.value(),
                 }
             }
         }
@@ -590,32 +497,93 @@ fn ReaderForm(revision: Signal<u32>) -> Element {
     }
 }
 
-/// A dropdown to choose the reader pages are made for, and its page size as
-/// boxes that can be changed.
+/// Open Settings on the page to add or change a reader.
+fn open_readers_settings(state: AppState) {
+    let mut section = state.settings_section;
+    section.set(SettingsSection::Reader);
+    state.go(Page::Settings);
+}
+
+/// One reader in the list on the Export screen. Choosing it makes pages for it;
+/// the chosen one shows its screen size and lets its Wi-Fi address and folder
+/// be changed. Its name and size are changed in Settings.
 #[component]
-pub fn DeviceSelect() -> Element {
+fn ReaderItem(id: String, on: bool) -> Element {
     let state = use_context::<AppState>();
     let s = state.settings.read().clone();
-    let current = s.device_profile();
-    let nonce = use_signal(|| 0u32);
+    let Some(device) = s.devices().into_iter().find(|d| d.id == id) else {
+        return rsx! {};
+    };
+    let setup = s.reader_setup();
+    let wifi_url = setup.wifi_url.clone().unwrap_or_default();
+    let folder = setup.folder.clone();
+    let wifi = setup.wifi;
+    let choose_id = id.clone();
     rsx! {
-        div { class: "panel-section",
-            label { class: "panel-label", "Reader" }
-            select {
-                onchange: move |e| {
+        div { class: if on { "px-preset on" } else { "px-preset" },
+            onclick: move |_| {
+                if !on {
                     let mut settings = state.settings;
-                    settings.write().device = e.value();
+                    settings.write().device = choose_id.clone();
                     state.save_settings();
                     crate::ui::work::schedule_preview(state, 0);
-                },
-                for d in s.devices() {
-                    option { key: "{d.id}", value: "{d.id}", selected: d.id == current.id, "{d.name}" }
+                }
+            },
+            div { class: "px-preset-head",
+                span { class: "grow px-item-name", "{device.name}" }
+                if on { Icon { name: "check", size: 14 } }
+            }
+            if on {
+                p { class: "px-desc", "Screen {device.width} \u{d7} {device.height} px" }
+                div { class: "px-fields", onclick: move |e| e.stop_propagation(),
+                    if wifi {
+                        label { class: "px-field",
+                            span { "Wi-Fi address" }
+                            input {
+                                r#type: "text", placeholder: "http://192.168.3.3", value: "{wifi_url}",
+                                onchange: move |e| {
+                                    let v = e.value().trim().to_string();
+                                    let mut settings = state.settings;
+                                    settings.write().update_reader_setup(|r| r.wifi_url = (!v.is_empty()).then_some(v));
+                                    state.save_settings();
+                                },
+                            }
+                        }
+                    }
+                    label { class: "px-field",
+                        span { "Folder on the reader" }
+                        input {
+                            r#type: "text", value: "{folder}",
+                            onchange: move |e| {
+                                let v = e.value().trim().to_string();
+                                if !v.is_empty() {
+                                    let mut settings = state.settings;
+                                    settings.write().update_reader_setup(|r| r.folder = v);
+                                    state.save_settings();
+                                }
+                            },
+                        }
+                    }
                 }
             }
-            ReaderSize {
-                nonce,
-                on_change: move |_| crate::ui::work::schedule_preview(state, 0),
+        }
+    }
+}
+
+/// The readers as a short scrollable list, and a way to Settings to add one.
+#[component]
+pub fn ReaderPicker() -> Element {
+    let state = use_context::<AppState>();
+    let s = state.settings.read().clone();
+    rsx! {
+        div { class: "px-list px-scroll",
+            for d in s.devices() {
+                ReaderItem { key: "{d.id}", id: d.id.clone(), on: d.id == s.device }
             }
+        }
+        button { class: "px-new", style: "margin-top: 6px; width: 100%", title: "Readers are added in Settings",
+            onclick: move |_| open_readers_settings(state),
+            Icon { name: "plus", size: 14 } "New device"
         }
     }
 }
@@ -653,7 +621,6 @@ mod tests {
             name: name.into(),
             width,
             height,
-            preset: String::new(),
             firmware: Firmware::CrossPoint,
             setup: ReaderSetup::default(),
         }
@@ -663,17 +630,12 @@ mod tests {
     fn changing_a_built_in_readers_size_saves_a_copy_and_chooses_it() {
         let mut s = library::Settings::default();
         let before = s.devices().len();
-        let mut d = draft("Xteink X4 Pro", 240, 400);
-        d.preset = "manga".into();
+        let d = draft("Xteink X4 Pro", 240, 400);
         apply_reader(&mut s, &d).unwrap();
         assert_eq!(s.devices().len(), before + 1);
         let chosen = s.device_profile();
         assert!(!chosen.builtin);
         assert_eq!((chosen.width, chosen.height), (240, 400));
-        assert_eq!(
-            s.device_presets.get(&chosen.id).map(String::as_str),
-            Some("manga")
-        );
     }
 
     #[test]

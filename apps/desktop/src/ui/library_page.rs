@@ -241,6 +241,7 @@ pub fn LibraryPage() -> Element {
                         let is_exported = exported.contains(&s.id);
                         let queued = queue.series_has_work(&s.id);
                         let menu_id = s.id.clone();
+                        let text_id = s.id.clone();
                         let menu_open = menu().as_deref() == Some(s.id.as_str());
                         let (export_id, plan_id, view_id, delete_id, remove_id) = (
                             s.id.clone(),
@@ -337,19 +338,30 @@ pub fn LibraryPage() -> Element {
                                         }
                                     }
                                 }
-                                strong { class: "poster-title", title: "{s.title}", "{s.title}" }
-                                span { class: "muted small", "{sub}" }
-                                if !about.is_empty() {
-                                    span { class: "muted small poster-about", title: "{about}", "{about}" }
-                                }
-                                div { class: "poster-tags",
-                                    if chapters > 0 {
-                                        Chip { text: "Downloaded", kind: Some("ok".to_string()) }
-                                    } else {
-                                        Chip { text: "Saved for later" }
+                                // The text opens the series too, and lights up with the cover.
+                                div { class: "poster-text", title: "Open {s.title}",
+                                    onclick: move |_| {
+                                        if picked.read().is_empty() {
+                                            open_series_from_library(state, &text_id);
+                                        } else {
+                                            let mut p = picked.write();
+                                            if !p.remove(&text_id) { p.insert(text_id.clone()); }
+                                        }
+                                    },
+                                    strong { class: "poster-title", title: "{s.title}", "{s.title}" }
+                                    span { class: "muted small", "{sub}" }
+                                    if !about.is_empty() {
+                                        span { class: "muted small poster-about", title: "{about}", "{about}" }
                                     }
-                                    if is_exported {
-                                        Chip { text: "Exported", kind: Some("accent".to_string()) }
+                                    div { class: "poster-tags",
+                                        if chapters > 0 {
+                                            Chip { text: "Downloaded", kind: Some("ok".to_string()) }
+                                        } else {
+                                            Chip { text: "Saved for later" }
+                                        }
+                                        if is_exported {
+                                            Chip { text: "Exported", kind: Some("accent".to_string()) }
+                                        }
                                     }
                                 }
                             }
