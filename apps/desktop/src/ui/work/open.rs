@@ -289,7 +289,7 @@ pub fn load_saved_cover(state: AppState, series_id: &str) {
         };
         let url = format!("data:{mime};base64,{}", STANDARD.encode(&bytes));
         let mut covers = state.covers;
-        covers.write().insert(key, url);
+        covers.write().insert(key, url.into());
     });
 }
 

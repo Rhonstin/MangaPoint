@@ -149,9 +149,14 @@ fn Shell() -> Element {
                     JobBar {}
                     DownloadBar {}
                 }
+                // The search stays built while another page is open, so coming
+                // back to it is instant and it is as it was left.
+                div { class: if page == Page::Search { "keep" } else { "keep gone" },
+                    search::SearchPage {}
+                }
                 {match page {
                     Page::Setup => rsx! { setup::Setup {} },
-                    Page::Search => rsx! { search::SearchPage {} },
+                    Page::Search => rsx! {},
                     Page::Series => rsx! { workspace::WorkspacePage {} },
                     Page::Library => rsx! { library_page::LibraryPage {} },
                     Page::Downloads => rsx! { downloads_page::DownloadsPage {} },

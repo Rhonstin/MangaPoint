@@ -804,6 +804,9 @@ table.chapters th.size, table.chapters td.size { width: 90px; text-align: right;
 .btn.open-big.square { min-width: 0; width: 48px; padding: 0; }
 .q-row .q-name.link-title { font-size: 1rem; }
 
+.keep { display: contents; }
+.keep.gone { display: none; }
+
 /* ---- the cat that runs in circles while something loads ---- */
 .orbit { --o: var(--orbit, 120px); display: inline-block; position: relative; width: var(--o); height: var(--o); flex: none; animation: orbit 2.2s linear infinite; }
 .orbit::before { content: ""; position: absolute; inset: 20%; border: 2px dashed var(--line-strong); border-radius: 50%; opacity: 0.5; }

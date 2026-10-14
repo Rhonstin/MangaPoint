@@ -434,7 +434,7 @@ pub struct AppState {
     pub search_sort: Signal<SearchSort>,
     pub settings_section: Signal<SettingsSection>,
     /// Cover images as data URLs, keyed by `source:manga`.
-    pub covers: Signal<HashMap<String, String>>,
+    pub covers: Signal<HashMap<String, std::rc::Rc<str>>>,
     pub notice: Signal<Option<Notice>>,
     pub modal: Signal<Option<Modal>>,
     /// Downloaded chapters (their pages are on disk).

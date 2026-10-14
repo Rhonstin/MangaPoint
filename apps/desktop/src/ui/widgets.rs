@@ -140,6 +140,7 @@ pub fn Busy(label: String, size: Option<u32>) -> Element {
 #[component]
 pub fn Cover(key_id: String) -> Element {
     let state = use_context::<AppState>();
+    // A shared string: drawing a cover does not copy its picture.
     let url = state.covers.read().get(&key_id).cloned();
     match url {
         Some(src) => rsx! { img { class: "cover", src: "{src}", loading: "lazy" } },
@@ -169,9 +170,21 @@ pub fn load_cover(state: AppState, key: String, path: String) {
                 Some(_) => "image/jpeg",
                 None => return,
             };
+            // Shown at poster size, so what the source sent is shrunk the way
+            // a saved cover is, as long as that makes it smaller.
+            let original = bytes.clone();
+            let small = tokio::task::spawn_blocking(move || crate::logic::small_cover(&original))
+                .await
+                .ok()
+                .flatten()
+                .filter(|s| s.len() < bytes.len());
+            let (mime, bytes) = match small {
+                Some(small) => ("image/jpeg", small),
+                None => (mime, bytes),
+            };
             let url = format!("data:{mime};base64,{}", STANDARD.encode(&bytes));
             let mut covers = state.covers;
-            covers.write().insert(key, url);
+            covers.write().insert(key, url.into());
         }
     });
 }
