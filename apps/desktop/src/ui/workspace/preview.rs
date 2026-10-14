@@ -2,7 +2,7 @@
 //! PDF viewer, with the original beside each converted page.
 use super::crop_editor::SourceCanvas;
 use crate::state::{AppState, Shot, Zoom};
-use crate::ui::widgets::{EmptyState, Icon};
+use crate::ui::widgets::{Busy, EmptyState, Icon};
 use crate::ui::work::{prepare_preview, schedule_preview, select_preview_page};
 use converter::plan::Source;
 use dioxus::prelude::*;
@@ -44,70 +44,7 @@ fn seams(
 
 /// Sizes the viewer to the window, reports which pages are on screen (as
 /// `[first, last, current]`, `-1` when there are none), and wires the keys.
-const EDITOR_SCRIPT: &str = r#"
-let tries = 0;
-const start = () => {
- const root = document.getElementById('page-editor');
- if (!root) { if (tries++ < 120) requestAnimationFrame(start); return; }
- if (root.dataset.bound) return;
- root.dataset.bound = '1';
- const scroller = root.querySelector('.editor-scroll');
- const page = root.closest('.content') || document.documentElement;
- let frame = 0, last = '';
- const vars = {};
- const set = (name, value) => { if (vars[name] !== value) { vars[name] = value; root.style.setProperty(name, value); } };
- // The viewer is as tall as the space left under the series header, so the
- // whole page does not scroll. Its position is measured inside the scrolling
- // page: measured on the screen it would change as the page scrolls, and the
- // viewer would grow every time it was scrolled.
- const fit = () => {
-  const top = scroller.getBoundingClientRect().top - page.getBoundingClientRect().top + page.scrollTop;
-  const bar = root.querySelector('.editor-bottom');
-  const below = (bar ? bar.offsetHeight : 0) + (parseFloat(getComputedStyle(page).paddingBottom) || 0) + 8;
-  set('--canvas-height', Math.max(240, Math.round(page.clientHeight - top - below)) + 'px');
-  set('--bottom-height', (bar ? bar.offsetHeight : 0) + 'px');
-  const style = getComputedStyle(scroller);
-  const room = scroller.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom) - 96;
-  set('--reader-page-height', Math.max(120, Math.round(room)) + 'px');
-  const pane = root.querySelector('.row-pane.result-pane');
-  if (pane && pane.clientWidth > 0) set('--reader-page-width', pane.clientWidth + 'px');
- };
- const report = () => {
-  const box = scroller.getBoundingClientRect();
-  const probe = box.top + box.height * 0.3;
-  let lo = -1, hi = -1, cur = -1;
-  for (const row of scroller.querySelectorAll('.editor-row')) {
-   const b = row.getBoundingClientRect(), i = Number(row.dataset.row);
-   if (b.bottom >= box.top - box.height * 0.5 && b.top <= box.bottom + box.height * 0.5) {
-    if (lo < 0) lo = i;
-    hi = i;
-   }
-   if (cur < 0 && b.bottom > probe) cur = i;
-  }
-  const message = lo + ',' + hi + ',' + cur;
-  if (message !== last) { last = message; dioxus.send([lo, hi, cur]); }
- };
- const run = () => { frame = 0; if (root.isConnected) { fit(); report(); } };
- const later = () => { if (!frame) frame = requestAnimationFrame(run); };
- scroller.addEventListener('scroll', later, { passive: true });
- window.addEventListener('resize', later);
- new ResizeObserver(later).observe(scroller);
- new ResizeObserver(later).observe(page);
- new MutationObserver(later).observe(scroller, { childList: true, subtree: true });
- // Things above the viewer (the series header, a cover) can still be loading.
- const timer = setInterval(() => { if (!root.isConnected) clearInterval(timer); else later(); }, 400);
- root.addEventListener('keydown', e => {
-  if (e.target.closest('input,select,textarea,[contenteditable=true]')) return;
-  const ids = { Escape: 'editor-close-overview' };
-  const id = ids[e.key];
-  if (id) { const b = document.getElementById(id); if (b && !b.disabled) { e.preventDefault(); b.click(); } }
- });
- later();
-};
-start();
-// Stay alive: messages can only be sent while the script has not finished.
-await new Promise(() => {});
-"#;
+const EDITOR_SCRIPT: &str = include_str!("../../js/preview-editor.js");
 
 /// How tall a page is at this zoom, as a CSS length.
 fn row_height(zoom: Zoom, width: u32, height: u32) -> String {
@@ -366,34 +303,41 @@ pub fn PreviewTab() -> Element {
                 div { class: "editor-toolbar-actions",
                     span { class: "editor-status",
                         if p.busy {
-                            span { class: "spin", Icon { name: "loader-circle", size: 13 } }
-                            " Updating…"
+                            Busy { label: "Updating…", size: 28 }
                         } else {
                             Icon { name: "check", size: 13 }
                             " Ready"
                         }
                     }
-                    button {
-                        class: if compare { "btn small on" } else { "btn small" },
-                        title: "Show the downloaded artwork beside each reader page",
-                        onclick: move |_| {
-                            state.preview.write().view.show_original = !compare;
-                            schedule_preview(state, 0);
-                        },
-                        Icon { name: "eye", size: 14 } "Compare"
+                    label { class: "check-label", title: "Show the downloaded artwork beside each reader page",
+                        input {
+                            r#type: "checkbox", checked: compare,
+                            onchange: move |_| {
+                                state.preview.write().view.show_original = !compare;
+                                schedule_preview(state, 0);
+                            },
+                        }
+                        "Compare"
                     }
-                    select {
-                        class: "editor-zoom", "aria-label": "Preview zoom",
-                        onchange: move |e| {
-                            state.preview.write().view.zoom = match e.value().as_str() {
-                                "width" => Zoom::Width,
-                                "custom" => Zoom::Custom(match view.zoom { Zoom::Custom(p) => p, _ => 100 }),
-                                _ => Zoom::Fit,
-                            };
-                        },
-                        option { value: "fit", selected: view.zoom == Zoom::Fit, "Fit page" }
-                        option { value: "width", selected: view.zoom == Zoom::Width, "Fit width" }
-                        option { value: "custom", selected: matches!(view.zoom, Zoom::Custom(_)), "Custom zoom" }
+                    div { class: "seg zoom-seg", role: "group", "aria-label": "Preview zoom",
+                        button {
+                            class: if view.zoom == Zoom::Fit { "on" } else { "" },
+                            onclick: move |_| state.preview.write().view.zoom = Zoom::Fit,
+                            "Fit page"
+                        }
+                        button {
+                            class: if view.zoom == Zoom::Width { "on" } else { "" },
+                            onclick: move |_| state.preview.write().view.zoom = Zoom::Width,
+                            "Fit width"
+                        }
+                        button {
+                            class: if matches!(view.zoom, Zoom::Custom(_)) { "on" } else { "" },
+                            onclick: move |_| {
+                                let percent = match view.zoom { Zoom::Custom(p) => p, _ => 100 };
+                                state.preview.write().view.zoom = Zoom::Custom(percent);
+                            },
+                            "Custom zoom"
+                        }
                     }
                     if let Zoom::Custom(percent) = view.zoom {
                         div { class: "editor-custom-zoom",
@@ -541,5 +485,35 @@ pub fn PreviewTab() -> Element {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_page_is_sized_by_its_zoom() {
+        assert_eq!(
+            row_height(Zoom::Custom(50), 480, 800),
+            "400px",
+            "half of the screen's own height"
+        );
+        assert!(row_height(Zoom::Fit, 480, 800).starts_with("min("));
+        assert_eq!(
+            row_height(Zoom::Width, 480, 800),
+            "calc(var(--reader-page-width) * 800 / 480)"
+        );
+    }
+
+    #[test]
+    fn the_reader_style_keeps_the_page_shape() {
+        let fit = reader_style(Zoom::Fit, 480, 800);
+        assert!(fit.contains("width:auto;") && fit.ends_with("aspect-ratio:480/800;"));
+        assert_eq!(
+            reader_style(Zoom::Custom(100), 480, 800),
+            "height:800px;width:480px;aspect-ratio:480/800;"
+        );
+        assert!(reader_style(Zoom::Width, 480, 800).starts_with("height:auto;width:100%;"));
     }
 }

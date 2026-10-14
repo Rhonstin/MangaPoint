@@ -1,18 +1,11 @@
 /* The page editor, in the app's own black and gray. */
 .page-editor { border-radius: 0; border: 0; --canvas-height: max(240px, calc(100dvh - 290px)); --reader-page-height: calc(var(--canvas-height) - 110px); --reader-page-width: 400px; --editor-line: var(--line); --editor-muted: var(--muted); color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: var(--radius); outline: none; overflow: hidden; }
 .editor-toolbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 10px 14px; background: var(--panel); border-bottom: 1px solid var(--line); }
-.editor-page-nav { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.editor-page-nav .on { margin-left: 10px; }
-.editor-page-nav .btn { padding: 8px 12px; }
-.editor-page-count { white-space: nowrap; min-width: 104px; text-align: center; color: var(--muted); font-variant-numeric: tabular-nums; }
-.editor-page-count strong { color: var(--text); }
 .editor-toolbar-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-left: auto; }
 .page-editor .btn.on { color: var(--text); background: var(--panel-3); border-color: var(--accent); }
-.editor-zoom { width: 140px; min-width: 0; }
 .editor-custom-zoom { display: flex; align-items: center; gap: 8px; }
 .editor-custom-zoom input[type="range"] { width: 120px; accent-color: var(--accent); }
 .editor-custom-zoom input[type="number"] { width: 78px; padding: 7px 8px; }
-.turn-arrow { display: inline-flex; transform: rotate(180deg); }
 
 .editor-body { display: grid; grid-template-columns: 84px minmax(0, 1fr); min-height: 0; }
 
@@ -51,10 +44,6 @@
 .handle-nw{left:0;top:0;cursor:nwse-resize}.handle-n{left:50%;top:0;cursor:ns-resize}.handle-ne{left:100%;top:0;cursor:nesw-resize}.handle-e{left:100%;top:50%;cursor:ew-resize}.handle-se{left:100%;top:100%;cursor:nwse-resize}.handle-s{left:50%;top:100%;cursor:ns-resize}.handle-sw{left:0;top:100%;cursor:nesw-resize}.handle-w{left:0;top:50%;cursor:ew-resize}
 
 /* the inspector */
-.editor-inspector { height: calc(var(--canvas-height) + var(--bottom-height, 0px)); overflow: auto; scrollbar-width: thin; padding: 16px; border-left: 1px solid var(--line); background: var(--panel); }
-.editor-inspector-top { display: grid; gap: 10px; padding-bottom: 12px; }
-.editor-inspector .panel-section { padding: 0; border: 0; }
-.editor-inspector .preset-picker, .editor-inspector select { width: 100%; min-width: 0; }
 .editor-caption { color: var(--muted); font-size: 0.8rem; line-height: 1.5; margin: 5px 0; }
 .editor-crop-inspector { padding: 14px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
 .editor-section-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
@@ -67,15 +56,8 @@
 .editor-scope button { flex: 1; padding: 8px 4px; border: 0; background: transparent; color: var(--muted); font-size: 0.85rem; cursor: pointer; }
 .editor-scope button.selected { background: var(--accent); color: var(--accent-text); font-weight: 600; }
 .editor-crop-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
-.editor-settings-scope { color: var(--muted); font-size: 0.8rem; margin: 16px 0 8px; }
-.editor-export { width: 100%; display: flex; justify-content: space-between; align-items: center; margin-top: 18px; }
 .editor-overview-button { position: sticky; bottom: 0; width: 100%; margin-top: 6px; padding-left: 4px; padding-right: 4px; font-size: 0.8rem; background: var(--panel-2); }
 .editor-bottom { display: flex; align-items: center; gap: 10px; min-height: 52px; padding: 8px 14px; border-top: 1px solid var(--line); background: var(--panel); }
-.editor-chapter-slider { flex: 1; min-width: 80px; display: flex; flex-direction: column; gap: 2px; }
-.editor-chapter-slider input[type="range"] { width: 100%; accent-color: var(--accent); }
-.editor-chapter-label { text-align: center; color: var(--muted); font-size: 0.78rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.editor-chapter-jump { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 0.85rem; }
-.editor-chapter-jump input { width: 84px; padding: 7px 8px; }
 .editor-status { display: flex; align-items: center; gap: 5px; color: var(--muted); font-size: 0.78rem; min-width: 74px; justify-content: flex-end; }
 .editor-mobile-switch { display: none; }
 
@@ -93,7 +75,6 @@
 /* a narrower window: one pane at a time, and a slimmer inspector */
 @media (max-width: 1100px) {
   .editor-body { grid-template-columns: 72px minmax(0, 1fr) 270px; }
-  .page-editor.inspector-hidden .editor-body { grid-template-columns: 72px minmax(0, 1fr); }
   .editor-row-panes.comparing, .editor-columns.comparing { grid-template-columns: minmax(0, 1fr); }
   .editor-row .source-pane, .editor-columns .source-pane { display: none; }
   .source-focused .editor-row .source-pane { display: flex; }
@@ -107,7 +88,6 @@
 @media (max-width: 760px) {
   .editor-body { grid-template-columns: minmax(0, 1fr); }
   .editor-thumbnails { display: none; }
-  .editor-inspector { height: auto; border-left: 0; border-top: 1px solid var(--line); }
 }
 
 /* where a page ends, and what the next one repeats */

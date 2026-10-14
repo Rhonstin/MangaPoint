@@ -128,6 +128,15 @@ pub fn body(name: &str) -> Option<&'static str> {
         ),
         "chevron-right" => Some(r#"<path d="m9 18 6-6-6-6" />"#),
         "clock-3" => Some(r#"<circle cx="12" cy="12" r="10" /> <path d="M12 6v6h4" />"#),
+        "lock" => Some(
+            r#"<rect width="18" height="11" x="3" y="11" rx="2" ry="2" /> <path d="M7 11V7a5 5 0 0 1 10 0v4" />"#,
+        ),
+        "lock-open" => Some(
+            r#"<rect width="18" height="11" x="3" y="11" rx="2" ry="2" /> <path d="M7 11V7a5 5 0 0 1 9.9-1" />"#,
+        ),
+        "circle-help" => Some(
+            r#"<circle cx="12" cy="12" r="10" /> <path d="M9.09 9a3 3 0 0 1 5.82 1c0 2-3 3-3 3" /> <path d="M12 17h.01" />"#,
+        ),
         _ => None,
     }
 }

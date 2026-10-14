@@ -138,6 +138,8 @@ fn job(lib: &Library, series: &DownloadedSeries, grouping: Grouping) -> ExportJo
         lib.work(),
     );
     j.grouping = grouping;
+    // Most tests count pages, so the cover is left out unless one asks for it.
+    j.cover = false;
     j
 }
 
@@ -423,6 +425,75 @@ async fn save_space_shrinks_big_pages_and_keeps_small_ones_untouched() {
 }
 
 // ---- Stage 3: export -------------------------------------------------------
+
+#[tokio::test]
+async fn a_saved_cover_opens_every_file_as_its_own_page() {
+    let (lib, series) = three_chapters("ex-cover").await;
+    let plain = export(&lib, &job(&lib, &series, Grouping::PerChapter))
+        .await
+        .unwrap();
+    let plain_pages: Vec<usize> = plain
+        .files
+        .iter()
+        .map(|f| {
+            let bytes = fs::read(&f.location).unwrap();
+            XtcFile::parse(&bytes).unwrap().page_count()
+        })
+        .collect();
+
+    let cover = png(400, 600, 9);
+    let cover_path = lib.files.cover_path(&lib.id);
+    fs::create_dir_all(cover_path.parent().unwrap()).unwrap();
+    fs::write(&cover_path, &cover).unwrap();
+    let mut j = job(&lib, &series, Grouping::PerChapter);
+    j.cover = true;
+    let with = export(&lib, &j).await.unwrap();
+    assert_eq!(
+        with.pages, plain.pages,
+        "the cover is not one of the chapter pages"
+    );
+    for (file, before) in with.files.iter().zip(&plain_pages) {
+        let bytes = fs::read(&file.location).unwrap();
+        let book = XtcFile::parse(&bytes).unwrap();
+        assert_eq!(book.page_count(), before + 1, "{}", file.location);
+        let gray = decode_to_gray(&cover).unwrap();
+        let mut opts = process_options_for(&j.device, &series.settings);
+        opts.layout = converter::process::Layout::Manga;
+        opts.crop = converter::process::CropMode::Full;
+        opts.margins = Default::default();
+        let expected = render_levels(&gray, &opts);
+        assert_eq!(book.decode_page(0).unwrap().image, expected[0]);
+    }
+    let _ = fs::remove_dir_all(lib.root);
+}
+
+#[tokio::test]
+async fn a_series_without_a_cover_opens_with_its_first_page() {
+    let (lib, series) = three_chapters("ex-first-page").await;
+    // No cover is saved, so the first page of the first chapter stands in.
+    assert!(!lib.files.cover_path(&lib.id).exists());
+    let mut j = job(&lib, &series, Grouping::Single);
+    j.cover = true;
+    let first = lib
+        .files
+        .page_files(&lib.id, &series.chapters[0].key)
+        .into_iter()
+        .next()
+        .unwrap();
+    let page = fs::read(first).unwrap();
+    let with = export(&lib, &j).await.unwrap();
+    let bytes = fs::read(&with.files[0].location).unwrap();
+    let book = XtcFile::parse(&bytes).unwrap();
+    assert_eq!(book.page_count(), with.pages + 1, "the stand-in cover is one more page");
+    let gray = decode_to_gray(&page).unwrap();
+    let mut opts = process_options_for(&j.device, &series.settings);
+    opts.layout = converter::process::Layout::Manga;
+    opts.crop = converter::process::CropMode::Full;
+    opts.margins = Default::default();
+    let expected = render_levels(&gray, &opts);
+    assert_eq!(book.decode_page(0).unwrap().image, expected[0]);
+    let _ = fs::remove_dir_all(lib.root);
+}
 
 #[tokio::test]
 async fn repeated_exports_reuse_converted_chapters_across_groupings() {

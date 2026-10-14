@@ -25,6 +25,12 @@ pub struct ExportRecord {
     pub files: Vec<ExportedFileRecord>,
     /// Where it was sent, in words ("folder C:\\…", "the reader").
     pub target: String,
+    /// How the pages were converted, and the preset that started from, so the
+    /// next export of the series can go back to the same.
+    #[serde(default)]
+    pub preset_id: Option<String>,
+    #[serde(default)]
+    pub settings: Option<crate::ConversionSettings>,
     /// Seconds since the Unix epoch.
     pub at: u64,
 }
@@ -104,6 +110,8 @@ mod tests {
                 })
                 .collect(),
             target: "folder".into(),
+            preset_id: None,
+            settings: None,
             at: 1,
         }
     }

@@ -3,7 +3,7 @@
 //! filter, sorting and tick boxes.
 
 use super::chapter_table::{ChapterGrid, GridRow};
-use super::widgets::{Cover, EmptyState, Icon};
+use super::widgets::{Busy, Cover, EmptyState, Icon, NoCover};
 use super::work::{ask_download, downloaded_keys, load_saved_cover, merged_key, saved_cover_key};
 use crate::logic::{self, plural};
 use crate::state::{AppState, Page, PendingDownload, PlanChapters, PlanEntry};
@@ -205,13 +205,13 @@ fn PlanSection(series_id: String) -> Element {
         div { class: "plan-section",
             div { class: "plan-head",
                 div { class: "plan-cover",
-                    if has_cover { Cover { key_id: saved_cover_key(&series_id) } } else { div { class: "cover empty", "📖" } }
+                    if has_cover { Cover { key_id: saved_cover_key(&series_id) } } else { NoCover {} }
                 }
                 div { class: "grow",
                     strong { class: "q-name", "{entry.title}" }
                     div { class: "muted small",
                         match &entry.chapters {
-                            PlanChapters::Loading => rsx! { span { class: "spin", Icon { name: "loader-circle", size: 13 } } " Loading chapters…" },
+                            PlanChapters::Loading => rsx! { Busy { label: "Loading chapters…", size: 28 } },
                             PlanChapters::Failed(message) => rsx! { "{message}" },
                             PlanChapters::Ready(_) => rsx! {
                                 "{plural(new_count, \"new chapter\")} of {total}"

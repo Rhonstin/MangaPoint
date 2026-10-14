@@ -3,20 +3,18 @@
 use super::ask_enable_browser;
 
 use super::devices::DevicesEditor;
-use super::widgets::Icon;
+use super::widgets::{Icon, Toggle};
 use crate::logic::{human_bytes, plural};
 use crate::state::{paths, AppState, BootState, Modal, ModalAction, Page, SettingsSection};
 use catalog::browser;
-use device_profiles::Firmware;
 use dioxus::prelude::*;
 use library::{DownloadLimits, DownloadSpeed};
 
 /// The sections, in the order the sidebar lists them.
-const SECTIONS: [(SettingsSection, &str, &str); 5] = [
+const SECTIONS: [(SettingsSection, &str, &str); 4] = [
     (SettingsSection::Reader, "hard-drive", "Your reader"),
     (SettingsSection::Downloads, "download", "Downloads"),
     (SettingsSection::Files, "folder-open", "Files"),
-    (SettingsSection::Browser, "globe", "Browser support"),
     (SettingsSection::About, "info", "About"),
 ];
 
@@ -52,6 +50,13 @@ pub fn SettingsPage() -> Element {
     };
 
     let section = *state.settings_section.read();
+    let export_folder = s
+        .export
+        .output_dir
+        .clone()
+        .unwrap_or_else(|| paths().default_export_dir())
+        .display()
+        .to_string();
 
     rsx! {
         div { class: "settings",
@@ -70,23 +75,13 @@ pub fn SettingsPage() -> Element {
                 {match section {
                     SettingsSection::Reader => rsx! {
                         DevicesEditor {}
-                        Group { title: "Firmware" }
-                        Row { label: "Firmware", desc: "What the reader runs. It decides which file types it can open.",
-                            select {
-                                value: if s.firmware == Firmware::CrossPoint { "cross" } else { "stock" },
-                                onchange: move |e| update(|s, v| s.firmware = if v == "cross" { Firmware::CrossPoint } else { Firmware::Stock }, e.value()),
-                                option { value: "cross", selected: s.firmware == Firmware::CrossPoint, "CrossPoint" }
-                                option { value: "stock", selected: s.firmware == Firmware::Stock, "Stock (the one it came with)" }
-                            }
-                        }
                     },
                     SettingsSection::Downloads => rsx! {
-                        h1 { class: "sx-title", "Downloads" }
                         Group { title: "Speed" }
                         Row {
                             label: "Download speed",
                             desc: format!(
-                                "{} Right now: {} at a time, {} pages in flight.",
+                                "{} Right now: {} at a time, {} pages in flight. If a source starts refusing requests, MangaPoint slows down by itself and speeds up again later.",
                                 match s.download.speed {
                                     DownloadSpeed::Gentle => "Slow and careful.",
                                     DownloadSpeed::Normal => "A good balance.",
@@ -132,22 +127,20 @@ pub fn SettingsPage() -> Element {
                                 "High numbers can get your address blocked by a source."
                             }
                         }
-                        p { class: "sx-note", "If a source starts refusing requests, MangaPoint slows down by itself and speeds up again later." }
 
                         Group { title: "Mixing sources" }
-                        Row { label: "Share chapters between sources", desc: "Different chapters come from different sources at once, which adds their speeds together.",
-                            input {
-                                r#type: "checkbox", checked: s.download.spread_sources,
-                                onchange: move |e| update(|s, v| s.download.spread_sources = v == "true", e.checked().to_string()),
+                        Row { label: "Share chapters between sources", desc: "Different chapters come from different sources at once, which adds their speeds together. Can mix translations within one series; leave it off for a consistent read.",
+                            Toggle {
+                                on: s.download.spread_sources,
+                                onchange: move |on: bool| update(|s, v| s.download.spread_sources = v == "true", on.to_string()),
                             }
                         }
-                        Row { label: "Race every source", desc: "Asks every source for each chapter and keeps the first to finish. Fastest, but sends the most requests.",
-                            input {
-                                r#type: "checkbox", checked: s.download.race_sources,
-                                onchange: move |e| update(|s, v| s.download.race_sources = v == "true", e.checked().to_string()),
+                        Row { label: "Race every source", desc: "Asks every source for each chapter and keeps the first to finish. Fastest, but sends the most requests. Can mix translations within one series.",
+                            Toggle {
+                                on: s.download.race_sources,
+                                onchange: move |on: bool| update(|s, v| s.download.race_sources = v == "true", on.to_string()),
                             }
                         }
-                        p { class: "sx-note", "Both can mix translations within one series. Leave them off for a consistent read." }
 
                         Group { title: "Saved pages" }
                         Row {
@@ -170,82 +163,7 @@ pub fn SettingsPage() -> Element {
                                 }
                             }
                         }
-                        Row {
-                            label: "Your library",
-                            desc: format!("{}, {}, {}", plural(series_count, "series"), plural(chapter_count, "chapter"), human_bytes(library_bytes)),
-                            button { class: "btn", onclick: move |_| state.go(Page::Library), Icon { name: "book-open", size: 15 } "Open Library" }
-                        }
-                    },
-                    SettingsSection::Files => rsx! {
-                        h1 { class: "sx-title", "Files" }
-                        Group { title: "Exported files" }
-                        Row { label: "Save to folder", desc: "Where the files for your reader are made.",
-                            div { class: "sx-inline",
-                                input {
-                                    r#type: "text",
-                                    placeholder: "{paths().default_export_dir().display()}",
-                                    value: "{s.export.output_dir.as_ref().map(|p| p.display().to_string()).unwrap_or_default()}",
-                                    oninput: move |e| update(|s, v| s.export.output_dir = (!v.trim().is_empty()).then(|| v.trim().into()), e.value()),
-                                }
-                                button { class: "btn", title: "Open this folder",
-                                    onclick: move |_| {
-                                        let dir = state.settings.read().export.output_dir.clone().unwrap_or_else(|| paths().default_export_dir());
-                                        let _ = std::fs::create_dir_all(&dir);
-                                        super::widgets::open_folder(&dir);
-                                    },
-                                    Icon { name: "folder-open", size: 15 } "Open"
-                                }
-                            }
-                        }
-                        Row { label: "Folder on the reader", desc: "Where files go when you export straight to the reader.",
-                            input {
-                                r#type: "text", value: "{s.export.device_folder}",
-                                oninput: move |e| update(|s, v| s.export.device_folder = v, e.value()),
-                            }
-                        }
-                        Row { label: "Reader Wi-Fi address", desc: "For sending over Wi-Fi to CrossPoint's file transfer. Not yet tested on a real device.",
-                            input {
-                                r#type: "text", placeholder: "http://192.168.3.3 (optional)",
-                                value: "{s.export.webdav_url.clone().unwrap_or_default()}",
-                                oninput: move |e| update(|s, v| s.export.webdav_url = (!v.trim().is_empty()).then(|| v.trim().to_string()), e.value()),
-                            }
-                        }
-                        Group { title: "Downloaded chapters" }
-                        Row {
-                            label: "Download folder",
-                            desc: format!("New downloads are kept in {}. Series you already have stay where they are.", crate::state::library_files().root().display()),
-                            button { class: "btn", title: "Choose where new downloads are kept",
-                                onclick: move |_| {
-                                    spawn(async move {
-                                        let start = Some(crate::state::library_files().root().to_path_buf());
-                                        if let Some(dir) = super::widgets::pick_folder("Where should downloads be kept?", start).await {
-                                            super::work::set_download_folder(state, dir);
-                                        }
-                                    });
-                                },
-                                Icon { name: "folder-open", size: 15 }
-                                "Choose folder…"
-                            }
-                        }
-                        Row { label: "Ask each time", desc: "Show where files go whenever you start a download.",
-                            input {
-                                r#type: "checkbox", checked: s.ask_download_folder,
-                                onchange: move |e| { let mut st = state.settings; st.write().ask_download_folder = e.checked(); state.save_settings(); },
-                            }
-                        }
-                        Row { label: "Open the downloads folder", desc: "Where the pages you download are kept.",
-                            button { class: "btn", title: "Open the downloads folder",
-                                onclick: move |_| {
-                                    let dir = crate::state::library_files().root().to_path_buf();
-                                    let _ = std::fs::create_dir_all(&dir);
-                                    super::widgets::open_folder(&dir);
-                                },
-                                Icon { name: "folder-open", size: 15 } "Open folder"
-                            }
-                        }
-                    },
-                    SettingsSection::Browser => rsx! {
-                        h1 { class: "sx-title", "Browser support" }
+                        Group { title: "Browser" }
                         Row {
                             label: "Browser support",
                             desc: if on_macos {
@@ -273,17 +191,96 @@ pub fn SettingsPage() -> Element {
                                 button { class: "btn", disabled: starting, onclick: move |_| ask_enable_browser(state, None), "Turn on…" }
                             }
                         }
+                        Group { title: "Library" }
+                        Row {
+                            label: "Your library",
+                            note: format!("{}, {}, {}", plural(series_count, "series"), plural(chapter_count, "chapter"), human_bytes(library_bytes)),
+                            button { class: "btn", onclick: move |_| state.go(Page::Library), Icon { name: "book-open", size: 15 } "Open Library" }
+                        }
+                    },
+                    SettingsSection::Files => rsx! {
+                        Group { title: "Exported files" }
+                        Row { label: "Save to folder", desc: "Where the files for your reader are made.",
+                            div { class: "sx-inline",
+                                input {
+                                    r#type: "text", readonly: true, title: "{export_folder}",
+                                    value: "{export_folder}",
+                                }
+                                button { class: "btn", title: "Choose where exported files are made",
+                                    onclick: move |_| {
+                                        let start = Some(
+                                            state.settings.peek().export.output_dir.clone().unwrap_or_else(|| paths().default_export_dir()),
+                                        );
+                                        spawn(async move {
+                                            if let Some(dir) = super::widgets::pick_folder("Where should the files go?", start).await {
+                                                let mut st = state.settings;
+                                                st.write().export.output_dir = Some(dir);
+                                                state.save_settings();
+                                            }
+                                        });
+                                    },
+                                    Icon { name: "folder-open", size: 15 }
+                                    "Choose folder…"
+                                }
+                            }
+                        }
+                        Row { label: "Folder on the reader", desc: "Where files go when you export straight to the reader.",
+                            input {
+                                r#type: "text", value: "{s.export.device_folder}",
+                                oninput: move |e| update(|s, v| s.export.device_folder = v, e.value()),
+                            }
+                        }
+                        Row { label: "Reader Wi-Fi address", desc: "For sending over Wi-Fi to CrossPoint's file transfer. Not yet tested on a real device.",
+                            input {
+                                r#type: "text", placeholder: "http://192.168.3.3 (optional)",
+                                value: "{s.export.webdav_url.clone().unwrap_or_default()}",
+                                oninput: move |e| update(|s, v| s.export.webdav_url = (!v.trim().is_empty()).then(|| v.trim().to_string()), e.value()),
+                            }
+                        }
+                        Group { title: "Downloaded chapters" }
+                        Row {
+                            label: "Download folder",
+                            desc: "New downloads are kept in this folder. Series you already have stay where they are.",
+                            note: crate::state::library_files().root().display().to_string(),
+                            button { class: "btn", title: "Choose where new downloads are kept",
+                                onclick: move |_| {
+                                    spawn(async move {
+                                        let start = Some(crate::state::library_files().root().to_path_buf());
+                                        if let Some(dir) = super::widgets::pick_folder("Where should downloads be kept?", start).await {
+                                            super::work::set_download_folder(state, dir);
+                                        }
+                                    });
+                                },
+                                Icon { name: "folder-open", size: 15 }
+                                "Choose folder…"
+                            }
+                        }
+                        Row { label: "Ask each time", desc: "Show where files go whenever you start a download.",
+                            Toggle {
+                                on: s.ask_download_folder,
+                                onchange: move |on: bool| { let mut st = state.settings; st.write().ask_download_folder = on; state.save_settings(); },
+                            }
+                        }
+                        Row { label: "Open the downloads folder", desc: "Where the pages you download are kept.",
+                            button { class: "btn", title: "Open the downloads folder",
+                                onclick: move |_| {
+                                    let dir = crate::state::library_files().root().to_path_buf();
+                                    let _ = std::fs::create_dir_all(&dir);
+                                    super::widgets::open_folder(&dir);
+                                },
+                                Icon { name: "folder-open", size: 15 } "Open folder"
+                            }
+                        }
                     },
                     SettingsSection::About => rsx! {
-                        h1 { class: "sx-title", "About" }
                         Row {
                             label: "Catalog engine",
-                            desc: match &services {
+                            note: match &services {
                                 Some(sv) => format!("Suwayomi {}, running on this computer only (port {}).", catalog::release::VERSION_TAG, sv.port),
                                 None => format!("Suwayomi {}", catalog::release::VERSION_TAG),
                             },
                         }
-                        Row { label: "Your data", desc: "{paths().root().display()}",
+                        Row { label: "Your data", note: paths().root().display().to_string(),
                             button { class: "btn", title: "Open this folder",
                                 onclick: move |_| {
                                     let dir = paths().root().to_path_buf();
@@ -308,12 +305,22 @@ fn Group(title: String) -> Element {
 
 /// One setting: what it is on the left, how to change it on the right.
 #[component]
-fn Row(label: String, desc: Option<String>, children: Element) -> Element {
+fn Row(
+    label: String,
+    /// Explains the setting, behind a question mark.
+    desc: Option<String>,
+    /// What is true right now, shown under the label.
+    note: Option<String>,
+    children: Element,
+) -> Element {
     rsx! {
         div { class: "sx-row",
             div { class: "sx-text",
-                div { class: "sx-label", "{label}" }
-                if let Some(text) = desc { div { class: "sx-desc", "{text}" } }
+                div { class: "sx-label",
+                    "{label}"
+                    if let Some(text) = desc { super::widgets::Help { text } }
+                }
+                if let Some(text) = note { div { class: "sx-desc", "{text}" } }
             }
             div { class: "sx-control", {children} }
         }

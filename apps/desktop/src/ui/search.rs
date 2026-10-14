@@ -1,7 +1,7 @@
 //! Searching every installed source at once.
 
-use super::widgets::{cover_key, load_cover, Chip, Cover, EmptyState, Icon};
-use crate::logic::{self, SearchSort};
+use super::widgets::{cover_key, load_cover, Busy, Chip, Cover, EmptyState, Icon, Loading};
+use crate::logic::{self, ExplicitFilter, SearchFilters, SearchSort, COMMON_GENRES, SERIES_TYPES};
 use crate::state::now_secs;
 use crate::state::spawn_forever;
 use crate::state::{AppState, Page, SearchView};
@@ -29,6 +29,7 @@ pub fn SearchPage() -> Element {
     let state = use_context::<AppState>();
     let mut text = use_signal(|| state.search.peek().query.clone());
     let mut open = use_signal(|| false);
+    let mut filters_open = use_signal(|| false);
     let changed = use_signal(|| false);
     let view = state.search.read().clone();
     let failed_text = view.failed.join(", ");
@@ -56,6 +57,63 @@ pub fn SearchPage() -> Element {
     };
     sources.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     let total = sources.len();
+    // Narrow the results by what is known of each.
+    let filters = state.search_filters.read().clone();
+    let all_count = order.len();
+    let (order, pending) = {
+        let adult: std::collections::HashSet<&str> = sources
+            .iter()
+            .filter(|s| s.adult)
+            .map(|s| s.id.as_str())
+            .collect();
+        let tags = state.search_tags.read();
+        let key = |i: usize| {
+            let best = &view.ranked[i].best().candidate;
+            (best.source_id.clone(), best.manga_id)
+        };
+        let kept: Vec<usize> = order
+            .into_iter()
+            .filter(|&i| {
+                let k = key(i);
+                filters.allows(tags.get(&k).map(Vec::as_slice), adult.contains(k.0.as_str()))
+            })
+            .collect();
+        let pending = if filters.needs_tags() {
+            (0..view.ranked.len().min(TAG_LOOKUPS))
+                .filter(|&i| !tags.contains_key(&key(i)))
+                .count()
+        } else {
+            0
+        };
+        (kept, pending)
+    };
+    // Types and genres are read from the details of the results. They are
+    // looked up in the background as soon as a search is done, so switching
+    // the filters afterwards only shows what is already loaded.
+    use_effect(move || {
+        if state.search.read().searching {
+            return;
+        }
+        let wanted: Vec<(String, i64)> = state
+            .search
+            .read()
+            .ranked
+            .iter()
+            .take(TAG_LOOKUPS)
+            .map(|s| (s.best().candidate.source_id.clone(), s.best().candidate.manga_id))
+            .filter(|k| !state.search_tags.peek().contains_key(k))
+            .collect();
+        if !wanted.is_empty() {
+            fetch_tags(state, wanted);
+        }
+    });
+    let filter_pills = filters.pills();
+    let chosen = filters.labels().len();
+    let filter_button = if chosen == 0 {
+        "Filters".to_string()
+    } else {
+        format!("Filters · {chosen}")
+    };
     let included: Vec<SourceInfo> = sources
         .iter()
         .filter(|s| !excluded.contains(&s.id))
@@ -109,12 +167,15 @@ pub fn SearchPage() -> Element {
         // space (so nothing below moves and the pointer is never left outside
         // while the box shrinks), and the visible box, which is as small or as
         // big as it needs to be.
-        div { class: if open() { "searchwrap open" } else { "searchwrap" },
+        div { class: if open() || filters_open() { "searchwrap open" } else { "searchwrap" },
             div { class: "searchbox searchbox-ghost", "aria-hidden": "true",
                 div { class: "searchbox-input", "\u{a0}" }
                 div { class: "searchbox-row",
                     div { class: "pills-flow",
                         span { class: "ghost-sort", "Sort: {sort.label()}" }
+                        for label in filter_pills.iter() {
+                            span { class: "ghost-pill", key: "{label}", "{label}" }
+                        }
                         for source in included.iter() {
                             span { class: "ghost-pill", key: "{source.id}", "{source.name}" }
                         }
@@ -158,10 +219,23 @@ pub fn SearchPage() -> Element {
                                 span { class: "chev", Icon { name: "chevron-down", size: 14 } }
                             }
                             button {
-                                class: "pill-btn", r#type: "button",
+                                class: if filters_open() { "pill-btn fil-btn is-open" } else { "pill-btn fil-btn" }, r#type: "button",
+                                title: "Narrow the results by type, explicit content and genre",
+                                onclick: move |_| {
+                                    if open() { close_panel() }
+                                    filters_open.set(!filters_open());
+                                },
+                                "{filter_button}"
+                                Icon { name: "chevron-down", size: 14 }
+                            }
+                            for label in filter_pills.iter() {
+                                span { class: "src-pill fil-pill", key: "{label}", "{label}" }
+                            }
+                            button {
+                                class: if open() { "pill-btn is-open" } else { "pill-btn" }, r#type: "button",
                                 title: "Choose which sources to search",
                                 disabled: total == 0,
-                                onclick: move |_| { if open() { close_panel() } else { open.set(true) } },
+                                onclick: move |_| { if open() { close_panel() } else { filters_open.set(false); open.set(true) } },
                                 "{sources_label}"
                                 Icon { name: "chevron-down", size: 14 }
                             }
@@ -174,9 +248,13 @@ pub fn SearchPage() -> Element {
                         }
                         // Submitting the form (this button or Enter) starts the search.
                         button { class: "search-circle", r#type: "submit", title: "Search", disabled: view.searching,
-                            if view.searching { Icon { name: "loader-circle", size: 18 } } else { Icon { name: "search", size: 18 } }
+                            Icon { name: "search", size: 18 }
                         }
                     }
+                }
+                if filters_open() {
+                    div { class: "backdrop", onclick: move |_| filters_open.set(false) }
+                    FilterPanel { on_close: move |()| filters_open.set(false) }
                 }
                 if open() {
                     div { class: "backdrop", onclick: move |_| close_panel() }
@@ -202,12 +280,21 @@ pub fn SearchPage() -> Element {
             }
         }
         if view.searching {
-            p { class: "muted", "Searching… {view.answered} of {view.total} sources answered" }
+            Loading { label: format!("Searching… {} of {} sources answered", view.answered, view.total) }
         } else if !view.query.is_empty() && view.ranked.is_empty() && !view.no_sources && !view.none_selected {
             EmptyState {
                 title: "The cat looked everywhere",
                 message: format!("It found nothing for “{}”. Try another spelling, or add more sources.", view.query),
                 scene: "search",
+            }
+        }
+        if !filters.is_empty() && !view.ranked.is_empty() && !view.searching {
+            div { class: "row wrap filter-note",
+                span { class: "muted small", "Showing {order.len()} of {all_count} results" }
+                if pending > 0 { Busy { label: "Checking the genres of {pending} more…", size: 36 } }
+                button { class: "btn small ghost", onclick: move |_| { let mut f = state.search_filters; f.set(SearchFilters::default()); },
+                    "Clear filters"
+                }
             }
         }
         if !view.failed.is_empty() && !view.searching {
@@ -237,8 +324,6 @@ fn SourcePanel(
     let state = use_context::<AppState>();
     let mut find = use_signal(String::new);
     let health = state.health.read().clone();
-    let total = sources.len();
-    let on = sources.iter().filter(|s| !excluded.contains(&s.id)).count();
     let needle = find.read().trim().to_lowercase();
     let shown: Vec<&SourceInfo> = sources
         .iter()
@@ -260,11 +345,7 @@ fn SourcePanel(
         .collect();
 
     rsx! {
-        div { class: "popover",
-            div { class: "popover-head",
-                strong { class: "grow", "Search these sources" }
-                span { class: "muted small", "{on} of {total}" }
-            }
+        div { class: "popover", onmounted: move |_| place_popover(),
             div { class: "popover-quick",
                 button { class: "pill small", r#type: "button", onclick: move |_| on_change.call(Vec::new()), "All" }
                 button { class: "pill small", r#type: "button", onclick: move |_| on_change.call(all_ids.clone()), "None" }
@@ -309,8 +390,189 @@ fn SourcePanel(
                 }
                 if shown.is_empty() { p { class: "muted small", style: "padding: 8px", "No source matches that." } }
             }
-            div { class: "row", style: "margin-top: 10px",
-                span { class: "muted small grow", "{on} of {total} selected" }
+            div { class: "popover-foot",
+                button { class: "btn primary small", r#type: "button", onclick: move |_| on_close.call(()), "Done" }
+            }
+        }
+    }
+}
+
+/// Put a dropdown just under the pill row of the search box and keep it inside
+/// the window (it scrolls inside itself), so it never makes the page longer.
+const PLACE_POPOVER: &str = r#"
+(() => {
+  const p = document.querySelector('.searchwrap .popover');
+  const box = document.querySelector('.searchwrap .searchbox:not(.searchbox-ghost)');
+  const row = box && box.querySelector('.sort-pill');
+  if (!p || !box || !row) return;
+  const top = row.getBoundingClientRect().bottom + 18;
+  p.style.position = 'fixed';
+  p.style.top = top + 'px';
+  p.style.left = (box.getBoundingClientRect().left + 14) + 'px';
+  p.style.maxHeight = Math.max(160, window.innerHeight - top - 16) + 'px';
+  p.style.overflow = 'hidden';
+})();
+"#;
+
+fn place_popover() {
+    spawn(async move {
+        let _ = document::eval(PLACE_POPOVER).await;
+    });
+}
+
+/// How many results get their genres looked up.
+const TAG_LOOKUPS: usize = 150;
+
+/// Look up the genres of some search results (a few at a time), so the type
+/// and genre filters can tell them apart. A series whose details cannot be
+/// read is kept with none, so it is not asked for again.
+fn fetch_tags(state: AppState, wanted: Vec<(String, i64)>) {
+    static ASKED: std::sync::Mutex<Vec<(String, i64)>> = std::sync::Mutex::new(Vec::new());
+    let Some(client) = state.client() else { return };
+    let todo: Vec<(String, i64)> = {
+        let Ok(mut asked) = ASKED.lock() else { return };
+        wanted
+            .into_iter()
+            .filter(|k| {
+                if asked.contains(k) {
+                    false
+                } else {
+                    asked.push(k.clone());
+                    true
+                }
+            })
+            .collect()
+    };
+    if todo.is_empty() {
+        return;
+    }
+    spawn_forever(async move {
+        futures_util::stream::iter(todo)
+            .for_each_concurrent(6, |key| {
+                let client = client.clone();
+                async move {
+                    let tags = match tokio::time::timeout(
+                        Duration::from_secs(20),
+                        client.manga_details(key.1),
+                    )
+                    .await
+                    {
+                        Ok(Ok(details)) => details.genre,
+                        _ => Vec::new(),
+                    };
+                    let mut all = state.search_tags;
+                    all.write().insert(key, tags);
+                }
+            })
+            .await;
+    });
+}
+
+fn set_filters(state: AppState, filters: SearchFilters) {
+    let mut f = state.search_filters;
+    f.set(filters);
+}
+
+/// Add a word to a list, or take it out if it is there.
+fn toggled(list: &[String], word: &str) -> Vec<String> {
+    let mut next: Vec<String> = list.to_vec();
+    match next.iter().position(|w| w.eq_ignore_ascii_case(word)) {
+        Some(at) => {
+            next.remove(at);
+        }
+        None => next.push(word.to_string()),
+    }
+    next
+}
+
+/// The panel for narrowing the results: type, explicit content and genres.
+#[component]
+fn FilterPanel(on_close: EventHandler<()>) -> Element {
+    let state = use_context::<AppState>();
+    let filters = state.search_filters.read().clone();
+    let (for_all_types, for_all_genres) = (filters.clone(), filters.clone());
+    let (clear_types, clear_explicit, clear_genres) = (filters.clone(), filters.clone(), filters.clone());
+    rsx! {
+        div { class: "popover filter-panel", onmounted: move |_| place_popover(),
+            div { class: "filter-body",
+            div { class: "filter-group first",
+                div { class: "filter-head",
+                    span { class: "filter-label", "Type" }
+                    button { class: "filter-clear", r#type: "button", disabled: filters.types.is_empty(),
+                        onclick: move |_| set_filters(state, SearchFilters { types: Vec::new(), ..clear_types.clone() }),
+                        "Clear"
+                    }
+                }
+                div { class: "filter-pills",
+                    button { r#type: "button", class: if filters.types.is_empty() { "pill small on" } else { "pill small" },
+                        onclick: move |_| set_filters(state, SearchFilters { types: Vec::new(), ..for_all_types.clone() }),
+                        "All"
+                    }
+                    for t in SERIES_TYPES {
+                        {
+                            let next = SearchFilters { types: toggled(&filters.types, t), ..filters.clone() };
+                            let on = filters.types.iter().any(|x| x.eq_ignore_ascii_case(t));
+                            rsx! {
+                                button { key: "{t}", r#type: "button", class: if on { "pill small on" } else { "pill small" },
+                                    onclick: move |_| set_filters(state, next.clone()),
+                                    "{t}"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            div { class: "filter-group",
+                div { class: "filter-head",
+                    span { class: "filter-label", "Explicit content" }
+                    button { class: "filter-clear", r#type: "button", disabled: filters.explicit == ExplicitFilter::Show,
+                        onclick: move |_| set_filters(state, SearchFilters { explicit: ExplicitFilter::Show, ..clear_explicit.clone() }),
+                        "Clear"
+                    }
+                }
+                div { class: "filter-pills",
+                    for (choice, label) in [(ExplicitFilter::Show, "Show"), (ExplicitFilter::Hide, "Hide"), (ExplicitFilter::Only, "Only")] {
+                        {
+                            let next = SearchFilters { explicit: choice, ..filters.clone() };
+                            rsx! {
+                                button { key: "{label}", r#type: "button", class: if filters.explicit == choice { "pill small on" } else { "pill small" },
+                                    onclick: move |_| set_filters(state, next.clone()),
+                                    "{label}"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            div { class: "filter-group",
+                div { class: "filter-head",
+                    span { class: "filter-label", "Genres" }
+                    button { class: "filter-clear", r#type: "button", disabled: filters.genres.is_empty(),
+                        onclick: move |_| set_filters(state, SearchFilters { genres: Vec::new(), ..clear_genres.clone() }),
+                        "Clear"
+                    }
+                }
+                div { class: "filter-pills",
+                    button { r#type: "button", class: if filters.genres.is_empty() { "pill small on" } else { "pill small" },
+                        onclick: move |_| set_filters(state, SearchFilters { genres: Vec::new(), ..for_all_genres.clone() }),
+                        "All"
+                    }
+                    for g in COMMON_GENRES {
+                        {
+                            let next = SearchFilters { genres: toggled(&filters.genres, g), ..filters.clone() };
+                            let on = filters.genres.iter().any(|x| x.eq_ignore_ascii_case(g));
+                            rsx! {
+                                button { key: "{g}", r#type: "button", class: if on { "pill small on" } else { "pill small" },
+                                    onclick: move |_| set_filters(state, next.clone()),
+                                    "{g}"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            }
+            div { class: "popover-foot",
                 button { class: "btn primary small", r#type: "button", onclick: move |_| on_close.call(()), "Done" }
             }
         }
@@ -337,19 +599,24 @@ fn SeriesCard(index: usize) -> Element {
         .find(&library::series_id(&series.title))
         .is_some();
     let save_class = if in_library {
-        "save-btn on"
+        "btn small ghost add-btn on"
     } else {
-        "save-btn"
+        "btn small add-btn"
     };
     let save_title = if in_library {
-        "In your library"
+        "It is in your library"
     } else {
-        "Add to your library"
+        "Keep it in your library without opening it"
     };
     let save_icon = if in_library {
         "bookmark-check"
     } else {
         "bookmark-plus"
+    };
+    let save_text = if in_library {
+        "In library"
+    } else {
+        "Add to library"
     };
     rsx! {
         div { class: "series-wrap",
@@ -376,7 +643,8 @@ fn SeriesCard(index: usize) -> Element {
             class: save_class,
             title: save_title,
             onclick: move |_| super::work::add_ranked_to_library(state, &for_save),
-            Icon { name: save_icon, size: 16 }
+            Icon { name: save_icon, size: 15 }
+            "{save_text}"
         }
         }
     }

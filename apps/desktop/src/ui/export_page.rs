@@ -7,7 +7,7 @@
 use super::conversion::ConversionControls;
 use super::devices::DeviceSelect;
 use super::presets::{apply_to_series, delete_preset};
-use super::widgets::{pick_folder, Chip, Cover, Icon};
+use super::widgets::{pick_folder, Chip, Cover, Icon, NoCover};
 use super::work::{
     activate_export_series, add_export_series, load_saved_cover, open_sample, remove_export_series,
     saved_cover_key, schedule_preview, start_export_plan,
@@ -15,7 +15,7 @@ use super::work::{
 use super::workspace::crop_editor::CropInspector;
 use super::workspace::preview::{switch_chapter, PreviewTab};
 use crate::logic::{self, plural, TargetChoice};
-use crate::state::{AppState, GroupingChoice, JobKind, Modal, ModalAction, Page};
+use crate::state::{AppState, GroupingChoice, JobKind, Modal, ModalAction};
 use dioxus::prelude::*;
 use library::{CropRect, DownloadedSeries};
 use pipeline::export::removable_drives;
@@ -64,9 +64,7 @@ fn Panel(
                     div { class: "px-panel-actions", onclick: move |e| e.stop_propagation(), {actions} }
                 }
             }
-            if open() {
-                div { class: "px-panel-body", {children} }
-            }
+            div { class: "px-panel-body", {children} }
         }
     }
 }
@@ -127,7 +125,6 @@ pub fn ExportPage() -> Element {
     if plan.items.is_empty() {
         return rsx! { p { class: "muted", style: "padding: 24px", "Opening the sample pages…" } };
     }
-    let sample = active_series(state).is_some_and(|s| s.is_sample());
 
     let mut close = move || {
         if closing() {
@@ -144,19 +141,6 @@ pub fn ExportPage() -> Element {
     rsx! {
         div { class: "export-screen",
             onmounted: move |_| { spawn(async move { let _ = document::eval(SPLIT_SCRIPT).await; }); },
-            div { class: "export-top",
-                h1 { "Export" }
-                if sample {
-                    Chip { text: "Sample pages", kind: Some("accent".to_string()) }
-                    span { class: "muted small", "Try the controls and presets here. To export your own series, pick them in the Library and choose Export…" }
-                    span { class: "grow" }
-                    button { class: "btn small", onclick: move |_| state.go(Page::Library),
-                        Icon { name: "book-open", size: 15 } "Choose series"
-                    }
-                } else {
-                    span { class: "muted", "{plural(plan.items.len(), \"series\")}" }
-                }
-            }
             div { class: "export-body",
                 aside { class: "export-side left",
                     PresetsPanel {}
@@ -198,61 +182,7 @@ fn Split(target: &'static str, dir: i32) -> Element {
 
 /// Dragging the bars between the panels and the edges of the side columns.
 /// The sizes are remembered between visits.
-const SPLIT_SCRIPT: &str = r#"
-const root = document.querySelector('.export-screen');
-// (Not `data-split`: that names the bars, and the screen itself must not match them.)
-if (root && !root.dataset.dragBound) {
- root.dataset.dragBound = '1';
- const KEY = 'mp-export-layout';
- let saved = {};
- try { saved = JSON.parse(localStorage.getItem(KEY) || '{}'); } catch (e) {}
- const body = root.querySelector('.export-body');
- if (saved.left) body.style.setProperty('--left-w', saved.left + 'px');
- if (saved.right) body.style.setProperty('--right-w', saved.right + 'px');
- for (const [id, h] of Object.entries(saved.panels || {})) {
-  const el = root.querySelector('[data-panel="' + id + '"]');
-  if (el) el.style.setProperty('--h', h + 'px');
- }
- let drag = null;
- root.addEventListener('pointerdown', e => {
-  const bar = e.target.closest('.px-split, .px-split-v');
-  if (!bar || !root.contains(bar)) return;
-  e.preventDefault();
-  try { bar.setPointerCapture(e.pointerId); } catch (err) {}
-  const kind = bar.dataset.split;
-  if (kind === 'panel') {
-   const el = root.querySelector('[data-panel="' + bar.dataset.target + '"]');
-   if (!el) return;
-   drag = { kind, bar, el, id: bar.dataset.target, from: e.clientY, start: el.getBoundingClientRect().height, dir: Number(bar.dataset.dir) };
-  } else {
-   const side = root.querySelector('.export-side.' + kind);
-   drag = { kind, bar, from: e.clientX, start: side.getBoundingClientRect().width };
-  }
-  bar.classList.add('active');
- });
- root.addEventListener('pointermove', e => {
-  if (!drag) return;
-  if (drag.kind === 'panel') {
-   const h = Math.max(60, Math.round(drag.start + drag.dir * (e.clientY - drag.from)));
-   drag.el.style.setProperty('--h', h + 'px');
-   saved.panels = Object.assign({}, saved.panels, { [drag.id]: h });
-  } else {
-   const dx = e.clientX - drag.from;
-   const w = Math.max(220, Math.min(620, Math.round(drag.start + (drag.kind === 'left' ? dx : -dx))));
-   body.style.setProperty(drag.kind === 'left' ? '--left-w' : '--right-w', w + 'px');
-   saved[drag.kind] = w;
-  }
- });
- const stop = () => {
-  if (!drag) return;
-  drag.bar.classList.remove('active');
-  drag = null;
-  try { localStorage.setItem(KEY, JSON.stringify(saved)); } catch (e) {}
- };
- root.addEventListener('pointerup', stop);
- root.addEventListener('pointercancel', stop);
-}
-"#;
+const SPLIT_SCRIPT: &str = include_str!("../js/export-split.js");
 
 // ---- left: presets -------------------------------------------------------
 
@@ -275,6 +205,17 @@ fn PresetsPanel() -> Element {
         .is_some_and(|e| e.preset.settings != series.settings);
     let series_id = series.id.clone();
     let settings_now = series.settings.clone();
+    // How this series was converted the last time it was exported, if that
+    // differs from how it is set now.
+    let last_export = state
+        .exports
+        .read()
+        .records
+        .iter()
+        .rev()
+        .find(|r| r.series_id == series.id && r.settings.is_some())
+        .cloned()
+        .filter(|r| r.settings.as_ref() != Some(&series.settings));
     let rename_key = format!(
         "{}-{nonce}",
         current.as_ref().map_or("none", |e| e.preset.id.as_str())
@@ -296,6 +237,19 @@ fn PresetsPanel() -> Element {
 
     rsx! {
         Panel { title: "Presets", icon: "layers", id: "presets", height: 190,
+            if let Some(record) = last_export {
+                {
+                    let (sid, preset, settings) = (series_id.clone(), record.preset_id.clone(), record.settings.clone().unwrap_or_default());
+                    rsx! {
+                        div { class: "px-note",
+                            span { class: "muted small", "Not what the last export of this series used." }
+                            button { class: "btn small", onclick: move |_| apply_to_series(state, &sid, preset.clone(), settings.clone()),
+                                Icon { name: "rotate-ccw", size: 14 } "Use the last export's settings"
+                            }
+                        }
+                    }
+                }
+            }
             div { class: "px-list",
                 for e in entries.iter() {
                     {
@@ -395,8 +349,6 @@ fn PresetsPanel() -> Element {
                         }
                     }
                 }
-            } else {
-                p { class: "px-note", "Custom settings for this series. Pick a preset to start from." }
             }
             div { class: "px-buttons",
                 button { class: "btn small", title: "Keep this series' settings as a preset of your own",
@@ -447,18 +399,11 @@ fn EditPanel() -> Element {
         .as_ref()
         .and_then(|id| state.presets.read().find(id))
         .map(|e| e.preset.settings);
-    let overridden = series.overridden.len();
 
     rsx! {
         Panel { title: "Edit", icon: "sliders-horizontal", id: "edit",
             DeviceSelect {}
-            p { class: "px-note",
-                if preset_base.is_none() { "Custom settings for this series." }
-                else if overridden == 0 { "Following the preset." }
-                else { "{overridden} settings changed from the preset." }
-            }
             CropSection { identity: "{chapter}/{key}", draft, crop_key: key.clone(), saved }
-            div { class: "px-label", style: "margin-top: 14px", "Layout and appearance apply to this series" }
             ConversionControls {
                 value: series.settings.clone(),
                 compact: true,
@@ -535,7 +480,7 @@ fn SeriesPanel(on_add: EventHandler<()>) -> Element {
                                     },
                                 }
                                 div { class: "px-layer-cover",
-                                    if has_cover { Cover { key_id: saved_cover_key(&series.id) } } else { div { class: "cover empty", "📖" } }
+                                    if has_cover { Cover { key_id: saved_cover_key(&series.id) } } else { NoCover {} }
                                 }
                                 div { class: "grow px-layer-text",
                                     strong { title: "{series.title}", "{series.title}" }
@@ -608,7 +553,13 @@ fn ChaptersPanel() -> Element {
                         let on = !excluded.contains(&c.key);
                         let showing = shown.as_deref() == Some(c.key.as_str());
                         rsx! {
-                            div { key: "{c.key}", class: match (on, showing) { (true, true) => "px-chapter on showing", (true, false) => "px-chapter on", (false, true) => "px-chapter showing", _ => "px-chapter" },
+                            div { key: "{c.key}",
+                                class: match (on, showing) {
+                                    (true, true) => "px-chapter on showing",
+                                    (true, false) => "px-chapter on",
+                                    (false, true) => "px-chapter showing",
+                                    _ => "px-chapter",
+                                },
                                 input {
                                     r#type: "checkbox", checked: on, title: "Include this chapter in the export",
                                     onchange: move |_| {
@@ -688,7 +639,7 @@ fn SendPanel() -> Element {
                     span { class: "grow folder-path", title: "{folder_text}", "{folder_text}" }
                     button { class: "btn small",
                         onclick: move |_| {
-                            let start = state.settings.peek().export.output_dir.clone();
+                            let start = Some(folder.clone());
                             spawn(async move {
                                 if let Some(dir) = pick_folder("Where should the files go?", start).await {
                                     let mut s = state.settings;
@@ -786,7 +737,7 @@ fn ExportFooter() -> Element {
                 class: "btn primary big", style: "margin-top: 10px",
                 disabled: chapters == 0 || busy || (opts.grouping == GroupingChoice::EveryN && !every_n_valid),
                 onclick: move |_| start_export_plan(state),
-                if exporting { Icon { name: "loader-circle", size: 18 } "Exporting…" }
+                if exporting { "Exporting…" }
                 else if busy { "Something else is running…" }
                 else if chapters == 0 { "Nothing to export yet" }
                 else { Icon { name: "file-down", size: 18 } "Export {plural(series_count, \"series\")}" }
@@ -808,6 +759,13 @@ fn AddSeries(on_close: EventHandler<()>) -> Element {
         .filter(|s| !s.chapters.is_empty() && !s.is_sample())
         .filter(|s| !plan.items.iter().any(|i| i.series_id == s.id))
         .collect();
+    // Their covers are on disk, small: read them as soon as the list opens.
+    let ids: Vec<String> = available.iter().map(|s| s.id.clone()).collect();
+    use_effect(move || {
+        for id in &ids {
+            load_saved_cover(state, id);
+        }
+    });
     rsx! {
         div { class: "modal-head",
             h2 { "Add a series to this export" }
@@ -824,7 +782,7 @@ fn AddSeries(on_close: EventHandler<()>) -> Element {
                     button { key: "{s.id}", class: "px-add-row",
                         onclick: move |_| add_export_series(state, id.clone()),
                         div { class: "px-layer-cover",
-                            if has_cover { Cover { key_id: saved_cover_key(&s.id) } } else { div { class: "cover empty", "📖" } }
+                            if has_cover { Cover { key_id: saved_cover_key(&s.id) } } else { NoCover {} }
                         }
                         div { class: "grow px-layer-text",
                             strong { "{s.title}" }

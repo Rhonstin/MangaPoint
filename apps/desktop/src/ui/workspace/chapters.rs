@@ -6,12 +6,11 @@ use crate::queue::QueuedChapter;
 use crate::state::{AppState, ChaptersState, Modal, ModalAction, Page, PendingDownload};
 use crate::ui::chapter_table::{ChapterGrid, GridRow};
 use crate::ui::search::run_search;
-use crate::ui::widgets::{Chip, EmptyState, Icon, ProgressBar};
+use crate::ui::widgets::{Chip, EmptyState, Icon, Loading, ProgressBar};
 use crate::ui::work::{ask_download, downloaded_keys, merged_key, open_export, retry_batch};
 use dioxus::prelude::*;
 use pipeline::SourceChoice;
 use search::missing_numbers;
-use std::collections::HashSet;
 
 #[component]
 pub fn ChaptersTab() -> Element {
@@ -52,9 +51,8 @@ pub fn ChaptersTab() -> Element {
         }
         ChaptersState::Loading => {
             return rsx! {
-                div { class: "card row",
-                    Icon { name: "loader-circle", size: 18 }
-                    span { class: "muted", "Loading chapters from your sources…" }
+                div { class: "card",
+                    Loading { label: "Loading chapters from your sources…" }
                 }
             };
         }
@@ -69,6 +67,7 @@ pub fn ChaptersTab() -> Element {
     };
 
     let have = downloaded_keys(state, &ws.series_id);
+    let has_downloads = !have.is_empty();
     let series = state.library.read().find(&ws.series_id).cloned();
     let saved: std::collections::HashMap<String, (u64, String)> = series
         .iter()
@@ -205,8 +204,6 @@ pub fn ChaptersTab() -> Element {
             .collect()
     };
     let current_sort = (sort_key, sort_desc);
-    let numbers_all = numbers.clone();
-    let numbers_latest = numbers.clone();
     let numbers_range = numbers.clone();
     let missing_text = {
         let first: Vec<String> = missing.iter().take(12).map(|n| n.to_string()).collect();
@@ -239,6 +236,7 @@ pub fn ChaptersTab() -> Element {
                     .options
                     .iter()
                     .filter_map(|o| loaded.member_names.get(o.member).cloned())
+                    .filter(|name| !name.is_empty())
                     .collect(),
                 date: logic::format_date(logic::latest_upload(ch)),
                 saved: copy.is_some(),
@@ -260,20 +258,25 @@ pub fn ChaptersTab() -> Element {
         .collect();
 
     let failed_count = grid_rows.iter().filter(|r| r.failed).count();
+    let total_chapters = loaded.merged.len();
+    let last_downloaded = series.as_ref().map_or(0, |s| s.updated_at);
     let mut selected = state.selected;
     let mut table = state.table;
     rsx! {
         div { class: "row wrap chapters-summary",
             div { class: "grow",
                 if saved_count > 0 {
-                    strong { "{saved_count} downloaded" }
+                    strong { "{saved_count} of {total_chapters} downloaded" }
                     span { class: "muted", " · {logic::human_bytes(saved_bytes)} on this computer" }
+                    if last_downloaded > 0 {
+                        span { class: "muted", " · last downloaded {logic::ago(crate::state::now_secs(), last_downloaded)}" }
+                    }
                 } else {
                     span { class: "muted", "Nothing downloaded yet. Tick chapters and add them to the downloads." }
                 }
             }
             if working || failed_count > 0 {
-                button { class: "btn", onclick: move |_| state.go(Page::Downloads),
+                button { class: "btn", onclick: move |_| state.go(Page::Tasks),
                     Icon { name: "download", size: 16 } "All downloads"
                 }
             }
@@ -308,9 +311,6 @@ pub fn ChaptersTab() -> Element {
                     oninput: move |e| table.write().filter = e.value(),
                 }
             }
-            button { class: "btn small", onclick: move |_| selected.set((0..numbers_all.len()).collect()), "All" }
-            button { class: "btn small", onclick: move |_| selected.set(logic::latest(&numbers_latest, 10).into_iter().collect()), "Latest 10" }
-            button { class: "btn small", onclick: move |_| selected.set(HashSet::new()), "None" }
             form {
                 class: "row", style: "gap: 6px; margin-left: auto",
                 onsubmit: move |e| {
@@ -327,6 +327,15 @@ pub fn ChaptersTab() -> Element {
                     oninput: move |e| range_text.set(e.value()),
                 }
                 button { class: "btn small", r#type: "submit", "Select" }
+            }
+            if has_downloads {
+                button { class: "btn primary small", title: "Edit and export the chapters you have downloaded",
+                    onclick: {
+                        let id = ws.series_id.clone();
+                        move |_| open_export(state, vec![id.clone()])
+                    },
+                    Icon { name: "file-down", size: 16 } "Export…"
+                }
             }
         }
         if let Some(msg) = range_error() {
@@ -404,7 +413,7 @@ pub fn ChaptersTab() -> Element {
                     }
                 }
                 if to_download == 0 && queued_picked > 0 {
-                    button { class: "btn primary", onclick: move |_| state.go(Page::Downloads),
+                    button { class: "btn primary", onclick: move |_| state.go(Page::Tasks),
                         Icon { name: "download", size: 16 } "View downloads"
                     }
                 } else if to_download == 0 {

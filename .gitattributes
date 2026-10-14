@@ -1,0 +1,9 @@
+# Keep the repository, and everyone's working copy, on LF line endings.
+* text=auto eol=lf
+*.png binary
+*.ico binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.xtc binary
+*.xtch binary

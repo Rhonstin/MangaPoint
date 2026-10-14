@@ -68,6 +68,8 @@ pub struct ExportJob {
     /// Rebuild chapters even when cached pages exist, for diagnostics and
     /// first-export benchmarks. Newly converted pages still refresh caches.
     pub force_conversion: bool,
+    /// Open every file with the series cover (or, without one, its first page).
+    pub cover: bool,
 }
 
 impl ExportJob {
@@ -88,6 +90,7 @@ impl ExportJob {
             work_dir,
             max_pages_per_file: DEFAULT_MAX_PAGES_PER_FILE,
             force_conversion: false,
+            cover: true,
         }
     }
 }
@@ -228,6 +231,12 @@ pub async fn export_series(
         })
         .buffered(chapter_concurrency());
 
+    // The series' own cover opens every file, so the reader lists it by its cover.
+    let cover = if job.cover {
+        cover_page(files, &job.series.id, &chapters[0].key, &opts).await
+    } else {
+        None
+    };
     let mut open: Option<(XtcBuilder, Volume)> = None;
     let mut open_group = usize::MAX;
     while let Some((group, ci, images)) = converted.next().await {
@@ -277,6 +286,11 @@ pub async fn export_series(
             ));
         }
         let (builder, volume) = open.as_mut().expect("opened above");
+        if builder.page_count() == 0 {
+            if let Some(cover) = &cover {
+                builder.add_encoded_page(cover)?;
+            }
+        }
         let start = builder.page_count();
         for image in &images {
             builder.add_encoded_page(image)?;
@@ -313,6 +327,39 @@ pub async fn export_series(
         chapters: total,
         cached_chapters,
     })
+}
+
+/// The saved cover of a series as one page for the device: the whole picture,
+/// fitted to the screen, uncropped. A series without a cover uses the first
+/// page of its first chapter. `None` if there is neither, or it cannot be
+/// read, in which case the file simply starts with the first chapter.
+async fn cover_page(
+    files: &LibraryFiles,
+    series_id: &str,
+    first_chapter: &str,
+    opts: &ProcessOptions,
+) -> Option<Vec<u8>> {
+    let bytes = match tokio::fs::read(files.cover_path(series_id)).await {
+        Ok(bytes) if !bytes.is_empty() => bytes,
+        _ => {
+            let first = files.page_files(series_id, first_chapter).into_iter().next()?;
+            tokio::fs::read(first).await.ok()?
+        }
+    };
+    let mut opts = opts.clone();
+    opts.layout = converter::process::Layout::Manga;
+    opts.crop = converter::process::CropMode::Full;
+    opts.margins = Default::default();
+    opts.spread = converter::process::SpreadMode::Fit;
+    tokio::task::spawn_blocking(move || {
+        let gray = decode_page(&bytes).ok()?;
+        let page = converter::plan::convert_chapter(&[gray], &opts)
+            .into_iter()
+            .next()?;
+        converter::xtc::encode_page(&page).ok()
+    })
+    .await
+    .ok()?
 }
 
 /// Write an assembled book to the scratch folder.

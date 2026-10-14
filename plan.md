@@ -3,22 +3,22 @@
 Native desktop (Rust) + Next.js website · Xteink X4 Pro · Fully open source
 Status: **draft for editing**. Items marked `[VERIFY]` are unconfirmed assumptions; `[DECISION]` needs your call.
 
-## 0. Build status (2026-10-12)
+## 0. Build status (2026-10-13)
 
-Stages 1-6 are built on branch `feature/converter-and-catalog`; stage 7 (website, installers, CI) is not started.
+Stages 1-6 are built, with the desktop app reworked since (branch `crop-performance-rewrite`, PR #1); stage 7 (website, installers, CI) is not started.
 
 | Stage | Crate(s) | State |
 |---|---|---|
 | 1 Converter | `converter`, `device-profiles` | Built. XTG/XTH encoders, XTC/XTCH container, firmware-style parser, test patterns, image pipeline (margin trim, area resize, spreads, webtoon slices, contrast, dithering). |
 | 2 Suwayomi manager | `catalog` | Built. Verified download, loopback + password, GraphQL client, browser-support helpers. |
 | 3 Sources | `library`, `sources` | Built. First-run install/skip, custom stores, source test + Retest, health history. |
-| 4 Desktop app | `apps/desktop` (Dioxus) | Built. Setup, Search, Series, Exports, Sources, Settings. First-run screen checked on screen; the other screens are compiled and logic-tested but not clicked through. |
+| 4 Desktop app | `apps/desktop` (Dioxus) | Built and used. Setup, Library, Search, Downloads (a queue with pause, retry and reordering), Export (its own full-window screen: presets, per-series editing, live preview, sample pages when nothing is chosen), Sources, Settings (readers, download folders, "ask each time"). One page per series. Checked by clicking through with real mouse events (`tools/ui-smoke.ps1`). |
 | 5 Search | `search` | Built. Fan-out, conservative dedupe, best-source scoring, chapter merge with gap detection. |
-| 6 Export | `pipeline` | Built. Retry, page cache and resume, source fallback, XTC/XTCH output, folder / SD card / WebDAV targets, job history. |
+| 6 Export | `pipeline` | Built. Retry, page cache and resume, source fallback, XTC/XTCH output, folder / SD card / WebDAV targets, job history. Parallel decode and render, chapter lookahead, quiet-row or overlap cutting of long strips. |
 
 **Verified live (2026-10-12):** search across 4 sources in 1.5 s; 59 results grouped into 36 series; 550 chapters merged from 4 sources; 187 real pages converted to a 480x800 XTCH file that the firmware-style parser accepts.
 
-**Not verified (needs hardware or more testing):** gray-level mapping and pixel polarity on a real X4/X4 Pro; stock X4 Pro firmware reading XTC; CrossPoint's WebDAV transfer; opt-in browser support end to end (enable, download, remove); macOS and Linux builds; clicking through the series/export screens in the app.
+**Not verified (needs hardware or more testing):** gray-level mapping and pixel polarity on a real X4/X4 Pro; stock X4 Pro firmware reading XTC; CrossPoint's WebDAV transfer; opt-in browser support end to end (enable, download, remove); macOS and Linux builds.
 
 **Deviations from the plan above:**
 - Persistence is JSON files (atomic writes), not SQLite. Simpler, and enough for settings, source choices, health history and the job list.

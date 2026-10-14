@@ -8,12 +8,23 @@
 
 use crate::logic::JobProgress;
 use pipeline::{CancelFlag, ChapterRequest, SourceChoice};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::time::{SystemTime, UNIX_EPOCH};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BatchStatus {
     Waiting,
     Running,
+    /// Set aside by the user; it goes on from the chapters not yet saved when
+    /// it is resumed.
+    Paused,
     Done,
     /// Stopped by an error, in words.
     Failed(String),
@@ -21,10 +32,22 @@ pub enum BatchStatus {
 }
 
 impl BatchStatus {
-    /// Waiting or running: still has work to do.
+    /// Waiting, paused or running: still has work to do.
     pub fn is_active(&self) -> bool {
-        matches!(self, BatchStatus::Waiting | BatchStatus::Running)
+        matches!(
+            self,
+            BatchStatus::Waiting | BatchStatus::Running | BatchStatus::Paused
+        )
     }
+}
+
+/// How a finished batch went.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct BatchStats {
+    /// How long it took.
+    pub secs: u64,
+    /// Pages saved.
+    pub pages: usize,
 }
 
 /// Some chapters of one series, downloaded together.
@@ -43,15 +66,20 @@ pub struct Batch {
     pub status: BatchStatus,
     pub progress: JobProgress,
     pub cancel: CancelFlag,
+    /// Told to stop so that it can be put aside, not given up.
+    pub pausing: bool,
     /// One line about how it went, once it has finished.
     pub summary: Option<String>,
+    /// How long it took and how much it saved, once it has finished.
+    pub stats: Option<BatchStats>,
     /// Chapters that could not be downloaded, in words.
     pub skipped: Vec<String>,
     /// The same chapters, by key.
     pub failed: Vec<String>,
     /// Seconds since the Unix epoch.
-    #[allow(dead_code)] // kept for the saved queue and for debugging
     pub added_at: u64,
+    /// When it finished, in the same seconds; 0 until it has.
+    pub finished_at: u64,
 }
 
 impl Batch {
@@ -76,10 +104,13 @@ impl Batch {
             status: BatchStatus::Waiting,
             progress: JobProgress::default(),
             cancel: CancelFlag::new(),
+            pausing: false,
             summary: None,
+            stats: None,
             skipped: Vec::new(),
             failed: Vec::new(),
             added_at,
+            finished_at: 0,
         }
     }
 
@@ -116,6 +147,35 @@ pub struct Added {
     pub joined_existing: bool,
 }
 
+/// A batch as it is kept on disk.
+#[derive(Clone, Serialize, Deserialize)]
+struct SavedBatch {
+    id: u64,
+    series_id: String,
+    title: String,
+    requests: Vec<ChapterRequest>,
+    plan: Vec<String>,
+    /// The one source it was limited to, if it was.
+    only_source: Option<String>,
+    source_names: HashMap<String, String>,
+    status: BatchStatus,
+    summary: Option<String>,
+    stats: Option<BatchStats>,
+    skipped: Vec<String>,
+    failed: Vec<String>,
+    added_at: u64,
+    finished_at: u64,
+}
+
+/// The queue as it is kept on disk, so a restart does not lose it.
+#[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SavedQueue {
+    batches: Vec<SavedBatch>,
+    next_id: u64,
+    paused: bool,
+}
+
 #[derive(Clone, Default)]
 pub struct DownloadQueue {
     pub batches: Vec<Batch>,
@@ -127,6 +187,83 @@ pub struct DownloadQueue {
 }
 
 impl DownloadQueue {
+    pub fn to_saved(&self) -> SavedQueue {
+        SavedQueue {
+            batches: self
+                .batches
+                .iter()
+                .map(|b| SavedBatch {
+                    id: b.id,
+                    series_id: b.series_id.clone(),
+                    title: b.title.clone(),
+                    requests: b.requests.clone(),
+                    plan: b.plan.clone(),
+                    only_source: match &b.choice {
+                        SourceChoice::Adaptive => None,
+                        SourceChoice::Only(id) => Some(id.clone()),
+                    },
+                    source_names: b.source_names.clone(),
+                    status: b.status.clone(),
+                    summary: b.summary.clone(),
+                    stats: b.stats,
+                    skipped: b.skipped.clone(),
+                    failed: b.failed.clone(),
+                    added_at: b.added_at,
+                    finished_at: b.finished_at,
+                })
+                .collect(),
+            next_id: self.next_id,
+            paused: self.paused,
+        }
+    }
+
+    /// Bring a saved queue back. A batch that was downloading when the app
+    /// closed waits to start again; what it had already saved is kept.
+    pub fn from_saved(saved: SavedQueue) -> Self {
+        let batches = saved
+            .batches
+            .into_iter()
+            .map(|mut b| {
+                // A file edited by hand must not bring the app down.
+                let n = b.requests.len().min(b.plan.len());
+                b.requests.truncate(n);
+                b.plan.truncate(n);
+                let mut batch = Batch::new(
+                    b.series_id,
+                    b.title,
+                    b.requests,
+                    b.plan,
+                    match b.only_source {
+                        Some(id) => SourceChoice::Only(id),
+                        None => SourceChoice::Adaptive,
+                    },
+                    b.source_names,
+                    b.added_at,
+                );
+                batch.id = b.id;
+                batch.status = match b.status {
+                    BatchStatus::Running => BatchStatus::Waiting,
+                    other => other,
+                };
+                batch.summary = b.summary;
+                batch.stats = b.stats;
+                batch.skipped = b.skipped;
+                batch.failed = b.failed;
+                batch.finished_at = b.finished_at;
+                batch
+            })
+            .collect::<Vec<_>>();
+        let next_id = saved
+            .next_id
+            .max(batches.iter().map(|b| b.id).max().unwrap_or(0));
+        Self {
+            batches,
+            next_id,
+            paused: saved.paused,
+            runner_active: false,
+        }
+    }
+
     /// Add a batch. Chapters of the same series that are already waiting or
     /// downloading are left out, and what is new joins the series' waiting
     /// batch if it has one.
@@ -217,9 +354,16 @@ impl DownloadQueue {
     ) {
         if let Some(b) = self.get_mut(id) {
             b.status = status;
+            b.finished_at = now_secs();
             b.summary = Some(summary);
             b.skipped = skipped;
             b.failed = failed;
+        }
+    }
+
+    pub fn set_stats(&mut self, id: u64, stats: BatchStats) {
+        if let Some(b) = self.get_mut(id) {
+            b.stats = Some(stats);
         }
     }
 
@@ -230,7 +374,7 @@ impl DownloadQueue {
             return false;
         };
         match self.batches[at].status {
-            BatchStatus::Waiting => {
+            BatchStatus::Waiting | BatchStatus::Paused => {
                 self.batches.remove(at);
                 true
             }
@@ -247,8 +391,10 @@ impl DownloadQueue {
     /// Stop everything for one series: its waiting batches go, and its running
     /// one is told to stop.
     pub fn cancel_series(&mut self, series_id: &str) {
-        self.batches
-            .retain(|b| b.series_id != series_id || b.status != BatchStatus::Waiting);
+        self.batches.retain(|b| {
+            b.series_id != series_id
+                || !matches!(b.status, BatchStatus::Waiting | BatchStatus::Paused)
+        });
         let running = self
             .running()
             .filter(|b| b.series_id == series_id)
@@ -260,7 +406,8 @@ impl DownloadQueue {
 
     /// Stop everything: waiting batches go, the running one is told to stop.
     pub fn cancel_all(&mut self) {
-        self.batches.retain(|b| b.status != BatchStatus::Waiting);
+        self.batches
+            .retain(|b| !matches!(b.status, BatchStatus::Waiting | BatchStatus::Paused));
         if let Some(id) = self.running().map(|b| b.id) {
             self.cancel(id);
         }
@@ -275,6 +422,56 @@ impl DownloadQueue {
 
     pub fn clear_finished(&mut self) {
         self.batches.retain(|b| b.status.is_active());
+    }
+
+    /// Put a batch aside. A waiting one is paused at once; a running one is
+    /// told to stop and is paused when it has (see [`DownloadQueue::park`]).
+    pub fn pause(&mut self, id: u64) -> bool {
+        let Some(b) = self.get_mut(id) else {
+            return false;
+        };
+        match b.status {
+            BatchStatus::Waiting => {
+                b.status = BatchStatus::Paused;
+                true
+            }
+            BatchStatus::Running => {
+                b.pausing = true;
+                b.cancel.cancel();
+                b.progress.stopping = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// A running batch that was told to pause has stopped: what is saved
+    /// stays, and the chapters still to do wait to be resumed.
+    pub fn park(&mut self, id: u64, saved: &std::collections::HashSet<String>) {
+        let Some(b) = self.get_mut(id) else {
+            return;
+        };
+        let keep: Vec<usize> = (0..b.plan.len())
+            .filter(|&i| !saved.contains(&b.plan[i]))
+            .collect();
+        b.requests = keep.iter().map(|&i| b.requests[i].clone()).collect();
+        b.plan = keep.iter().map(|&i| b.plan[i].clone()).collect();
+        b.status = BatchStatus::Paused;
+        b.pausing = false;
+        b.progress = JobProgress::default();
+        b.cancel = CancelFlag::new();
+    }
+
+    /// Let a paused batch take its turn again.
+    pub fn resume(&mut self, id: u64) -> bool {
+        match self.get_mut(id) {
+            Some(b) if b.status == BatchStatus::Paused => {
+                b.status = BatchStatus::Waiting;
+                b.cancel = CancelFlag::new();
+                true
+            }
+            _ => false,
+        }
     }
 
     /// Move a waiting batch to the front of the line.
@@ -372,7 +569,9 @@ impl DownloadQueue {
                 continue;
             };
             match &batch.status {
-                BatchStatus::Waiting => return Some(QueuedChapter::Waiting),
+                BatchStatus::Waiting | BatchStatus::Paused => {
+                    return Some(QueuedChapter::Waiting)
+                }
                 BatchStatus::Running => {
                     return Some(match batch.progress.active.get(&index) {
                         Some(a) => QueuedChapter::Downloading {
@@ -660,5 +859,87 @@ mod tests {
         q.finish(id, BatchStatus::Cancelled, String::new(), vec![], vec![]);
         assert!(!q.series_has_work("a"));
         assert_eq!(q.counts(), (0, 1, 2));
+    }
+
+    #[test]
+    fn a_saved_queue_comes_back_with_its_finished_batches_and_resumes_the_rest() {
+        let mut q = DownloadQueue::default();
+        for title in ["Done one", "Waits", "Was running"] {
+            q.add(Batch::new(
+                title.to_lowercase(),
+                title.into(),
+                vec![ChapterRequest {
+                    number: Some(1.0),
+                    name: "c".into(),
+                    key: Some(format!("{title}-1")),
+                    options: Vec::new(),
+                }],
+                vec![format!("{title}-1")],
+                SourceChoice::Only("src".into()),
+                HashMap::new(),
+                10,
+            ));
+        }
+        let (a, c) = (q.batches[0].id, q.batches[2].id);
+        q.finish(
+            a,
+            BatchStatus::Done,
+            "Downloaded 1 chapter".into(),
+            Vec::new(),
+            Vec::new(),
+        );
+        q.set_stats(a, BatchStats { secs: 9, pages: 40 });
+        q.start(c);
+
+        let json = serde_json::to_string(&q.to_saved()).unwrap();
+        let back = DownloadQueue::from_saved(serde_json::from_str(&json).unwrap());
+        assert_eq!(back.batches.len(), 3);
+        assert_eq!(back.batches[0].status, BatchStatus::Done);
+        assert_eq!(
+            back.batches[0].stats,
+            Some(BatchStats { secs: 9, pages: 40 })
+        );
+        assert!(back.batches[0].finished_at > 0);
+        assert_eq!(
+            back.batches[2].status,
+            BatchStatus::Waiting,
+            "it starts again"
+        );
+        assert_eq!(back.batches[1].choice, SourceChoice::Only("src".into()));
+        assert!(!back.runner_active);
+
+        // Lists that do not match are cut to the shorter, not trusted.
+        let mut odd = q.to_saved();
+        odd.batches[0].plan.push("extra".into());
+        let odd = DownloadQueue::from_saved(odd);
+        assert_eq!(odd.batches[0].plan.len(), odd.batches[0].requests.len());
+    }
+
+    #[test]
+    fn a_batch_can_be_put_aside_and_goes_on_with_what_is_left() {
+        let mut q = DownloadQueue::default();
+        q.add(batch("a", &[1, 2, 3]));
+        q.add(batch("b", &[1]));
+        let (a, b) = (q.batches[0].id, q.batches[1].id);
+        // A waiting batch is paused at once and is skipped by the line.
+        assert!(q.pause(b));
+        assert_eq!(q.next_to_start(), Some(a));
+        // A running one is told to stop, and is parked with what is not saved.
+        q.start(a);
+        assert!(q.pause(a));
+        assert!(q.get(a).unwrap().pausing);
+        let saved: std::collections::HashSet<String> = [q.get(a).unwrap().plan[0].clone()].into();
+        q.park(a, &saved);
+        let parked = q.get(a).unwrap();
+        assert_eq!(parked.status, BatchStatus::Paused);
+        assert_eq!(parked.plan.len(), 2);
+        assert!(!parked.pausing && !parked.cancel.is_cancelled());
+        assert!(parked.status.is_active(), "it still counts as work to do");
+        assert_eq!(q.next_to_start(), None, "nothing runs until one is resumed");
+        assert!(q.resume(a));
+        assert_eq!(q.next_to_start(), Some(a));
+        // Giving a paused one up drops it like a waiting one.
+        assert!(q.cancel(b));
+        assert!(q.get(b).is_none());
     }
 }

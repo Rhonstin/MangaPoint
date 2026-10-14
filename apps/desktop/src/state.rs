@@ -29,6 +29,9 @@ pub fn paths() -> &'static AppPaths {
 }
 
 /// The folders downloads are kept in: where new ones go, and the others.
+/// Process-wide because background tasks build `LibraryFiles` from anywhere,
+/// without an `AppState` to hand; `apply_library_dirs` keeps it in step with the
+/// settings.
 static LIBRARY_DIRS: std::sync::RwLock<Option<(PathBuf, Vec<PathBuf>)>> =
     std::sync::RwLock::new(None);
 
@@ -64,8 +67,8 @@ pub enum Page {
     Library,
     /// Choosing, editing and exporting series, full window.
     Export,
-    /// The download queue and the exported files.
-    Downloads,
+    /// Downloads and exports, running and finished.
+    Tasks,
     /// Choosing what to download from one or more library series.
     Plan,
     Sources,
@@ -79,7 +82,6 @@ pub enum SettingsSection {
     Reader,
     Downloads,
     Files,
-    Browser,
     About,
 }
 
@@ -136,6 +138,8 @@ pub enum ModalAction {
         id: String,
     },
     /// Delete an exported file from disk.
+    /// Every file of one export.
+    DeleteExport { record_id: String },
     DeleteExportedFile {
         record_id: String,
         path: String,
@@ -413,6 +417,11 @@ pub enum JobKind {
 pub struct JobView {
     pub kind: JobKind,
     pub title: String,
+    /// The series being exported, for its cover.
+    pub series_id: String,
+    /// Stopped for now; it goes on from where it was when resumed (even after
+    /// the app is closed and opened again).
+    pub paused: bool,
     pub progress: JobProgress,
     /// `None` while running, then a one-line summary or the error.
     pub result: Option<Result<String, String>>,
@@ -430,9 +439,13 @@ pub struct AppState {
     pub search: Signal<SearchView>,
     /// How the search results are ordered.
     pub search_sort: Signal<SearchSort>,
+    /// What the search results are narrowed to.
+    pub search_filters: Signal<crate::logic::SearchFilters>,
+    /// The genres each search result's source lists, once looked up.
+    pub search_tags: Signal<HashMap<(String, i64), Vec<String>>>,
     pub settings_section: Signal<SettingsSection>,
     /// Cover images as data URLs, keyed by `source:manga`.
-    pub covers: Signal<HashMap<String, String>>,
+    pub covers: Signal<HashMap<String, std::rc::Rc<str>>>,
     pub notice: Signal<Option<Notice>>,
     pub modal: Signal<Option<Modal>>,
     /// Downloaded chapters (their pages are on disk).
@@ -454,6 +467,9 @@ pub struct AppState {
     /// Series whose details are being fetched right now.
     pub info_busy: Signal<HashSet<String>>,
     pub workspace: Signal<Option<Workspace>>,
+    /// The series that was open when the Export screen took the workspace over,
+    /// put back when the screen is left.
+    pub parked_workspace: Signal<Option<Workspace>>,
     pub chapters: Signal<ChaptersState>,
     /// Chapters ticked in the table, by position in the merged list.
     pub selected: Signal<HashSet<usize>>,
@@ -512,6 +528,8 @@ impl AppState {
             page: sig(first_page),
             search: sig(SearchView::default()),
             search_sort: sig(SearchSort::default()),
+            search_filters: sig(crate::logic::SearchFilters::default()),
+            search_tags: sig(HashMap::new()),
             settings_section: sig(SettingsSection::default()),
             covers: sig(HashMap::new()),
             notice: sig(None),
@@ -521,11 +539,14 @@ impl AppState {
             presets: sig(JsonFile::<PresetsDb>::new(paths().presets_file()).load()),
             speeds: sig(JsonFile::<SpeedDb>::new(paths().speeds_file()).load()),
             download_source: sig(SourceChoice::Adaptive),
-            queue: sig(DownloadQueue::default()),
+            queue: sig(DownloadQueue::from_saved(
+                JsonFile::<crate::queue::SavedQueue>::new(paths().queue_file()).load(),
+            )),
             plan: sig(Vec::new()),
             download_dialog: sig(None),
             info_busy: sig(HashSet::new()),
             workspace: sig(None),
+            parked_workspace: sig(None),
             chapters: sig(ChaptersState::Idle),
             selected: sig(HashSet::new()),
             table: sig(TableView::default()),
@@ -546,10 +567,24 @@ impl AppState {
 
     pub fn go(&self, page: Page) {
         let mut p = self.page;
+        // The Export screen borrows the workspace for its own series; the
+        // series that was open before it comes back when it is left.
+        if *p.peek() == Page::Export && page != Page::Export {
+            let mut parked = self.parked_workspace;
+            let back = parked.write().take();
+            let mut workspace = self.workspace;
+            workspace.set(back);
+        }
         p.set(page);
     }
 
-    /// Switch tab within the open series.
+    /// Leave the open series for the page it was opened from.
+    pub fn close_series(&self, back: Page) {
+        let mut workspace = self.workspace;
+        workspace.set(None);
+        self.go(back);
+    }
+
     pub fn notify(&self, text: impl Into<String>) {
         let text = text.into();
         tracing::info!("{text}");
@@ -614,7 +649,10 @@ impl AppState {
     pub fn edit_queue<R>(&self, edit: impl FnOnce(&mut DownloadQueue) -> R) -> R {
         let mut queue = self.queue;
         let mut guard = queue.write();
-        edit(&mut guard)
+        let result = edit(&mut guard);
+        // Kept on disk, so what is waiting and what has finished survive a restart.
+        let _ = JsonFile::new(paths().queue_file()).save(&guard.to_saved());
+        result
     }
 
     /// Change the saved source speeds.

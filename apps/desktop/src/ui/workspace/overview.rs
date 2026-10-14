@@ -1,8 +1,7 @@
 //! Tab 0: what the series is, and what you have of it.
 
-use crate::logic::{ago, describe_settings, human_bytes};
-use crate::state::{now_secs, AppState};
-use crate::ui::widgets::{Chip, Cover, EmptyState, Icon};
+use crate::state::AppState;
+use crate::ui::widgets::{Busy, Chip, Cover, EmptyState, Icon, NoCover};
 use crate::ui::work::{ensure_series_info, load_saved_cover, saved_cover_key};
 use dioxus::prelude::*;
 
@@ -10,6 +9,8 @@ use dioxus::prelude::*;
 pub fn OverviewTab() -> Element {
     let state = use_context::<AppState>();
     let mut expanded = use_signal(|| false);
+    // Whether the description is cut short, measured on the page.
+    let mut cut_short = use_signal(|| false);
 
     let Some(ws) = state.workspace.read().clone() else {
         return rsx! {};
@@ -31,32 +32,6 @@ pub fn OverviewTab() -> Element {
         };
     };
 
-    // Chapters per source, most first.
-    let mut per_source: Vec<(String, usize)> = Vec::new();
-    for chapter in &series.chapters {
-        let name = series
-            .info
-            .as_ref()
-            .and_then(|i| i.source_name(&chapter.source_id))
-            .map(str::to_string)
-            .unwrap_or_else(|| "another source".to_string());
-        match per_source.iter_mut().find(|(n, _)| *n == name) {
-            Some((_, count)) => *count += 1,
-            None => per_source.push((name, 1)),
-        }
-    }
-    per_source.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-    let sources_text = per_source
-        .iter()
-        .map(|(name, n)| format!("{name} ({n})"))
-        .collect::<Vec<_>>()
-        .join(" · ");
-
-    // How many chapters the sources list, once their lists have loaded.
-    let total_chapters = match &*state.chapters.read() {
-        crate::state::ChaptersState::Ready(loaded) => Some(loaded.merged.len()),
-        _ => None,
-    };
     let info = series.info.clone();
     let loading = state.info_busy.read().contains(&ws.series_id);
     let cover_key = saved_cover_key(&series.id);
@@ -65,7 +40,8 @@ pub fn OverviewTab() -> Element {
         .as_ref()
         .map(|i| i.description.clone())
         .unwrap_or_default();
-    let long_text = description.chars().count() > 360;
+    let desc_id = format!("desc-{}", series.id);
+    let measure_id = desc_id.clone();
     let by_line = info
         .as_ref()
         .map(|i| match (i.author.is_empty(), i.artist.is_empty()) {
@@ -80,7 +56,7 @@ pub fn OverviewTab() -> Element {
     rsx! {
         div { class: "overview",
             div { class: "overview-cover",
-                if has_cover { Cover { key_id: cover_key } } else { div { class: "cover empty", "📖" } }
+                if has_cover { Cover { key_id: cover_key } } else { NoCover {} }
             }
             div { class: "overview-body",
                 div { class: "overview-title",
@@ -103,14 +79,37 @@ pub fn OverviewTab() -> Element {
                     }
                 }
                 if !description.is_empty() {
-                    p { class: if expanded() || !long_text { "description" } else { "description clamp" }, "{description}" }
-                    if long_text {
-                        button { class: "btn ghost small", onclick: move |_| expanded.set(!expanded()),
+                    for key in [description.len()] {
+                        p {
+                            key: "{key}",
+                            id: "{desc_id}",
+                            class: if expanded() { "description" } else { "description clamp" },
+                            onmounted: {
+                                let measure_id = measure_id.clone();
+                                move |_| {
+                                    let measure_id = measure_id.clone();
+                                    spawn(async move {
+                                        tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+                                        let script = format!(
+                                            "const e = document.getElementById('{measure_id}'); dioxus.send(!!e && e.scrollHeight > e.clientHeight + 1);"
+                                        );
+                                        let mut measure = document::eval(&script);
+                                        if let Ok(cut) = measure.recv::<bool>().await {
+                                            cut_short.set(cut);
+                                        }
+                                    });
+                                }
+                            },
+                            "{description}"
+                        }
+                    }
+                    if cut_short() || expanded() {
+                        span { class: "read-more", onclick: move |_| expanded.set(!expanded()),
                             if expanded() { "Show less" } else { "Read more" }
                         }
                     }
                 } else if loading {
-                    p { class: "muted", style: "margin-top: 12px", span { class: "spin", Icon { name: "loader-circle", size: 14 } } " Loading the details…" }
+                    p { class: "muted", style: "margin-top: 12px", Busy { label: "Loading the details…" } }
                 } else if info.is_none() {
                     p { class: "muted small", style: "margin-top: 12px",
                         "The details of this series haven't been loaded yet. They need the catalog to be running."
@@ -123,21 +122,6 @@ pub fn OverviewTab() -> Element {
                 if series.chapters.is_empty() {
                     p { class: "muted", style: "margin: 14px 0 0",
                         "Not downloaded yet. Tick chapters below to download them."
-                    }
-                }
-                div { class: "facts",
-                    div { class: "summary-line", span { class: "muted", "Chapters" } span {
-                        "{series.chapters.len()} downloaded"
-                        if let Some(total) = total_chapters { " of {total}" }
-                    } }
-                    div { class: "summary-line", span { class: "muted", "Pages" } span { "{series.page_count()}" } }
-                    div { class: "summary-line", span { class: "muted", "On this computer" } span { "{human_bytes(series.bytes())}" } }
-                    if !sources_text.is_empty() {
-                        div { class: "summary-line", span { class: "muted", "From" } span { class: "right", "{sources_text}" } }
-                    }
-                    div { class: "summary-line", span { class: "muted", "Converted as" } span { class: "right", "{describe_settings(&series.settings)}" } }
-                    if series.updated_at > 0 {
-                        div { class: "summary-line", span { class: "muted", "Last downloaded" } span { "{ago(now_secs(), series.updated_at)}" } }
                     }
                 }
             }

@@ -195,17 +195,6 @@ pub fn select_by_text(text: &str, numbers: &[Option<f64>]) -> Result<Vec<usize>,
         .collect())
 }
 
-/// Indices of the `count` highest-numbered chapters.
-pub fn latest(numbers: &[Option<f64>], count: usize) -> Vec<usize> {
-    let mut numbered: Vec<(usize, f64)> = numbers
-        .iter()
-        .enumerate()
-        .filter_map(|(i, n)| n.map(|n| (i, n)))
-        .collect();
-    numbered.sort_by(|a, b| b.1.total_cmp(&a.1));
-    numbered.into_iter().take(count).map(|(i, _)| i).collect()
-}
-
 // ---- Where files go --------------------------------------------------------
 
 /// Where the user chose to send the result.
@@ -340,6 +329,14 @@ impl JobProgress {
         (seconds >= 4.0 && self.pages_seen >= 6).then(|| self.pages_seen as f32 / seconds)
     }
 
+    /// Seconds left at the pace so far, once there is enough to say.
+    pub fn eta_secs(&self) -> Option<u64> {
+        let seconds = self.started?.elapsed().as_secs_f32();
+        let done = self.fraction();
+        (seconds >= 4.0 && (0.03..1.0).contains(&done))
+            .then(|| (seconds * (1.0 - done) / done).round() as u64)
+    }
+
     /// Overall progress, 0.0 to 1.0.
     pub fn fraction(&self) -> f32 {
         if self.chapter_total == 0 {
@@ -405,6 +402,42 @@ pub fn verdict_label(v: Verdict) -> &'static str {
     }
 }
 
+/// The biggest a saved cover is kept: posters are shown at most 200 px wide, so
+/// this is sharp on a high-density screen, fills an e-reader screen when it is
+/// the cover page of an export, and still takes only tens of kilobytes.
+const COVER_MAX: (u32, u32) = (540, 810);
+/// Covers larger than this are shrunk when they are next read.
+pub const COVER_KEEP_BYTES: usize = 160 * 1024;
+
+/// A cover as a small JPEG, to keep on disk instead of what the source sent.
+/// `None` if the bytes are not an image.
+pub fn small_cover(bytes: &[u8]) -> Option<Vec<u8>> {
+    let img = image::load_from_memory(bytes).ok()?;
+    let img = if img.width() > COVER_MAX.0 || img.height() > COVER_MAX.1 {
+        img.resize(
+            COVER_MAX.0,
+            COVER_MAX.1,
+            image::imageops::FilterType::Triangle,
+        )
+    } else {
+        img
+    };
+    let mut out = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 80)
+        .encode_image(&img.to_rgb8())
+        .ok()?;
+    Some(out)
+}
+
+/// A length of time in words: "45 s", "2 min 14 s", "1 h 05 min".
+pub fn human_duration(secs: u64) -> String {
+    match secs {
+        0..=59 => format!("{secs} s"),
+        60..=3599 => format!("{} min {:02} s", secs / 60, secs % 60),
+        _ => format!("{} h {:02} min", secs / 3600, secs % 3600 / 60),
+    }
+}
+
 pub fn human_bytes(n: u64) -> String {
     const UNITS: [&str; 4] = ["bytes", "KB", "MB", "GB"];
     let mut value = n as f64;
@@ -432,36 +465,6 @@ pub fn ago(now_secs: u64, then_secs: u64) -> String {
         _ => (s / 86_400, "day"),
     };
     format!("{n} {unit}{} ago", if n == 1 { "" } else { "s" })
-}
-
-/// One line saying what a set of conversion settings does, for preset lists.
-pub fn describe_settings(c: &library::ConversionSettings) -> String {
-    use converter::process::{CropMode, Layout};
-    use converter::xtc::{Format, ReadDirection};
-    let direction = match c.direction {
-        ReadDirection::RightToLeft => "right to left",
-        ReadDirection::LeftToRight => "left to right",
-        ReadDirection::TopToBottom => "top to bottom",
-    };
-    let layout = match c.layout {
-        Layout::Auto => "automatic layout",
-        Layout::Manga => "pages",
-        Layout::Webtoon => "long strips",
-    };
-    let format = match c.format {
-        Format::Xtch => "4 grays",
-        Format::Xtc => "black & white",
-    };
-    let trim = match (c.crop, c.margins.is_none()) {
-        (CropMode::Full, true) => "no cropping".to_string(),
-        (CropMode::Full, false) => "fixed margins".to_string(),
-        (CropMode::Margins, true) => "auto trim".to_string(),
-        (CropMode::Margins, false) => "auto trim + fixed margins".to_string(),
-    };
-    format!(
-        "{direction} · {layout} · {trim} · {format} · contrast {}",
-        c.contrast
-    )
 }
 
 /// Turn what a source says about a series into what the Library keeps.
@@ -589,6 +592,105 @@ pub fn sorted_order(ranked: &[search::RankedSeries], sort: SearchSort) -> Vec<us
     order
 }
 
+// ---- Narrowing the search results -----------------------------------------
+
+/// The kinds of series that can be picked, as sources tag them.
+pub const SERIES_TYPES: [&str; 5] = ["Manga", "Manhwa", "Manhua", "Webtoon", "Comic"];
+
+/// Genres offered in the filter.
+pub const COMMON_GENRES: [&str; 24] = [
+    "Action", "Adventure", "Comedy", "Drama", "Fantasy", "Horror", "Isekai", "Martial Arts",
+    "Mystery", "Psychological", "Romance", "Sci-Fi", "Slice of Life", "Sports", "Supernatural",
+    "Thriller", "School Life", "Historical", "Mecha", "Seinen", "Shounen", "Shoujo", "Josei",
+    "Tragedy",
+];
+
+/// Tags that mean a series is for adults.
+const EXPLICIT_TAGS: [&str; 7] = [
+    "adult", "hentai", "smut", "erotica", "mature", "pornographic", "explicit",
+];
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ExplicitFilter {
+    #[default]
+    Show,
+    Hide,
+    Only,
+}
+
+/// What the search results are narrowed to.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SearchFilters {
+    pub types: Vec<String>,
+    pub explicit: ExplicitFilter,
+    pub genres: Vec<String>,
+}
+
+impl SearchFilters {
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// Types and genres can only be told from the details of each series.
+    pub fn needs_tags(&self) -> bool {
+        !self.types.is_empty() || !self.genres.is_empty()
+    }
+
+    /// What to show on the folded pills: each choice made, or "All types" and
+    /// "All genres" while there is none.
+    pub fn pills(&self) -> Vec<String> {
+        let mut out: Vec<String> = if self.types.is_empty() {
+            vec!["All types".into()]
+        } else {
+            self.types.clone()
+        };
+        match self.explicit {
+            ExplicitFilter::Show => {}
+            ExplicitFilter::Hide => out.push("No explicit".into()),
+            ExplicitFilter::Only => out.push("Explicit only".into()),
+        }
+        if self.genres.is_empty() {
+            out.push("All genres".into());
+        } else {
+            out.extend(self.genres.iter().cloned());
+        }
+        out
+    }
+
+    /// Short words for each choice made, for the pills.
+    pub fn labels(&self) -> Vec<String> {
+        let mut out: Vec<String> = self.types.clone();
+        match self.explicit {
+            ExplicitFilter::Show => {}
+            ExplicitFilter::Hide => out.push("No explicit".into()),
+            ExplicitFilter::Only => out.push("Explicit only".into()),
+        }
+        out.extend(self.genres.iter().cloned());
+        out
+    }
+
+    /// Does a series pass? `tags` are the genres its source lists (`None`
+    /// until they are known); `adult_source` says its source is for adults.
+    pub fn allows(&self, tags: Option<&[String]>, adult_source: bool) -> bool {
+        let has = |tags: &[String], word: &str| tags.iter().any(|t| t.trim().eq_ignore_ascii_case(word));
+        let explicit = adult_source
+            || tags.is_some_and(|t| EXPLICIT_TAGS.iter().any(|w| has(t, w)));
+        match self.explicit {
+            ExplicitFilter::Hide if explicit => return false,
+            ExplicitFilter::Only if !explicit => return false,
+            _ => {}
+        }
+        if !self.needs_tags() {
+            return true;
+        }
+        let Some(tags) = tags else {
+            return false;
+        };
+        (self.types.is_empty() || self.types.iter().any(|t| has(tags, t)))
+            && self.genres.iter().all(|g| has(tags, g))
+    }
+}
+
 /// Which series the Library shows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum LibraryView {
@@ -596,14 +698,17 @@ pub enum LibraryView {
     All,
     /// Series with chapters on this computer.
     Downloaded,
+    /// Series that have been exported for a reader.
+    Exported,
     /// Series put in the library but not downloaded yet.
     Saved,
 }
 
 impl LibraryView {
-    pub const ALL: [LibraryView; 3] = [
+    pub const ALL: [LibraryView; 4] = [
         LibraryView::All,
         LibraryView::Downloaded,
+        LibraryView::Exported,
         LibraryView::Saved,
     ];
 
@@ -611,14 +716,16 @@ impl LibraryView {
         match self {
             LibraryView::All => "All",
             LibraryView::Downloaded => "Downloaded",
+            LibraryView::Exported => "Exported",
             LibraryView::Saved => "Saved for later",
         }
     }
 
-    pub fn includes(self, series: &library::DownloadedSeries) -> bool {
+    pub fn includes(self, series: &library::DownloadedSeries, exported: bool) -> bool {
         match self {
             LibraryView::All => true,
             LibraryView::Downloaded => !series.chapters.is_empty(),
+            LibraryView::Exported => exported,
             LibraryView::Saved => series.chapters.is_empty(),
         }
     }
@@ -676,6 +783,7 @@ pub fn library_order(
     view: LibraryView,
     sort: LibrarySort,
     filter: &str,
+    exported: &std::collections::HashSet<String>,
 ) -> Vec<usize> {
     let needle = filter.trim().to_lowercase();
     let matches = |s: &library::DownloadedSeries| {
@@ -687,7 +795,7 @@ pub fn library_order(
             })
     };
     let mut order: Vec<usize> = (0..series.len())
-        .filter(|&i| view.includes(&series[i]) && matches(&series[i]))
+        .filter(|&i| view.includes(&series[i], exported.contains(&series[i].id)) && matches(&series[i]))
         .collect();
     match sort {
         LibrarySort::Recent => {
@@ -912,14 +1020,6 @@ mod tests {
     }
 
     #[test]
-    fn latest_picks_the_highest_numbers() {
-        let n = vec![Some(1.0), Some(9.0), None, Some(5.0), Some(7.0)];
-        assert_eq!(latest(&n, 2), [1, 4]);
-        assert_eq!(latest(&n, 10).len(), 4);
-        assert!(latest(&[], 3).is_empty());
-    }
-
-    #[test]
     fn export_targets_follow_the_choice_and_settings() {
         let mut s = Settings::default();
         let default_dir = Path::new("/exports");
@@ -1073,36 +1173,6 @@ mod tests {
             ago(5, 50),
             "just now",
             "a clock set back is not a negative time"
-        );
-    }
-}
-
-#[cfg(test)]
-mod preset_tests {
-    use super::*;
-    use library::ConversionSettings;
-
-    #[test]
-    fn settings_are_described_in_one_plain_line() {
-        let manga = describe_settings(&ConversionSettings::default());
-        assert_eq!(
-            manga,
-            "right to left · automatic layout · auto trim · 4 grays · contrast 55"
-        );
-        let c = ConversionSettings {
-            crop: converter::process::CropMode::Full,
-            margins: converter::process::Margins {
-                top: 5,
-                ..Default::default()
-            },
-            layout: converter::process::Layout::Webtoon,
-            direction: converter::xtc::ReadDirection::LeftToRight,
-            format: converter::xtc::Format::Xtc,
-            ..Default::default()
-        };
-        assert_eq!(
-            describe_settings(&c),
-            "left to right · long strips · fixed margins · black & white · contrast 55"
         );
     }
 }
@@ -1330,10 +1400,46 @@ mod library_view_tests {
     }
 
     #[test]
+    fn the_search_filters_narrow_by_type_genre_and_explicit() {
+        let tags = |l: &[&str]| l.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let none = SearchFilters::default();
+        assert!(none.is_empty() && none.allows(None, false) && none.allows(None, true));
+
+        let manhwa_action = SearchFilters {
+            types: vec!["Manhwa".into()],
+            genres: vec!["Action".into()],
+            ..Default::default()
+        };
+        assert!(manhwa_action.allows(Some(&tags(&["manhwa", "ACTION", "Fantasy"])), false));
+        assert!(!manhwa_action.allows(Some(&tags(&["Manhwa"])), false), "every genre is needed");
+        assert!(!manhwa_action.allows(Some(&tags(&["Manga", "Action"])), false), "wrong type");
+        assert!(!manhwa_action.allows(None, false), "not known yet");
+
+        let hide = SearchFilters { explicit: ExplicitFilter::Hide, ..Default::default() };
+        assert!(hide.allows(None, false));
+        assert!(!hide.allows(None, true), "an adult source");
+        assert!(!hide.allows(Some(&tags(&["Hentai"])), false), "an adult tag");
+        let only = SearchFilters { explicit: ExplicitFilter::Only, ..Default::default() };
+        assert!(only.allows(None, true) && !only.allows(Some(&tags(&["Action"])), false));
+        assert_eq!(manhwa_action.labels(), ["Manhwa", "Action"]);
+        assert_eq!(hide.labels(), ["No explicit"]);
+        assert_eq!(none.pills(), ["All types", "All genres"]);
+        assert_eq!(hide.pills(), ["All types", "No explicit", "All genres"]);
+        assert_eq!(manhwa_action.pills(), ["Manhwa", "Action"]);
+    }
+
+    #[test]
     fn the_views_split_downloaded_from_saved() {
         let s = shelf();
-        let order = |v| library_order(&s, v, LibrarySort::Title, "");
+        let none = std::collections::HashSet::new();
+        let order = |v| library_order(&s, v, LibrarySort::Title, "", &none);
         assert_eq!(order(LibraryView::All), [1, 0, 3, 2]);
+        assert!(order(LibraryView::Exported).is_empty());
+        let berserk = std::collections::HashSet::from(["berserk".to_string()]);
+        assert_eq!(
+            library_order(&s, LibraryView::Exported, LibrarySort::Title, "", &berserk),
+            [0]
+        );
         assert_eq!(order(LibraryView::Downloaded), [0, 2]);
         assert_eq!(order(LibraryView::Saved), [1, 3]);
     }
@@ -1341,7 +1447,8 @@ mod library_view_tests {
     #[test]
     fn the_sorts_order_as_they_say() {
         let s = shelf();
-        let by = |sort| library_order(&s, LibraryView::All, sort, "");
+        let none = std::collections::HashSet::new();
+        let by = |sort| library_order(&s, LibraryView::All, sort, "", &none);
         assert_eq!(
             by(LibrarySort::Recent),
             [0, 1, 2, 3],
@@ -1363,13 +1470,14 @@ mod library_view_tests {
     #[test]
     fn the_filter_looks_at_the_title_author_and_genres() {
         let s = shelf();
-        let find = |text: &str| library_order(&s, LibraryView::All, LibrarySort::Title, text);
+        let none = std::collections::HashSet::new();
+        let find = |text: &str| library_order(&s, LibraryView::All, LibrarySort::Title, text, &none);
         assert_eq!(find("  ZET "), [2]);
         assert_eq!(find("miura"), [0], "author");
         assert_eq!(find("dark fantasy"), [0], "genre");
         assert!(find("nothing like this").is_empty());
         assert_eq!(
-            library_order(&s, LibraryView::Saved, LibrarySort::Title, "berserk"),
+            library_order(&s, LibraryView::Saved, LibrarySort::Title, "berserk", &none),
             Vec::<usize>::new()
         );
     }
@@ -1380,5 +1488,43 @@ mod library_view_tests {
             assert_eq!(LibrarySort::from_key(sort.key()), sort);
         }
         assert_eq!(LibrarySort::from_key("???"), LibrarySort::Recent);
+    }
+
+    #[test]
+    fn a_cover_is_kept_small() {
+        let mut big = image::RgbImage::new(1200, 1800);
+        for (x, y, p) in big.enumerate_pixels_mut() {
+            *p = image::Rgb([(x % 251) as u8, (y % 241) as u8, ((x + y) % 239) as u8]);
+        }
+        let mut png = Vec::new();
+        big.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        let small = small_cover(&png).expect("an image shrinks");
+        let decoded = image::load_from_memory(&small).unwrap();
+        assert!(decoded.width() <= 540 && decoded.height() <= 810);
+        assert_eq!(decoded.width() * 3, decoded.height() * 2, "shape kept");
+        assert!(
+            small.len() < png.len() / 5,
+            "{} vs {}",
+            small.len(),
+            png.len()
+        );
+        assert!(small_cover(b"not an image").is_none());
+    }
+
+    #[test]
+    fn durations_read_in_words() {
+        assert_eq!(human_duration(7), "7 s");
+        assert_eq!(human_duration(134), "2 min 14 s");
+        assert_eq!(human_duration(3900), "1 h 05 min");
+    }
+
+    #[test]
+    fn no_time_left_is_guessed_before_there_is_a_pace() {
+        let mut p = JobProgress::default();
+        assert_eq!(p.eta_secs(), None);
+        p.chapter_total = 10;
+        p.finished = 5;
+        assert_eq!(p.eta_secs(), None, "nothing has started yet");
     }
 }
