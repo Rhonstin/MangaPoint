@@ -131,7 +131,7 @@ table.chapters th.sortable:hover { color: var(--text); }
 table.chapters th.sorted { color: var(--text); }
 table.chapters th .th { display: inline-flex; align-items: center; gap: 5px; }
 table.chapters th.num, table.chapters td.num { width: 84px; font-variant-numeric: tabular-nums; }
-table.chapters th.src, table.chapters td.src { width: 300px; }
+table.chapters th.src, table.chapters td.src { width: 210px; }
 table.chapters td.src { white-space: nowrap; overflow: hidden; }
 .src-tag { display: inline-block; margin-right: 6px; padding: 2px 9px; border: 1px solid var(--line-strong); border-radius: 999px; font-size: 0.78rem; color: var(--muted); }
 .src-tag.used { color: var(--ok); border-color: rgba(127, 209, 139, 0.45); }
@@ -613,7 +613,7 @@ table.chapters tbody tr.locked:hover { background: transparent; }
 }
 .tip[data-tip=""]::after { display: none; }
 .tip:hover::after { opacity: 1; }
-table.chapters th.status, table.chapters td.status { width: 150px; }
+table.chapters th.status, table.chapters td.status { width: 130px; }
 table.chapters th.size, table.chapters td.size { width: 90px; text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); }
 .chapters-summary { margin-bottom: 12px; }
 .chapters-progress { margin-bottom: 14px; }
@@ -904,3 +904,7 @@ h3.q-title { margin: 22px 0 6px; font-size: 0.8rem; text-transform: uppercase; l
 @media (prefers-reduced-motion: reduce) { .btn, .nav-item, .pill, .menu-item, .px-item { transition: none; } }
 .filter-note .busy { color: var(--muted); font-size: 0.82rem; }
 .menu-anchor .menu { min-width: 260px; white-space: nowrap; }
+.q-row:not(.running) .q-main { flex: 1 1 280px; min-width: 280px; }
+.app { min-width: 1280px; min-height: 720px; }
+.q-actions:has(> .q-aside) { flex: 0 1 auto; min-width: 0; margin-left: auto; }
+@media (max-width: 1500px) { .export-body { grid-template-columns: min(var(--left-w, 340px), 290px) minmax(0, 1fr) min(var(--right-w, 330px), 280px); } }
