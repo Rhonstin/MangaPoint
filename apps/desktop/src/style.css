@@ -420,7 +420,7 @@ td.status, th.status { width: 170px; }
 .q-head { display: flex; align-items: flex-start; gap: 10px; flex-wrap: wrap; margin-bottom: 4px; }
 .q-head .btn { margin-top: 4px; }
 .q-title { margin: 26px 0 6px; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); font-weight: 600; }
-.q-row { display: flex; gap: 16px; align-items: flex-start; padding: 14px 4px; border-top: 1px solid var(--line); }
+.q-row { display: flex; gap: 16px; align-items: flex-start; padding: 12px 4px; }
 .q-title + .q-row { border-top: 0; }
 .q-row.running { padding: 18px 4px 20px; }
 .q-cover { width: 54px; flex: none; }
@@ -518,7 +518,7 @@ table.chapters tbody tr.locked:hover { background: transparent; }
 .sx-title { margin: 0 0 14px; font-size: 1.5rem; }
 .sx-group { margin: 30px 0 4px; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); font-weight: 600; }
 .sx-title + .sx-group { margin-top: 8px; }
-.sx-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(220px, 440px); gap: 28px; align-items: center; padding: 12px 0; }
+.sx-row { min-height: 66px; box-sizing: border-box; display: grid; grid-template-columns: minmax(0, 1fr) minmax(220px, 440px); gap: 28px; align-items: center; padding: 12px 0; }
 .sx-label { font-weight: 500; display: flex; align-items: center; }
 .help { position: relative; display: inline-flex; vertical-align: middle; margin-left: 6px; color: var(--muted); cursor: help; outline: none; }
 .help:hover, .help:focus-visible { color: var(--text); }
@@ -842,8 +842,8 @@ table.chapters th.size, table.chapters td.size { width: 90px; text-align: right;
 .q-sect h2 { margin: 0; font-size: 1.35rem; letter-spacing: -0.01em; }
 .q-sect-next { margin-top: 52px; }
 .q-hint { margin: 8px 0 0; }
-.q-subhead { display: flex; align-items: flex-end; gap: 10px; }
-.q-subhead .q-title { margin: 26px 0 6px; }
+.q-subhead { display: flex; align-items: center; gap: 10px; margin: 26px 0 6px; }
+.q-subhead .q-title { margin: 0; }
 h3.q-title { margin: 22px 0 6px; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); font-weight: 600; }
 /* the sidebar cards show the cover of the series */
 .side-job-top { display: flex; gap: 10px; align-items: flex-start; }
@@ -851,6 +851,16 @@ h3.q-title { margin: 22px 0 6px; font-size: 0.8rem; text-transform: uppercase; l
 .side-job-cover .cover { width: 100%; aspect-ratio: 2 / 3; object-fit: cover; border-radius: 5px; display: block; }
 .side-job-cover .cover.empty { display: flex; align-items: center; justify-content: center; overflow: hidden; }
 .side-job-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+
+/* ---- the filter pill of the search box: a muted purple, like the green sources ---- */
+.fil-btn, .fil-pill { border-color: #6a5a96; background: #171320; color: #c9baf0; }
+.fil-btn:hover { border-color: #8b78c4; color: #e3d9fb; }
+.ghost-pill { border-color: transparent; }
+.filter-panel { max-height: min(72vh, 560px); overflow-y: auto; }
+.filter-group { margin-top: 14px; }
+.filter-label { display: block; margin-bottom: 7px; color: var(--muted); font-size: 0.76rem; font-weight: 600; letter-spacing: 0.07em; text-transform: uppercase; }
+.filter-pills { display: flex; flex-wrap: wrap; gap: 6px; }
+.filter-note { gap: 12px; margin-top: 18px; }
 
 /* ---- the cards of the library ---- */
 .poster-about { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -868,3 +878,4 @@ h3.q-title { margin: 22px 0 6px; font-size: 0.8rem; text-transform: uppercase; l
 }
 .btn:active:not(:disabled) { transform: translateY(1px); }
 @media (prefers-reduced-motion: reduce) { .btn, .nav-item, .pill, .menu-item, .px-item { transition: none; } }
+.filter-note .busy { color: var(--muted); font-size: 0.82rem; }

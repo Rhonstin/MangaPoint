@@ -437,6 +437,10 @@ pub struct AppState {
     pub search: Signal<SearchView>,
     /// How the search results are ordered.
     pub search_sort: Signal<SearchSort>,
+    /// What the search results are narrowed to.
+    pub search_filters: Signal<crate::logic::SearchFilters>,
+    /// The genres each search result's source lists, once looked up.
+    pub search_tags: Signal<HashMap<(String, i64), Vec<String>>>,
     pub settings_section: Signal<SettingsSection>,
     /// Cover images as data URLs, keyed by `source:manga`.
     pub covers: Signal<HashMap<String, std::rc::Rc<str>>>,
@@ -522,6 +526,8 @@ impl AppState {
             page: sig(first_page),
             search: sig(SearchView::default()),
             search_sort: sig(SearchSort::default()),
+            search_filters: sig(crate::logic::SearchFilters::default()),
+            search_tags: sig(HashMap::new()),
             settings_section: sig(SettingsSection::default()),
             covers: sig(HashMap::new()),
             notice: sig(None),

@@ -484,6 +484,13 @@ pub(super) async fn run_batch(state: AppState, id: u64) {
         }
         Err(e) => {
             let cancelled = matches!(e, PipelineError::Cancelled);
+            if cancelled && state.queue.peek().get(id).is_some_and(|b| b.pausing) {
+                let have = downloaded_keys(state, &batch.series_id);
+                state.edit_queue(|q| q.park(id, &have));
+                info!("Download of \"{}\" paused", batch.title);
+                ensure_series_info(state, &batch.series_id);
+                return;
+            }
             let message = if cancelled {
                 "Cancelled. Chapters that finished are kept.".to_string()
             } else {
@@ -509,6 +516,29 @@ pub(super) async fn run_batch(state: AppState, id: u64) {
 pub fn cancel_batch(state: AppState, id: u64) {
     state.edit_queue(|q| {
         q.cancel(id);
+    });
+}
+
+/// Put one download aside; it goes on from the chapters not yet saved when
+/// resumed.
+pub fn pause_batch(state: AppState, id: u64) {
+    state.edit_queue(|q| {
+        q.pause(id);
+    });
+}
+
+/// Let a paused download take its turn again.
+pub fn resume_batch(state: AppState, id: u64) {
+    state.edit_queue(|q| {
+        q.resume(id);
+    });
+    ensure_queue_running(state);
+}
+
+/// Take one finished download off the list.
+pub fn dismiss_batch(state: AppState, id: u64) {
+    state.edit_queue(|q| {
+        q.remove(id);
     });
 }
 

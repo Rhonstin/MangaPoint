@@ -22,6 +22,9 @@ fn now_secs() -> u64 {
 pub enum BatchStatus {
     Waiting,
     Running,
+    /// Set aside by the user; it goes on from the chapters not yet saved when
+    /// it is resumed.
+    Paused,
     Done,
     /// Stopped by an error, in words.
     Failed(String),
@@ -29,9 +32,12 @@ pub enum BatchStatus {
 }
 
 impl BatchStatus {
-    /// Waiting or running: still has work to do.
+    /// Waiting, paused or running: still has work to do.
     pub fn is_active(&self) -> bool {
-        matches!(self, BatchStatus::Waiting | BatchStatus::Running)
+        matches!(
+            self,
+            BatchStatus::Waiting | BatchStatus::Running | BatchStatus::Paused
+        )
     }
 }
 
@@ -60,6 +66,8 @@ pub struct Batch {
     pub status: BatchStatus,
     pub progress: JobProgress,
     pub cancel: CancelFlag,
+    /// Told to stop so that it can be put aside, not given up.
+    pub pausing: bool,
     /// One line about how it went, once it has finished.
     pub summary: Option<String>,
     /// How long it took and how much it saved, once it has finished.
@@ -96,6 +104,7 @@ impl Batch {
             status: BatchStatus::Waiting,
             progress: JobProgress::default(),
             cancel: CancelFlag::new(),
+            pausing: false,
             summary: None,
             stats: None,
             skipped: Vec::new(),
@@ -365,7 +374,7 @@ impl DownloadQueue {
             return false;
         };
         match self.batches[at].status {
-            BatchStatus::Waiting => {
+            BatchStatus::Waiting | BatchStatus::Paused => {
                 self.batches.remove(at);
                 true
             }
@@ -382,8 +391,10 @@ impl DownloadQueue {
     /// Stop everything for one series: its waiting batches go, and its running
     /// one is told to stop.
     pub fn cancel_series(&mut self, series_id: &str) {
-        self.batches
-            .retain(|b| b.series_id != series_id || b.status != BatchStatus::Waiting);
+        self.batches.retain(|b| {
+            b.series_id != series_id
+                || !matches!(b.status, BatchStatus::Waiting | BatchStatus::Paused)
+        });
         let running = self
             .running()
             .filter(|b| b.series_id == series_id)
@@ -395,14 +406,14 @@ impl DownloadQueue {
 
     /// Stop everything: waiting batches go, the running one is told to stop.
     pub fn cancel_all(&mut self) {
-        self.batches.retain(|b| b.status != BatchStatus::Waiting);
+        self.batches
+            .retain(|b| !matches!(b.status, BatchStatus::Waiting | BatchStatus::Paused));
         if let Some(id) = self.running().map(|b| b.id) {
             self.cancel(id);
         }
     }
 
     /// Take a finished batch out of the list.
-    #[cfg(test)]
     pub fn remove(&mut self, id: u64) -> bool {
         let before = self.batches.len();
         self.batches.retain(|b| b.id != id || b.status.is_active());
@@ -411,6 +422,56 @@ impl DownloadQueue {
 
     pub fn clear_finished(&mut self) {
         self.batches.retain(|b| b.status.is_active());
+    }
+
+    /// Put a batch aside. A waiting one is paused at once; a running one is
+    /// told to stop and is paused when it has (see [`DownloadQueue::park`]).
+    pub fn pause(&mut self, id: u64) -> bool {
+        let Some(b) = self.get_mut(id) else {
+            return false;
+        };
+        match b.status {
+            BatchStatus::Waiting => {
+                b.status = BatchStatus::Paused;
+                true
+            }
+            BatchStatus::Running => {
+                b.pausing = true;
+                b.cancel.cancel();
+                b.progress.stopping = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// A running batch that was told to pause has stopped: what is saved
+    /// stays, and the chapters still to do wait to be resumed.
+    pub fn park(&mut self, id: u64, saved: &std::collections::HashSet<String>) {
+        let Some(b) = self.get_mut(id) else {
+            return;
+        };
+        let keep: Vec<usize> = (0..b.plan.len())
+            .filter(|&i| !saved.contains(&b.plan[i]))
+            .collect();
+        b.requests = keep.iter().map(|&i| b.requests[i].clone()).collect();
+        b.plan = keep.iter().map(|&i| b.plan[i].clone()).collect();
+        b.status = BatchStatus::Paused;
+        b.pausing = false;
+        b.progress = JobProgress::default();
+        b.cancel = CancelFlag::new();
+    }
+
+    /// Let a paused batch take its turn again.
+    pub fn resume(&mut self, id: u64) -> bool {
+        match self.get_mut(id) {
+            Some(b) if b.status == BatchStatus::Paused => {
+                b.status = BatchStatus::Waiting;
+                b.cancel = CancelFlag::new();
+                true
+            }
+            _ => false,
+        }
     }
 
     /// Move a waiting batch to the front of the line.
@@ -508,7 +569,9 @@ impl DownloadQueue {
                 continue;
             };
             match &batch.status {
-                BatchStatus::Waiting => return Some(QueuedChapter::Waiting),
+                BatchStatus::Waiting | BatchStatus::Paused => {
+                    return Some(QueuedChapter::Waiting)
+                }
                 BatchStatus::Running => {
                     return Some(match batch.progress.active.get(&index) {
                         Some(a) => QueuedChapter::Downloading {
@@ -850,5 +913,33 @@ mod tests {
         odd.batches[0].plan.push("extra".into());
         let odd = DownloadQueue::from_saved(odd);
         assert_eq!(odd.batches[0].plan.len(), odd.batches[0].requests.len());
+    }
+
+    #[test]
+    fn a_batch_can_be_put_aside_and_goes_on_with_what_is_left() {
+        let mut q = DownloadQueue::default();
+        q.add(batch("a", &[1, 2, 3]));
+        q.add(batch("b", &[1]));
+        let (a, b) = (q.batches[0].id, q.batches[1].id);
+        // A waiting batch is paused at once and is skipped by the line.
+        assert!(q.pause(b));
+        assert_eq!(q.next_to_start(), Some(a));
+        // A running one is told to stop, and is parked with what is not saved.
+        q.start(a);
+        assert!(q.pause(a));
+        assert!(q.get(a).unwrap().pausing);
+        let saved: std::collections::HashSet<String> = [q.get(a).unwrap().plan[0].clone()].into();
+        q.park(a, &saved);
+        let parked = q.get(a).unwrap();
+        assert_eq!(parked.status, BatchStatus::Paused);
+        assert_eq!(parked.plan.len(), 2);
+        assert!(!parked.pausing && !parked.cancel.is_cancelled());
+        assert!(parked.status.is_active(), "it still counts as work to do");
+        assert_eq!(q.next_to_start(), None, "nothing runs until one is resumed");
+        assert!(q.resume(a));
+        assert_eq!(q.next_to_start(), Some(a));
+        // Giving a paused one up drops it like a waiting one.
+        assert!(q.cancel(b));
+        assert!(q.get(b).is_none());
     }
 }

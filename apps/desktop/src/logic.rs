@@ -592,6 +592,84 @@ pub fn sorted_order(ranked: &[search::RankedSeries], sort: SearchSort) -> Vec<us
     order
 }
 
+// ---- Narrowing the search results -----------------------------------------
+
+/// The kinds of series that can be picked, as sources tag them.
+pub const SERIES_TYPES: [&str; 5] = ["Manga", "Manhwa", "Manhua", "Webtoon", "Comic"];
+
+/// Genres offered in the filter.
+pub const COMMON_GENRES: [&str; 24] = [
+    "Action", "Adventure", "Comedy", "Drama", "Fantasy", "Horror", "Isekai", "Martial Arts",
+    "Mystery", "Psychological", "Romance", "Sci-Fi", "Slice of Life", "Sports", "Supernatural",
+    "Thriller", "School Life", "Historical", "Mecha", "Seinen", "Shounen", "Shoujo", "Josei",
+    "Tragedy",
+];
+
+/// Tags that mean a series is for adults.
+const EXPLICIT_TAGS: [&str; 7] = [
+    "adult", "hentai", "smut", "erotica", "mature", "pornographic", "explicit",
+];
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ExplicitFilter {
+    #[default]
+    Show,
+    Hide,
+    Only,
+}
+
+/// What the search results are narrowed to.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SearchFilters {
+    pub types: Vec<String>,
+    pub explicit: ExplicitFilter,
+    pub genres: Vec<String>,
+}
+
+impl SearchFilters {
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// Types and genres can only be told from the details of each series.
+    pub fn needs_tags(&self) -> bool {
+        !self.types.is_empty() || !self.genres.is_empty()
+    }
+
+    /// Short words for each choice made, for the pills.
+    pub fn labels(&self) -> Vec<String> {
+        let mut out: Vec<String> = self.types.clone();
+        match self.explicit {
+            ExplicitFilter::Show => {}
+            ExplicitFilter::Hide => out.push("No explicit".into()),
+            ExplicitFilter::Only => out.push("Explicit only".into()),
+        }
+        out.extend(self.genres.iter().cloned());
+        out
+    }
+
+    /// Does a series pass? `tags` are the genres its source lists (`None`
+    /// until they are known); `adult_source` says its source is for adults.
+    pub fn allows(&self, tags: Option<&[String]>, adult_source: bool) -> bool {
+        let has = |tags: &[String], word: &str| tags.iter().any(|t| t.trim().eq_ignore_ascii_case(word));
+        let explicit = adult_source
+            || tags.is_some_and(|t| EXPLICIT_TAGS.iter().any(|w| has(t, w)));
+        match self.explicit {
+            ExplicitFilter::Hide if explicit => return false,
+            ExplicitFilter::Only if !explicit => return false,
+            _ => {}
+        }
+        if !self.needs_tags() {
+            return true;
+        }
+        let Some(tags) = tags else {
+            return false;
+        };
+        (self.types.is_empty() || self.types.iter().any(|t| has(tags, t)))
+            && self.genres.iter().all(|g| has(tags, g))
+    }
+}
+
 /// Which series the Library shows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum LibraryView {
@@ -1298,6 +1376,32 @@ mod library_view_tests {
             series("Zeta", 10, 5, 30, 30),
             series("Delta", 0, 0, 5, 5),
         ]
+    }
+
+    #[test]
+    fn the_search_filters_narrow_by_type_genre_and_explicit() {
+        let tags = |l: &[&str]| l.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let none = SearchFilters::default();
+        assert!(none.is_empty() && none.allows(None, false) && none.allows(None, true));
+
+        let manhwa_action = SearchFilters {
+            types: vec!["Manhwa".into()],
+            genres: vec!["Action".into()],
+            ..Default::default()
+        };
+        assert!(manhwa_action.allows(Some(&tags(&["manhwa", "ACTION", "Fantasy"])), false));
+        assert!(!manhwa_action.allows(Some(&tags(&["Manhwa"])), false), "every genre is needed");
+        assert!(!manhwa_action.allows(Some(&tags(&["Manga", "Action"])), false), "wrong type");
+        assert!(!manhwa_action.allows(None, false), "not known yet");
+
+        let hide = SearchFilters { explicit: ExplicitFilter::Hide, ..Default::default() };
+        assert!(hide.allows(None, false));
+        assert!(!hide.allows(None, true), "an adult source");
+        assert!(!hide.allows(Some(&tags(&["Hentai"])), false), "an adult tag");
+        let only = SearchFilters { explicit: ExplicitFilter::Only, ..Default::default() };
+        assert!(only.allows(None, true) && !only.allows(Some(&tags(&["Action"])), false));
+        assert_eq!(manhwa_action.labels(), ["Manhwa", "Action"]);
+        assert_eq!(hide.labels(), ["No explicit"]);
     }
 
     #[test]

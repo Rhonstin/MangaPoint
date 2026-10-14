@@ -5,9 +5,9 @@
 
 use super::widgets::{open_folder, show_in_folder, Chip, Cover, EmptyState, Icon, NoCover, ProgressBar};
 use super::work::{
-    cancel_all_downloads, cancel_batch, cancel_job, forget_exported_file, load_saved_cover,
-    open_series_from_library, pause_export, prioritize_batch, resume_export, retry_batch,
-    saved_cover_key, set_queue_paused,
+    cancel_all_downloads, cancel_batch, cancel_job, dismiss_batch, forget_exported_file,
+    load_saved_cover, open_series_from_library, pause_batch, pause_export, prioritize_batch,
+    resume_batch, resume_export, retry_batch, saved_cover_key, set_queue_paused,
 };
 use crate::logic::{ago, human_bytes, human_duration, plural, JobProgress};
 use crate::queue::BatchStatus;
@@ -46,7 +46,7 @@ pub fn TasksPage() -> Element {
     let waiting: Vec<u64> = queue
         .batches
         .iter()
-        .filter(|b| b.status == BatchStatus::Waiting)
+        .filter(|b| matches!(b.status, BatchStatus::Waiting | BatchStatus::Paused))
         .map(|b| b.id)
         .collect();
     // Newest first.
@@ -358,6 +358,7 @@ fn BatchRow(id: u64) -> Element {
     let done = batch.chapters_done();
     let running = batch.status == BatchStatus::Running;
     let waiting = batch.status == BatchStatus::Waiting;
+    let paused_batch = batch.status == BatchStatus::Paused;
     let speed = batch.progress.pages_per_second();
     let stopping = batch.progress.stopping;
     let failed = batch.failed.len();
@@ -367,6 +368,7 @@ fn BatchRow(id: u64) -> Element {
         BatchStatus::Done => Some(("partly done", "warn")),
         BatchStatus::Failed(_) => Some(("failed", "bad")),
         BatchStatus::Cancelled => Some(("stopped", "warn")),
+        BatchStatus::Paused => Some(("paused", "warn")),
         _ => None,
     };
     let cover_key = saved_cover_key(&batch.series_id);
@@ -415,8 +417,10 @@ fn BatchRow(id: u64) -> Element {
                     if let Some(note) = &batch.progress.note {
                         div { class: "muted small q-line", "{note}" }
                     }
-                } else if waiting {
-                    div { class: "muted small", "{plural(total, \"chapter\")} waiting" }
+                } else if waiting || paused_batch {
+                    div { class: "muted small",
+                        if paused_batch { "{plural(total, \"chapter\")} left · paused" } else { "{plural(total, \"chapter\")} waiting" }
+                    }
                 } else {
                     div { class: "muted small",
                         if let Some(summary) = &batch.summary { "{summary}" }
@@ -437,13 +441,26 @@ fn BatchRow(id: u64) -> Element {
             }
             div { class: "q-actions",
                 if running {
-                    button { class: "btn small", disabled: stopping, onclick: move |_| cancel_batch(state, id),
+                    button { class: "btn small", disabled: stopping, onclick: move |_| pause_batch(state, id),
+                        Icon { name: "pause", size: 14 }
+                        if stopping { "Pausing…" } else { "Pause" }
+                    }
+                    button { class: "btn small ghost", title: "Stop it for good", disabled: stopping, onclick: move |_| cancel_batch(state, id),
                         Icon { name: "x", size: 14 }
-                        if stopping { "Stopping…" } else { "Cancel" }
                     }
                 } else if waiting {
                     button { class: "btn small", title: "Download this next", onclick: move |_| prioritize_batch(state, id),
                         Icon { name: "arrow-up-to-line", size: 14 } "Next"
+                    }
+                    button { class: "btn small", title: "Set it aside for now", onclick: move |_| pause_batch(state, id),
+                        Icon { name: "pause", size: 14 } "Pause"
+                    }
+                    button { class: "btn small ghost", title: "Take it out of the queue", onclick: move |_| cancel_batch(state, id),
+                        Icon { name: "x", size: 14 }
+                    }
+                } else if paused_batch {
+                    button { class: "btn small", onclick: move |_| resume_batch(state, id),
+                        Icon { name: "play", size: 14 } "Resume"
                     }
                     button { class: "btn small ghost", title: "Take it out of the queue", onclick: move |_| cancel_batch(state, id),
                         Icon { name: "x", size: 14 }
@@ -475,6 +492,10 @@ fn BatchRow(id: u64) -> Element {
                                 onclick: move |_| state.ask(delete_modal.clone()),
                                 Icon { name: "trash", size: 18 }
                             }
+                        }
+                        button { class: "btn ghost open-big square", title: "Take it off the list",
+                            onclick: move |_| dismiss_batch(state, id),
+                            Icon { name: "x", size: 18 }
                         }
                     }
                 }
