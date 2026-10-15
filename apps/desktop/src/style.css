@@ -1216,8 +1216,8 @@ input.px-name:focus { border-color: var(--accent); background: var(--bg); outlin
 .reader-way .menu-anchor { width: 100%; }
 .reader-way .menu-anchor .menu { right: auto; left: 0; width: 100%; white-space: normal; }
 
-/* ---- toasts: stacked, spreading out when pointed at ---- */
-.toasts { position: fixed; right: 20px; bottom: 20px; width: 380px; height: 0; z-index: 60; }
+/* ---- toasts: stacked above the bottom action bars, spreading out when pointed at ---- */
+.toasts { position: fixed; right: 20px; bottom: 88px; width: 380px; height: 0; z-index: 60; }
 .toast {
   --h: 76px;
   position: absolute; right: 0; bottom: 0; width: 380px; height: var(--h); box-sizing: border-box;
@@ -1234,9 +1234,6 @@ input.px-name:focus { border-color: var(--accent); background: var(--bg); outlin
 }
 .toast:nth-child(n + 5) { opacity: 0; }
 .toast:first-child, .toast { pointer-events: auto; }
-.toast.success { border-left: 3px solid var(--ok); }
-.toast.warning { border-left: 3px solid var(--warn); }
-.toast.error { border-left: 3px solid var(--bad); }
 .toast-cat { flex: none; width: 52px; height: 56px; image-rendering: pixelated; shape-rendering: crispEdges; }
 .toast-text { flex: 1; min-width: 0; font-size: 0.9rem; line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; word-break: break-word; }
 .toast-x { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; border: 0; border-radius: 7px; background: transparent; color: var(--muted); cursor: pointer; }
