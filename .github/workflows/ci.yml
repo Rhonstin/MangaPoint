@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # The features the tests need: a fake catalog, and image decoding.
+  FEATURES: catalog/fake,converter/decode
+
+jobs:
+  check:
+    name: Check (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Linux system packages
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libxdo-dev libssl-dev \
+            libayatana-appindicator3-dev libdbus-1-dev pkg-config
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Clippy (warnings are errors)
+        run: cargo clippy --workspace --all-targets --features ${{ env.FEATURES }} --locked -- -D warnings
+
+      - name: Tests
+        run: cargo test --workspace --features ${{ env.FEATURES }} --locked
+
+  tools:
+    name: Release tooling
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m unittest tools/test_release.py
+
+  # Build the installable files on every pull request too, so a change that
+  # breaks packaging is seen before it is merged (nothing is published).
+  package:
+    name: Package
+    needs: check
+    uses: ./.github/workflows/package.yml

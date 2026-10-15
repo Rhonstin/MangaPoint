@@ -1,0 +1,72 @@
+name: Release
+
+# Publishes a release when the version in Cargo.toml has no release yet.
+#
+# Nobody tags by hand. A release is made by merging a pull request that changes
+# the version (see release-pr.yml, which opens it). When it reaches main, this
+# workflow sees that vX.Y.Z has no release, builds all platforms, tags the
+# commit and publishes the GitHub release with the files and the changelog.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Is there a new version?
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      new: ${{ steps.v.outputs.new }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        run: |
+          version="$(python3 tools/release.py current)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if gh release view "v$version" >/dev/null 2>&1; then
+            echo "new=false" >> "$GITHUB_OUTPUT"
+            echo "v$version is already released."
+          else
+            echo "new=true" >> "$GITHUB_OUTPUT"
+            echo "v$version has no release: building it."
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  package:
+    name: Build
+    needs: check
+    if: needs.check.outputs.new == 'true'
+    uses: ./.github/workflows/package.yml
+
+  publish:
+    name: Publish v${{ needs.check.outputs.version }}
+    needs: [check, package]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Release notes
+        run: python3 tools/release.py notes "${{ needs.check.outputs.version }}" > notes.md
+      - name: Create the release
+        run: |
+          cat dist/*.sha256 > dist/SHA256SUMS.txt
+          gh release create "v${{ needs.check.outputs.version }}" \
+            --target "${{ github.sha }}" \
+            --title "MangaPoint ${{ needs.check.outputs.version }}" \
+            --notes-file notes.md \
+            dist/*.zip dist/*.tar.gz dist/SHA256SUMS.txt
+        env:
+          GH_TOKEN: ${{ github.token }}

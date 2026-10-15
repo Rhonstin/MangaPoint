@@ -1,0 +1,109 @@
+name: Package
+
+# Builds MangaPoint for Windows, Linux and macOS and uploads each as a build
+# artifact. Used by CI (to test packaging) and by the release workflow (which
+# publishes the files). Not run on its own except by hand.
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  package:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows x86_64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            label: windows-x86_64
+          - name: Linux x86_64
+            os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            label: linux-x86_64
+          - name: macOS Apple silicon
+            os: macos-latest
+            target: aarch64-apple-darwin
+            label: macos-arm64
+          - name: macOS Intel
+            os: macos-latest
+            target: x86_64-apple-darwin
+            label: macos-x86_64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Linux system packages
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libxdo-dev libssl-dev \
+            libayatana-appindicator3-dev libdbus-1-dev pkg-config
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Version
+        id: version
+        shell: bash
+        run: echo "value=$(python tools/release.py current)" >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        run: cargo build --release --locked -p mangapoint --target ${{ matrix.target }}
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $name = "MangaPoint-${{ steps.version.outputs.value }}-${{ matrix.label }}"
+          New-Item -ItemType Directory -Path "dist/$name" | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/mangapoint.exe" "dist/$name/MangaPoint.exe"
+          Copy-Item README.md, LICENSE, CHANGELOG.md "dist/$name/"
+          Compress-Archive -Path "dist/$name" -DestinationPath "dist/$name.zip"
+          (Get-FileHash "dist/$name.zip" -Algorithm SHA256).Hash.ToLower() + "  $name.zip" | Out-File "dist/$name.zip.sha256" -Encoding ascii
+
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          name="MangaPoint-${{ steps.version.outputs.value }}-${{ matrix.label }}"
+          mkdir -p "dist/$name"
+          cp "target/${{ matrix.target }}/release/mangapoint" "dist/$name/mangapoint"
+          cp apps/desktop/assets/icon.png "dist/$name/mangapoint.png"
+          cp README.md LICENSE CHANGELOG.md "dist/$name/"
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+          (cd dist && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")
+
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          name="MangaPoint-${{ steps.version.outputs.value }}-${{ matrix.label }}"
+          bash tools/package-macos.sh \
+            "target/${{ matrix.target }}/release/mangapoint" \
+            "${{ steps.version.outputs.value }}" "dist/$name"
+          (cd dist && ditto -c -k --keepParent "$name" "$name.zip" && shasum -a 256 "$name.zip" > "$name.zip.sha256")
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MangaPoint-${{ matrix.label }}
+          path: |
+            dist/*.zip
+            dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error
+          retention-days: 14
