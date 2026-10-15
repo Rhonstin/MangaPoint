@@ -38,7 +38,9 @@ pub fn decode_to_gray(bytes: &[u8]) -> Result<GrayImage, DecodeError> {
         image::DynamicImage::ImageRgb8(rgb) => {
             let lookup = opaque_luma_lookup();
             rgb.as_raw()
-                .chunks_exact(3)
+                .as_chunks::<3>()
+                .0
+                .iter()
                 .map(|p| lookup[((p[0] as usize) << 16) | ((p[1] as usize) << 8) | p[2] as usize])
                 .collect()
         }

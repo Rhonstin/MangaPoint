@@ -181,7 +181,7 @@ pub(super) async fn decode_chapter(
             return Ok((cache_key, grays));
         }
     }
-    let decoded: Vec<Result<converter::GrayImage, String>> = stream::iter(raw.into_iter())
+    let decoded: Vec<Result<converter::GrayImage, String>> = stream::iter(raw)
         .map(|bytes| async move {
             tokio::task::spawn_blocking(move || {
                 pipeline::decode_page(&bytes).map_err(|e| e.to_string())

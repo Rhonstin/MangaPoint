@@ -554,7 +554,9 @@ mod tests {
 
     #[test]
     fn a_mount_we_cannot_find_is_not_blocked() {
-        assert!(check_space(Path::new("/definitely/not/mounted"), u64::MAX / 4).is_ok());
+        // A relative path is under no mount, whatever the system's disks are
+        // (an absolute one would sit under `/` on macOS and Linux).
+        assert!(check_space(Path::new("definitely-not-mounted"), u64::MAX / 4).is_ok());
     }
 
     #[test]
