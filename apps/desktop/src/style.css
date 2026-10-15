@@ -1264,3 +1264,6 @@ input.px-name:focus { border-color: var(--accent); background: var(--bg); outlin
 
 /* A cover that has not arrived yet is a quiet panel, not a black hole. */
 img.cover { background: var(--panel-2); }
+/* A cover on its way: the cat runs in circles where the picture will be. */
+.cover-box { position: relative; display: block; width: 100%; border-radius: inherit; }
+.cover-wait { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: var(--panel-2); border-radius: inherit; pointer-events: none; }

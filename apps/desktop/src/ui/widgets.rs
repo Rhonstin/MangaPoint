@@ -158,15 +158,28 @@ pub fn Cover(key_id: String) -> Element {
     let state = use_context::<AppState>();
     // A shared string: drawing a cover does not copy its picture.
     let url = state.covers.read().get(&key_id).cloned();
-    // A picture that could not be had shows the placeholder, not a black box.
-    let mut failed = use_signal(|| false);
+    // The address whose picture has arrived, and the one that could not be had:
+    // until it arrives the cat runs in circles in its place, and a picture that
+    // cannot be had shows the placeholder.
+    let mut arrived = use_signal(String::new);
+    let mut broken = use_signal(String::new);
     match url {
-        Some(src) if !failed() => rsx! {
-            img {
-                class: "cover", src: "{src}", loading: "lazy", decoding: "async",
-                onerror: move |_| failed.set(true),
+        Some(src) if *broken.read() != *src => {
+            let waiting = *arrived.read() != *src;
+            let (on_load, on_error) = (src.to_string(), src.to_string());
+            rsx! {
+                span { class: "cover-box",
+                    img {
+                        class: "cover", src: "{src}", loading: "lazy", decoding: "async",
+                        onload: move |_| arrived.set(on_load.clone()),
+                        onerror: move |_| broken.set(on_error.clone()),
+                    }
+                    if waiting {
+                        span { class: "cover-wait", super::cat::CirclingCat { size: 56 } }
+                    }
+                }
             }
-        },
+        }
         _ => rsx! { NoCover {} },
     }
 }
