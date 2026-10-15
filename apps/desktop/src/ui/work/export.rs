@@ -704,7 +704,7 @@ pub fn describe_target(target: &ExportTarget) -> String {
     match target {
         ExportTarget::Folder { path } => format!("folder {}", path.display()),
         ExportTarget::Device { mount, folder } => {
-            format!("the reader at {}\\{folder}", mount.display())
+            format!("the reader at {}", mount.join(folder).display())
         }
         ExportTarget::WebDav { base_url, .. } => format!("the reader over Wi-Fi ({base_url})"),
     }
