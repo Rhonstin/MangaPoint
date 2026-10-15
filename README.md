@@ -149,8 +149,12 @@ Download the file for your system from the
 Each release also has `SHA256SUMS.txt` to check your download.
 
 **macOS:** the app is not signed or notarized yet, so macOS will say it cannot
-verify the developer the first time. Right-click MangaPoint in Applications, choose
-**Open**, then **Open** again. Or run `xattr -cr /Applications/MangaPoint.app`.
+verify the developer the first time. The quickest way past that is one command in
+Terminal, which asks for no password:
+`xattr -cr /Applications/MangaPoint.app`. Or open the app once, go to
+System Settings → Privacy & Security, scroll to the bottom and press **Open Anyway**
+(macOS asks for an administrator's password). On macOS 14 and older, right-click
+the app and choose **Open** also works.
 
 ### First run
 
