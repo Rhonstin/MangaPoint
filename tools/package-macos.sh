@@ -1,20 +1,21 @@
 #!/usr/bin/env bash
-# Wrap a macOS build of MangaPoint in an app bundle.
+# Wrap a macOS build of MangaPoint in an app bundle and a disk image.
 #
-#   tools/package-macos.sh <binary> <version> <output folder>
+#   tools/package-macos.sh <binary> <version> <output .dmg>
 #
-# Makes <output folder>/MangaPoint.app (with the cat as its icon) and copies
-# the README, LICENSE and CHANGELOG beside it. The app is not signed or
-# notarized, so macOS asks for confirmation the first time it is opened (see
-# the README).
+# Makes MangaPoint.app (with the cat as its icon) and puts it in a .dmg beside a
+# shortcut to Applications, so installing is dragging one onto the other. The app
+# is not signed or notarized, so macOS asks for confirmation the first time it is
+# opened (see the README).
 set -euo pipefail
 
 binary="$1"
 version="$2"
-out="$3"
+dmg="$3"
 root="$(cd "$(dirname "$0")/.." && pwd)"
 
-app="$out/MangaPoint.app"
+stage="$(mktemp -d)"
+app="$stage/MangaPoint.app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$binary" "$app/Contents/MacOS/mangapoint"
 chmod +x "$app/Contents/MacOS/mangapoint"
@@ -49,4 +50,6 @@ cat > "$app/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-cp "$root/README.md" "$root/LICENSE" "$root/CHANGELOG.md" "$out/"
+ln -s /Applications "$stage/Applications"
+mkdir -p "$(dirname "$dmg")"
+hdiutil create -volname "MangaPoint" -srcfolder "$stage" -ov -format UDZO "$dmg"

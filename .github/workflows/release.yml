@@ -63,10 +63,16 @@ jobs:
       - name: Create the release
         run: |
           cat dist/*.sha256 > dist/SHA256SUMS.txt
+          # The files themselves (the .exe, .dmg, .deb and the Linux program),
+          # not their checksum fragments, plus the combined checksums.
+          files=()
+          for f in dist/*; do
+            case "$f" in *.sha256) ;; *) files+=("$f") ;; esac
+          done
           gh release create "v${{ needs.check.outputs.version }}" \
             --target "${{ github.sha }}" \
             --title "MangaPoint ${{ needs.check.outputs.version }}" \
             --notes-file notes.md \
-            dist/*.zip dist/*.tar.gz dist/SHA256SUMS.txt
+            "${files[@]}"
         env:
           GH_TOKEN: ${{ github.token }}

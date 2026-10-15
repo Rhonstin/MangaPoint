@@ -138,17 +138,18 @@ name, the screen size in inches and its pixels per inch) and pick EPUB.
 Download the file for your system from the
 [latest release](https://github.com/W1seGit/MangaPoint/releases/latest):
 
-| System | File | How to run it |
+| System | Download | How to install |
 |---|---|---|
-| Windows 10/11 (64-bit) | `MangaPoint-…-windows-x86_64.zip` | Unzip and run `MangaPoint.exe`. Needs the Microsoft Edge WebView2 runtime (included in Windows 11). |
-| macOS, Apple silicon | `MangaPoint-…-macos-arm64.zip` | Unzip and move `MangaPoint.app` to Applications. |
-| macOS, Intel | `MangaPoint-…-macos-x86_64.zip` | The same. |
-| Linux (64-bit) | `MangaPoint-…-linux-x86_64.tar.gz` | Extract and run `./mangapoint`. Needs `webkit2gtk-4.1` and GTK 3 (see [Linux packages](#linux-packages)). |
+| Windows 10/11 (64-bit) | `MangaPoint-…-windows-x86_64.exe` | Double-click it. Needs the Microsoft Edge WebView2 runtime (included in Windows 11). |
+| macOS, Apple silicon | `MangaPoint-…-macos-arm64.dmg` | Open it and drag MangaPoint onto Applications. |
+| macOS, Intel | `MangaPoint-…-macos-x86_64.dmg` | The same. |
+| Linux, Debian and Ubuntu (64-bit) | `MangaPoint-…-linux-x86_64.deb` | `sudo apt install ./MangaPoint-…-linux-x86_64.deb`, which also installs what it needs. |
+| Linux, other (64-bit) | `MangaPoint-…-linux-x86_64` | `chmod +x` it and run it. Needs `webkit2gtk-4.1` and GTK 3 (see [Linux packages](#linux-packages)). |
 
 Each release also has `SHA256SUMS.txt` to check your download.
 
 **macOS:** the app is not signed or notarized yet, so macOS will say it cannot
-verify the developer the first time. Right-click `MangaPoint.app`, choose
+verify the developer the first time. Right-click MangaPoint in Applications, choose
 **Open**, then **Open** again. Or run `xattr -cr /Applications/MangaPoint.app`.
 
 ### First run

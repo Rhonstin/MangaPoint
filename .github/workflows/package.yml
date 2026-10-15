@@ -65,45 +65,38 @@ jobs:
       - name: Build
         run: cargo build --release --locked -p mangapoint --target ${{ matrix.target }}
 
+      # Each platform's file is something you run or install directly, not an
+      # archive: a .exe, a .dmg and a .deb (plus the bare Linux program).
       - name: Package (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $name = "MangaPoint-${{ steps.version.outputs.value }}-${{ matrix.label }}"
-          New-Item -ItemType Directory -Path "dist/$name" | Out-Null
-          Copy-Item "target/${{ matrix.target }}/release/mangapoint.exe" "dist/$name/MangaPoint.exe"
-          Copy-Item README.md, LICENSE, CHANGELOG.md "dist/$name/"
-          Compress-Archive -Path "dist/$name" -DestinationPath "dist/$name.zip"
-          (Get-FileHash "dist/$name.zip" -Algorithm SHA256).Hash.ToLower() + "  $name.zip" | Out-File "dist/$name.zip.sha256" -Encoding ascii
+          $name = "MangaPoint-${{ steps.version.outputs.value }}-${{ matrix.label }}.exe"
+          New-Item -ItemType Directory -Path dist | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/mangapoint.exe" "dist/$name"
+          (Get-FileHash "dist/$name" -Algorithm SHA256).Hash.ToLower() + "  $name" | Out-File "dist/$name.sha256" -Encoding ascii
 
       - name: Package (Linux)
         if: runner.os == 'Linux'
         shell: bash
         run: |
-          name="MangaPoint-${{ steps.version.outputs.value }}-${{ matrix.label }}"
-          mkdir -p "dist/$name"
-          cp "target/${{ matrix.target }}/release/mangapoint" "dist/$name/mangapoint"
-          cp apps/desktop/assets/icon.png "dist/$name/mangapoint.png"
-          cp README.md LICENSE CHANGELOG.md "dist/$name/"
-          tar -C dist -czf "dist/$name.tar.gz" "$name"
-          (cd dist && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")
+          version="${{ steps.version.outputs.value }}"
+          mkdir -p dist
+          cp "target/${{ matrix.target }}/release/mangapoint" "dist/MangaPoint-$version-${{ matrix.label }}"
+          bash tools/package-linux-deb.sh "target/${{ matrix.target }}/release/mangapoint" "$version" "dist/MangaPoint-$version-${{ matrix.label }}.deb"
+          (cd dist && for f in MangaPoint-*; do case "$f" in *.sha256) ;; *) sha256sum "$f" > "$f.sha256" ;; esac; done)
 
       - name: Package (macOS)
         if: runner.os == 'macOS'
         shell: bash
         run: |
-          name="MangaPoint-${{ steps.version.outputs.value }}-${{ matrix.label }}"
-          bash tools/package-macos.sh \
-            "target/${{ matrix.target }}/release/mangapoint" \
-            "${{ steps.version.outputs.value }}" "dist/$name"
-          (cd dist && ditto -c -k --keepParent "$name" "$name.zip" && shasum -a 256 "$name.zip" > "$name.zip.sha256")
+          name="MangaPoint-${{ steps.version.outputs.value }}-${{ matrix.label }}.dmg"
+          bash tools/package-macos.sh "target/${{ matrix.target }}/release/mangapoint" "${{ steps.version.outputs.value }}" "dist/$name"
+          (cd dist && shasum -a 256 "$name" > "$name.sha256")
 
       - uses: actions/upload-artifact@v4
         with:
           name: MangaPoint-${{ matrix.label }}
-          path: |
-            dist/*.zip
-            dist/*.tar.gz
-            dist/*.sha256
+          path: dist/*
           if-no-files-found: error
           retention-days: 14
