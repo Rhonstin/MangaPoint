@@ -1,0 +1,32 @@
+name: Pull request title
+
+# Pull requests are squash-merged, so the title becomes the commit on main, and
+# the commits on main decide the next version. See CONTRIBUTING.md.
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  pull-requests: read
+
+jobs:
+  title:
+    name: Conventional title
+    runs-on: ubuntu-latest
+    steps:
+      - uses: amannn/action-semantic-pull-request@v5
+        with:
+          types: |
+            feat
+            fix
+            perf
+            docs
+            refactor
+            test
+            build
+            ci
+            chore
+            style
+        env:
+          GITHUB_TOKEN: ${{ github.token }}

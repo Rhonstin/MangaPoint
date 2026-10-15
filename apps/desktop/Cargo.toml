@@ -2,7 +2,9 @@
 name = "mangapoint"
 version.workspace = true
 edition.workspace = true
-description = "MangaPoint desktop app"
+description = "The easiest way to get manga onto your e-reader: search, download, crop and convert in one app, then send it to your device"
+license = "MIT"
+repository = "https://github.com/W1seGit/MangaPoint"
 
 [dependencies]
 dioxus = { version = "0.7", features = ["desktop"] }

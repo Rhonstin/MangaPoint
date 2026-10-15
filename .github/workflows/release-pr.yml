@@ -1,0 +1,73 @@
+name: Prepare a release
+
+# Opens a pull request that raises the version and writes the changelog.
+# Merging it is what publishes the release (see release.yml).
+#
+# The next version comes from the titles of what was merged since the last
+# release (Conventional Commits): feat -> minor, fix/perf -> patch,
+# breaking (feat!: ...) -> major. docs, chore, ci, test, refactor and style
+# alone do not call for a release. Run it by hand from the Actions tab; choose
+# a bump to override what the commits say.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "How much to raise the version (auto reads the commits)"
+        type: choice
+        default: auto
+        options: [auto, patch, minor, major]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Work out the next version
+        id: next
+        run: |
+          current="$(python3 tools/release.py current)"
+          if [ "${{ inputs.bump }}" = "auto" ]; then
+            next="$(python3 tools/release.py next)"
+          else
+            next="$(python3 tools/release.py bump "${{ inputs.bump }}")"
+          fi
+          echo "current=$current" >> "$GITHUB_OUTPUT"
+          echo "next=$next" >> "$GITHUB_OUTPUT"
+          echo "Current $current, next $next"
+
+      - name: Nothing to release
+        if: steps.next.outputs.next == 'none'
+        run: echo "No feat, fix or perf changes since the last release. Pick a bump by hand to release anyway."
+
+      - name: Raise the version and write the changelog
+        if: steps.next.outputs.next != 'none'
+        run: |
+          python3 tools/release.py apply "${{ steps.next.outputs.next }}"
+          cargo update --workspace
+
+      - name: Open the pull request
+        if: steps.next.outputs.next != 'none'
+        run: |
+          version="${{ steps.next.outputs.next }}"
+          branch="release/v$version"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$branch"
+          git add Cargo.toml Cargo.lock CHANGELOG.md
+          git commit -m "chore(release): v$version"
+          git push --force origin "$branch"
+          gh pr create --base main --head "$branch" \
+            --title "chore(release): v$version" \
+            --body "Raises the version from ${{ steps.next.outputs.current }} to $version and adds it to the changelog. Merging this pull request builds Windows, Linux and macOS and publishes the release **v$version**."
+        env:
+          GH_TOKEN: ${{ github.token }}
