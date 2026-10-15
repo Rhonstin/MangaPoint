@@ -70,6 +70,57 @@ pub fn open_sample(state: AppState) {
     state.go(Page::Export);
 }
 
+/// Make the Export screen's list agree with the library: a series that was
+/// removed, or whose downloads were all deleted, cannot be previewed or
+/// exported, so it goes off the list. With none left the sample pages come
+/// back; otherwise the series on show is one that is still there. Does
+/// nothing when the list is already right.
+pub fn reconcile_export_plan(state: AppState) {
+    let plan = state.export_plan.peek().clone();
+    if plan.items.is_empty() {
+        return;
+    }
+    let usable = |id: &str| {
+        state
+            .library
+            .peek()
+            .find(id)
+            .is_some_and(|s| !s.chapters.is_empty())
+    };
+    let kept: Vec<ExportItem> = plan
+        .items
+        .iter()
+        .filter(|i| usable(&i.series_id))
+        .cloned()
+        .collect();
+    if kept.len() != plan.items.len() {
+        if kept.is_empty() {
+            // Nothing left: the sample pages, as when the screen is first opened.
+            let id = crate::sample::ensure_sample(state);
+            let mut plan = state.export_plan;
+            plan.set(ExportPlan {
+                items: vec![ExportItem {
+                    series_id: id,
+                    ..Default::default()
+                }],
+                active: 0,
+            });
+            activate_export_series(state, 0);
+        } else {
+            let active = plan.active.min(kept.len() - 1);
+            let mut plan = state.export_plan;
+            plan.set(ExportPlan { items: kept, active });
+            activate_export_series(state, active);
+        }
+        return;
+    }
+    // The list is right, but what is on show is a series that is gone.
+    let shown = state.workspace.peek().as_ref().map(|w| w.series_id.clone());
+    if shown.as_deref().is_some_and(|id| !usable(id)) {
+        activate_export_series(state, plan.active.min(plan.items.len() - 1));
+    }
+}
+
 /// Edit and preview this series of the Export screen's list.
 pub fn activate_export_series(state: AppState, index: usize) {
     let id = state
@@ -131,6 +182,9 @@ pub fn activate_export_series(state: AppState, index: usize) {
 
 /// Add a series to the Export screen's list.
 pub fn add_export_series(state: AppState, series_id: String) {
+    // A series that is gone from the list's point of view must not hold the
+    // place the new one is meant to take.
+    reconcile_export_plan(state);
     let has_chapters = state
         .library
         .peek()

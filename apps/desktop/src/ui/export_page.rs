@@ -9,7 +9,7 @@ use super::devices::ReaderPicker;
 use super::presets;
 use super::widgets::{pick_folder, Chip, Cover, Help, Icon, NoCover};
 use super::work::{
-    activate_export_series, add_export_series, load_saved_cover, open_sample, remove_export_series,
+    activate_export_series, add_export_series, load_saved_cover, open_sample, reconcile_export_plan, remove_export_series,
     saved_cover_key, schedule_preview, start_export_plan,
 };
 use super::workspace::crop_editor::CropInspector;
@@ -81,6 +81,22 @@ pub fn ExportPage() -> Element {
         if state.export_plan.peek().items.is_empty() {
             open_sample(state);
         }
+    });
+    // Series that were removed (or lost every downloaded chapter) while this
+    // list was open go off it, and the sample pages come back if none is left.
+    let usable_series = use_memo(move || {
+        state
+            .library
+            .read()
+            .series
+            .iter()
+            .filter(|s| !s.chapters.is_empty())
+            .map(|s| s.id.clone())
+            .collect::<Vec<_>>()
+    });
+    use_effect(move || {
+        let _ = usable_series();
+        reconcile_export_plan(state);
     });
     // Opened again after other pages were visited: they changed what the
     // preview shows, so put the series of the list back.

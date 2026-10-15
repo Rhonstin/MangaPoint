@@ -36,6 +36,13 @@ impl GridRow {
     }
 }
 
+/// How tall a row is, in pixels (the stylesheet fixes it to this).
+const ROW_HEIGHT: usize = 42;
+/// How many rows are drawn at once in a long table; the rest are only space.
+const DRAWN_ROWS: usize = 60;
+/// Scrolling moves the drawn rows in steps of this many.
+const STEP: usize = 10;
+
 fn sort_icon(current: (SortKey, bool), column: SortKey) -> &'static str {
     if current.0 != column {
         "chevrons-up-down"
@@ -65,6 +72,18 @@ pub fn ChapterGrid(
     /// Tallest the table gets before it scrolls, for example "360px".
     max_height: Option<String>,
 ) -> Element {
+    // A long list is not drawn whole: only the rows in view (and a few more
+    // each way) are, with empty space where the others would be, so the page
+    // stays light however many chapters there are.
+    let mut block = use_signal(|| 0usize);
+    let total = rows.len();
+    let long = total > DRAWN_ROWS + 2 * STEP;
+    let (first, last) = if long {
+        let first = (block() * STEP).saturating_sub(STEP).min(total - DRAWN_ROWS);
+        (first, first + DRAWN_ROWS)
+    } else {
+        (0, total)
+    };
     let tickable: Vec<usize> = rows
         .iter()
         .filter(|r| !(lock_done && r.is_settled()))
@@ -90,6 +109,12 @@ pub fn ChapterGrid(
     rsx! {
         div { class: "table-wrap",
             div { class: "table-scroll", style: "{scroll_style}",
+                onscroll: move |e| {
+                    let now = e.data().scroll_top() as usize / ROW_HEIGHT / STEP;
+                    if now != *block.peek() {
+                        block.set(now);
+                    }
+                },
                 table { class: "chapters",
                     thead {
                         tr {
@@ -109,7 +134,10 @@ pub fn ChapterGrid(
                         }
                     }
                     tbody {
-                        for r in rows.iter().cloned() {
+                        if first > 0 {
+                            tr { class: "spacer", style: "height: {first * ROW_HEIGHT}px", td { colspan: "7" } }
+                        }
+                        for r in rows[first..last].iter().cloned() {
                             ChapterRow {
                                 key: "{r.index}",
                                 on: picked.contains(&r.index),
@@ -117,6 +145,9 @@ pub fn ChapterGrid(
                                 row: r,
                                 on_toggle,
                             }
+                        }
+                        if last < total {
+                            tr { class: "spacer", style: "height: {(total - last) * ROW_HEIGHT}px", td { colspan: "7" } }
                         }
                     }
                 }

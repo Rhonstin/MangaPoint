@@ -5,6 +5,7 @@
 
 mod assets;
 mod backend;
+mod covers;
 mod logfile;
 mod logic;
 mod notify;
@@ -84,7 +85,14 @@ fn main() {
         .with_title("MangaPoint")
         .with_inner_size(LogicalSize::new(1480.0, 940.0))
         .with_min_inner_size(LogicalSize::new(1280.0, 720.0));
-    let mut config = Config::new().with_window(window).with_menu(None);
+    // Covers are handed to the page by address, not kept in memory; see `covers`.
+    covers::tidy_cache();
+    let mut config = Config::new()
+        .with_window(window)
+        .with_menu(None)
+        .with_asynchronous_custom_protocol(covers::SCHEME, |_id, request, responder| {
+            covers::serve(request, responder)
+        });
     // Developer switch: let tools such as an automated UI test connect to the
     // app's web view. Off unless MANGAPOINT_DEBUG_PORT is set; the port only
     // listens on this computer.

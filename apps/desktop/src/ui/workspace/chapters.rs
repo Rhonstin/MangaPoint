@@ -81,7 +81,7 @@ pub fn ChaptersTab() -> Element {
         }
         ChaptersState::Loading => {
             return rsx! {
-                div { class: "card",
+                div { class: "page-loading",
                     Loading { label: "Loading chapters from your sources…" }
                 }
             };

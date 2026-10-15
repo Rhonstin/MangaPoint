@@ -79,6 +79,32 @@ pub(super) async fn delete_chapter_files(
             Err(e) => state.error(format!("Could not delete that chapter: {e}")),
         }
     }
+    // With every chapter gone there is nothing left in the series' folder worth
+    // keeping (the cover is the only thing): the folder goes too. The series
+    // stays in the library, and its cover comes back when it is opened again.
+    let emptied = state
+        .library
+        .peek()
+        .find(series_id)
+        .is_some_and(|s| s.chapters.is_empty());
+    if emptied && deleted > 0 {
+        let files = library_files();
+        let id = series_id.to_string();
+        if let Ok(Ok(())) = tokio::task::spawn_blocking(move || files.remove_series(&id)).await {
+            let mut library = state.library;
+            if let Some(info) = library
+                .write()
+                .series
+                .iter_mut()
+                .find(|s| s.id == series_id)
+                .and_then(|s| s.info.as_mut())
+            {
+                info.has_cover = false;
+            }
+            let mut covers = state.covers;
+            covers.write().remove(&saved_cover_key(series_id));
+        }
+    }
     state.save_library();
     deleted
 }

@@ -1,6 +1,6 @@
 //! Searching every installed source at once.
 
-use super::widgets::{cover_key, load_cover, Busy, Chip, Cover, EmptyState, EngineStarting, Icon, Loading};
+use super::widgets::{cover_key, load_cover_race, Busy, Chip, Cover, EmptyState, EngineStarting, Icon, Loading};
 use crate::logic::{self, ExplicitFilter, SearchFilters, SearchSort, COMMON_GENRES, SERIES_TYPES};
 use crate::state::now_secs;
 use crate::state::spawn_forever;
@@ -880,16 +880,20 @@ fn publish(
     };
     let ranked = rank_series(search.clusters(), query, &ctx);
 
-    // Fetch the covers of the first screenful.
-    for series in ranked.iter().take(30) {
+    // Point every result at its cover. Nothing is fetched here: the page asks
+    // for the covers in view, and when the series is on several sources they
+    // are all asked, the first picture to arrive being the one shown.
+    for series in ranked.iter() {
         let best = &series.best().candidate;
-        if let Some(path) = &best.thumbnail {
-            load_cover(
-                state,
-                cover_key(&best.source_id, best.manga_id),
-                path.clone(),
-            );
+        let mut paths: Vec<String> = best.thumbnail.iter().cloned().collect();
+        for member in series.members.iter().take(6) {
+            if let Some(path) = &member.candidate.thumbnail {
+                if !paths.contains(path) {
+                    paths.push(path.clone());
+                }
+            }
         }
+        load_cover_race(state, cover_key(&best.source_id, best.manga_id), paths);
     }
 
     let mut view = state.search;

@@ -162,7 +162,10 @@ table.chapters td.src { white-space: nowrap; overflow: hidden; }
 .src-tag.used { color: var(--ok); border-color: rgba(127, 209, 139, 0.45); }
 table.chapters th.date, table.chapters td.date { width: 112px; white-space: nowrap; font-variant-numeric: tabular-nums; }
 table.chapters th.check, table.chapters td.check { width: 40px; }
-table.chapters tbody tr { cursor: pointer; }
+table.chapters tbody tr { cursor: pointer; height: 42px; }
+table.chapters tbody td { height: 42px; box-sizing: border-box; padding-top: 0; padding-bottom: 0; white-space: nowrap; }
+table.chapters tbody tr.spacer, table.chapters tbody tr.spacer:hover { cursor: default; background: transparent; }
+table.chapters tbody tr.spacer td { padding: 0; border: 0; }
 table.chapters tbody tr:hover { background: var(--panel-2); }
 table.chapters tbody tr.on { background: #1a1a1a; box-shadow: inset 3px 0 0 var(--accent); }
 table.chapters td.name { overflow: hidden; text-overflow: ellipsis; max-width: 0; white-space: nowrap; }
@@ -832,6 +835,8 @@ table.chapters th.size, table.chapters td.size { width: 90px; text-align: right;
 @keyframes run-a { 0% { opacity: 1; } 50% { opacity: 0; } }
 @keyframes run-b { 0% { opacity: 0; } 50% { opacity: 1; } }
 @keyframes orbit { to { transform: rotate(360deg); } }
+/* A loading cat on the page itself, in the middle of the space the content will fill. */
+.page-loading { display: flex; align-items: center; justify-content: center; min-height: calc(100vh - 360px); }
 .loading { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; padding: 24px 0; color: var(--muted); text-align: center; width: 100%; }
 .busy { display: inline-flex; align-items: center; gap: 6px; vertical-align: middle; }
 /* The status under the search box stays clear of it. */

@@ -26,6 +26,7 @@ pub async fn boot(state: AppState, install: bool) {
     let mut boot = state.boot;
     let mut services = state.services;
     services.set(None);
+    crate::covers::set_client(None);
     let installed = provision::locate_install(
         &paths().suwayomi_dir().join(format!("suwayomi-{VERSION_TAG}")),
     )
@@ -43,6 +44,7 @@ pub async fn boot(state: AppState, install: bool) {
 
     match start(state).await {
         Ok(svc) => {
+            crate::covers::set_client(Some(svc.client.clone()));
             services.set(Some(svc));
             // Make sure the default extension store is known.
             if let Some(client) = state.client() {

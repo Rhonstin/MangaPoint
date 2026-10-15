@@ -225,6 +225,16 @@ pub struct SearchView {
     pub generation: u64,
 }
 
+/// What the sources say about a series opened from a search that is not in
+/// the library yet: shown on its overview.
+#[derive(Clone)]
+pub struct OpenDetails {
+    pub series_id: String,
+    pub info: library::SeriesInfo,
+    /// Where the cover comes from (see `covers`).
+    pub cover: Option<Rc<str>>,
+}
+
 /// The series the user is working on.
 #[derive(Clone)]
 pub struct Workspace {
@@ -507,6 +517,8 @@ pub struct AppState {
     /// The genres each search result's source lists, once looked up.
     pub search_tags: Signal<HashMap<(String, i64), Vec<String>>>,
     pub settings_section: Signal<SettingsSection>,
+    /// Details of the series opened from a search, once the sources have answered.
+    pub open_details: Signal<Option<OpenDetails>>,
     /// The reader form has changes that are not saved yet.
     pub unsaved_reader: Signal<Option<UnsavedReader>>,
     /// Going somewhere was held back by unsaved reader settings; the user is asked.
@@ -611,6 +623,7 @@ impl AppState {
             search_filters: sig(crate::logic::SearchFilters::default()),
             search_tags: sig(HashMap::new()),
             settings_section: sig(SettingsSection::default()),
+            open_details: sig(None),
             unsaved_reader: sig(None),
             leave_prompt: sig(None),
             covers: sig(HashMap::new()),
