@@ -26,6 +26,10 @@ static CLIENT: RwLock<Option<Arc<SuwayomiClient>>> = RwLock::new(None);
 /// How many covers are fetched from the sources at once.
 static FETCHING: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(6);
 
+/// A source that has not answered after this long is joined by the next one,
+/// so the first picture to arrive wins without asking everyone at once.
+const HEDGE_AFTER: Duration = Duration::from_millis(1200);
+
 /// How big the cache of fetched covers may get, and how long a cover stays in it.
 const CACHE_LIMIT: u64 = 300 * 1024 * 1024;
 const CACHE_KEEP: Duration = Duration::from_secs(30 * 24 * 3600);
@@ -82,10 +86,11 @@ fn decode(text: &str) -> String {
 }
 
 /// The address of a cover that the sources hold, under these paths (the
-/// catalog's own paths, best first). With several, the first to answer wins.
-pub fn source_url(paths: &[String]) -> String {
+/// catalog's own paths, best first). `identity` names the series: the same
+/// series always gets the same picture, whichever sources happen to be known.
+pub fn source_url(identity: &str, paths: &[String]) -> String {
     let list: Vec<String> = paths.iter().map(|p| format!("p={}", encode(p))).collect();
-    format!("{}/s?{}", base(), list.join("&"))
+    format!("{}/s?k={}&{}", base(), encode(identity), list.join("&"))
 }
 
 /// The address of the cover saved with a series in the library. `version`
@@ -167,36 +172,100 @@ async fn saved(query: &[(String, String)]) -> Option<Response<Cow<'static, [u8]>
     Some(reply(200, mime, bytes))
 }
 
-/// A cover from the sources: from the cache if it was fetched before, else
-/// from whichever source answers first.
+/// A cover from the sources, for the page.
 async fn from_sources(query: &[(String, String)]) -> Option<Response<Cow<'static, [u8]>>> {
     let paths: Vec<String> = query
         .iter()
         .filter(|(k, _)| k == "p")
         .map(|(_, v)| v.clone())
         .collect();
+    let identity = query.iter().find(|(k, _)| k == "k").map(|(_, v)| v.clone());
+    let bytes = cover_bytes(identity, paths).await?;
+    let mime = mime_of(&bytes);
+    Some(reply(200, mime, bytes))
+}
+
+/// Which covers have been asked for ahead of the page, so each is only once.
+static AHEAD: std::sync::Mutex<Option<std::collections::HashSet<String>>> = std::sync::Mutex::new(None);
+
+/// Which covers are being fetched right now, so a second request for one waits
+/// for the first instead of asking the sources again.
+static BUSY: std::sync::Mutex<Option<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>> =
+    std::sync::Mutex::new(None);
+
+/// Start fetching these covers before the page asks for them (the results are
+/// on show for a moment before the pictures come into view), a few at a time.
+/// They go to the cache, so the page's own request is answered at once.
+pub fn prefetch(wanted: Vec<(String, Vec<String>)>) {
+    let Ok(runtime) = tokio::runtime::Handle::try_current() else { return };
+    let fresh: Vec<(String, Vec<String>)> = {
+        let Ok(mut seen) = AHEAD.lock() else { return };
+        let seen = seen.get_or_insert_with(Default::default);
+        if seen.len() > 5000 {
+            seen.clear();
+        }
+        wanted
+            .into_iter()
+            .filter(|(identity, paths)| !paths.is_empty() && seen.insert(identity.clone()))
+            .collect()
+    };
+    for (identity, paths) in fresh {
+        runtime.spawn(async move {
+            let _ = cover_bytes(Some(identity), paths).await;
+        });
+    }
+}
+
+/// The picture of a cover: from the cache if it was fetched before, else from
+/// whichever source answers first (and kept for next time).
+async fn cover_bytes(identity: Option<String>, paths: Vec<String>) -> Option<Vec<u8>> {
     if paths.is_empty() {
         return None;
     }
+    // Kept under the series' name when it has one, so the picture does not
+    // change when more sources become known; otherwise under the paths.
     let mut hash = Sha256::new();
-    for p in &paths {
-        hash.update(p.as_bytes());
-        hash.update([0]);
+    match &identity {
+        Some(name) => hash.update(name.as_bytes()),
+        None => {
+            for p in &paths {
+                hash.update(p.as_bytes());
+                hash.update([0]);
+            }
+        }
     }
     let name: String = hash.finalize().iter().take(16).map(|b| format!("{b:02x}")).collect();
     let file = cache_dir().join(format!("{name}.img"));
     if let Ok(bytes) = tokio::fs::read(&file).await {
-        let mime = mime_of(&bytes);
-        return Some(reply(200, mime, bytes));
+        return Some(bytes);
     }
-    let _turn = FETCHING.acquire().await.ok()?;
-    // Another request for the same cover may have finished while this waited.
+    // One fetch per cover at a time: a second request waits and then finds it cached.
+    let lock = {
+        let mut busy = BUSY.lock().ok()?;
+        let map = busy.get_or_insert_with(Default::default);
+        if map.len() > 2000 {
+            map.clear();
+        }
+        map.entry(name.clone()).or_default().clone()
+    };
+    let _one = lock.lock().await;
     if let Ok(bytes) = tokio::fs::read(&file).await {
-        let mime = mime_of(&bytes);
-        return Some(reply(200, mime, bytes));
+        return Some(bytes);
     }
+    let started = std::time::Instant::now();
+    let _turn = FETCHING.acquire().await.ok()?;
+    let waited = started.elapsed();
     let client = CLIENT.read().ok()?.clone()?;
-    let winner = first_picture(&client, paths).await?;
+    let how_many = paths.len();
+    let winner = first_picture(&client, paths).await;
+    tracing::debug!(
+        "cover {}: waited {} ms for a turn, {} ms from {how_many} source(s): {}",
+        identity.as_deref().unwrap_or("?"),
+        waited.as_millis(),
+        (started.elapsed() - waited).as_millis(),
+        if winner.is_some() { "found" } else { "none" }
+    );
+    let winner = winner?;
     let original = winner.clone();
     // Shown at poster size, so what the source sent is shrunk as long as that
     // makes it smaller.
@@ -210,32 +279,56 @@ async fn from_sources(query: &[(String, String)]) -> Option<Response<Cow<'static
         let _ = tokio::fs::create_dir_all(dir).await;
     }
     let _ = tokio::fs::write(&file, &bytes).await;
-    let mime = mime_of(&bytes);
-    Some(reply(200, mime, bytes))
+    Some(bytes)
 }
 
-/// Ask for all these pictures at once and take the first that is one.
+/// Ask for these pictures, best first, and take the first that arrives: the
+/// next source is added whenever the ones asked have been quiet for a moment,
+/// so a slow one does not hold things up and a quick one is not joined by the
+/// rest for nothing.
 pub async fn first_picture(client: &Arc<SuwayomiClient>, paths: Vec<String>) -> Option<Vec<u8>> {
-    let mut asking = FuturesUnordered::new();
-    for path in paths {
+    let ask = |path: String| {
         let client = client.clone();
-        asking.push(async move {
-            client
-                .get_bytes(&path)
+        async move {
+            tokio::time::timeout(Duration::from_secs(15), client.get_bytes(&path))
                 .await
                 .ok()
+                .and_then(Result::ok)
                 .filter(|b| sources::check::image_kind(b).is_some())
-        });
+        }
+    };
+    let mut waiting = paths.into_iter();
+    let mut asking = FuturesUnordered::new();
+    if let Some(first) = waiting.next() {
+        asking.push(ask(first));
     }
-    let wait = async {
-        while let Some(found) = asking.next().await {
-            if found.is_some() {
-                return found;
+    let overall = tokio::time::sleep(Duration::from_secs(30));
+    tokio::pin!(overall);
+    loop {
+        if asking.is_empty() {
+            match waiting.next() {
+                Some(next) => asking.push(ask(next)),
+                None => return None,
             }
         }
-        None
-    };
-    tokio::time::timeout(Duration::from_secs(25), wait).await.ok().flatten()
+        tokio::select! {
+            found = asking.next() => {
+                if let Some(Some(bytes)) = found {
+                    return Some(bytes);
+                }
+                // That one failed: the next is tried straight away.
+                if let Some(next) = waiting.next() {
+                    asking.push(ask(next));
+                }
+            }
+            _ = tokio::time::sleep(HEDGE_AFTER), if waiting.len() > 0 => {
+                if let Some(next) = waiting.next() {
+                    asking.push(ask(next));
+                }
+            }
+            _ = &mut overall => return None,
+        }
+    }
 }
 
 /// Tidy the cache of fetched covers: old ones go, and the oldest of the rest
@@ -277,9 +370,9 @@ mod tests {
     #[test]
     fn paths_survive_the_address() {
         let paths = vec!["/api/v1/manga/12/thumbnail?a=b&c=d e".to_string(), "/x/ü".to_string()];
-        let url = source_url(&paths);
+        let url = source_url("some series", &paths);
         let query = url.split_once('?').unwrap().1;
-        let back: Vec<String> = parse_query(query).into_iter().map(|(_, v)| v).collect();
+        let back: Vec<String> = parse_query(query).into_iter().filter(|(k, _)| k == "p").map(|(_, v)| v).collect();
         assert_eq!(back, paths);
     }
 

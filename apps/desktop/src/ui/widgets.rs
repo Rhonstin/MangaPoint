@@ -158,9 +158,16 @@ pub fn Cover(key_id: String) -> Element {
     let state = use_context::<AppState>();
     // A shared string: drawing a cover does not copy its picture.
     let url = state.covers.read().get(&key_id).cloned();
+    // A picture that could not be had shows the placeholder, not a black box.
+    let mut failed = use_signal(|| false);
     match url {
-        Some(src) => rsx! { img { class: "cover", src: "{src}", loading: "lazy", decoding: "async" } },
-        None => rsx! { NoCover {} },
+        Some(src) if !failed() => rsx! {
+            img {
+                class: "cover", src: "{src}", loading: "lazy", decoding: "async",
+                onerror: move |_| failed.set(true),
+            }
+        },
+        _ => rsx! { NoCover {} },
     }
 }
 
@@ -174,11 +181,11 @@ pub fn NoCover() -> Element {
 /// the page asks for the picture by address when the cover comes into view
 /// (see `covers`). With a series on several sources, all are asked and the
 /// first picture to arrive is used.
-pub fn load_cover_race(state: AppState, key: String, paths: Vec<String>) {
+pub fn load_cover_race(state: AppState, key: String, identity: &str, paths: Vec<String>) {
     if paths.is_empty() {
         return;
     }
-    let url: std::rc::Rc<str> = crate::covers::source_url(&paths).into();
+    let url: std::rc::Rc<str> = crate::covers::source_url(identity, &paths).into();
     if state.covers.peek().get(&key) == Some(&url) {
         return;
     }

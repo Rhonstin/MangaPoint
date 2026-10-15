@@ -1261,3 +1261,6 @@ input.px-name:focus { border-color: var(--accent); background: var(--bg); outlin
 @keyframes toast-out { from { translate: 0 0; } to { translate: 120% 0; opacity: 0; } }
 .app[data-motion="snappy"] .toast { transition-duration: 0.08s; animation-duration: 0.1s; }
 @media (prefers-reduced-motion: reduce) { .toast { animation: none; transition: none; } }
+
+/* A cover that has not arrived yet is a quiet panel, not a black hole. */
+img.cover { background: var(--panel-2); }

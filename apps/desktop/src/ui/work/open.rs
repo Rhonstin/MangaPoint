@@ -75,7 +75,7 @@ pub fn open_series_from_search(state: AppState, ranked: RankedSeries) {
             if let (Some(details), true) = (details, still_here) {
                 let info = logic::series_info_from(&details, names, false, now_secs());
                 let cover = (!thumbnails.is_empty())
-                    .then(|| Rc::<str>::from(crate::covers::source_url(&thumbnails)));
+                    .then(|| Rc::<str>::from(crate::covers::source_url(&wanted, &thumbnails)));
                 let mut open_details = state.open_details;
                 open_details.set(Some(crate::state::OpenDetails { series_id: wanted, info, cover }));
             }

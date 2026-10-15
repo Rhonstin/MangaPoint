@@ -883,7 +883,8 @@ fn publish(
     // Point every result at its cover. Nothing is fetched here: the page asks
     // for the covers in view, and when the series is on several sources they
     // are all asked, the first picture to arrive being the one shown.
-    for series in ranked.iter() {
+    let mut ahead: Vec<(String, Vec<String>)> = Vec::new();
+    for (position, series) in ranked.iter().enumerate() {
         let best = &series.best().candidate;
         let mut paths: Vec<String> = best.thumbnail.iter().cloned().collect();
         for member in series.members.iter().take(6) {
@@ -893,8 +894,18 @@ fn publish(
                 }
             }
         }
-        load_cover_race(state, cover_key(&best.source_id, best.manga_id), paths);
+        load_cover_race(
+            state,
+            cover_key(&best.source_id, best.manga_id),
+            &library::series_id(&series.title),
+            paths.clone(),
+        );
+        // The first screenfuls are fetched now, while the results are looked at.
+        if position < 18 {
+            ahead.push((library::series_id(&series.title), paths));
+        }
     }
+    crate::covers::prefetch(ahead);
 
     let mut view = state.search;
     view.set(SearchView {
