@@ -522,6 +522,27 @@ pub fn series_info_from(
     }
 }
 
+/// How many chapters make a series slow to load: the sources send the whole
+/// list at once, so a long one takes a while.
+pub const LONG_SERIES: usize = 500;
+
+/// What to say while the chapters of a long series load, when how many it has
+/// is known; nothing for a short series or when the count is not known.
+pub fn long_series_note(chapters: Option<usize>) -> Option<String> {
+    let n = chapters.filter(|n| *n > LONG_SERIES)?;
+    // "about 3,000": rounded, with a comma in the thousands.
+    let step = if n >= 1000 { 100 } else { 50 };
+    let rounded = (n + step / 2) / step * step;
+    let text = if rounded >= 1000 {
+        format!("{},{:03}", rounded / 1000, rounded % 1000)
+    } else {
+        rounded.to_string()
+    };
+    Some(format!(
+        "This series has about {text} chapters, so it can take a while to load them from your sources."
+    ))
+}
+
 /// "1 chapter", "2 chapters".
 pub fn plural(n: usize, noun: &str) -> String {
     if n == 1 {
@@ -1376,6 +1397,15 @@ mod sort_tests {
 
 #[cfg(test)]
 mod library_view_tests {
+    #[test]
+    fn a_long_series_gets_a_note_and_a_short_one_does_not() {
+        assert_eq!(long_series_note(None), None);
+        assert_eq!(long_series_note(Some(500)), None);
+        assert!(long_series_note(Some(501)).unwrap().contains("about 500 chapters"));
+        assert!(long_series_note(Some(3_187)).unwrap().contains("about 3,200 chapters"));
+        assert!(long_series_note(Some(12_000)).unwrap().contains("about 12,000 chapters"));
+    }
+
     use super::*;
     use library::{DownloadedChapter, DownloadedSeries, SeriesInfo};
 

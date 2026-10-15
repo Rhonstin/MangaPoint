@@ -80,9 +80,32 @@ pub fn ChaptersTab() -> Element {
             };
         }
         ChaptersState::Loading => {
+            // How many chapters there are, if the search or the library already
+            // knows: a long series takes a while, and the page says so.
+            let known = ws
+                .ranked
+                .as_ref()
+                .and_then(|r| {
+                    r.members
+                        .iter()
+                        .filter_map(|m| m.enrichment.as_ref().and_then(|e| e.chapter_count))
+                        .max()
+                        .map(|n| n as usize)
+                })
+                .or_else(|| {
+                    state
+                        .library
+                        .read()
+                        .find(&ws.series_id)
+                        .and_then(|s| s.chapter_total)
+                });
+            let note = crate::logic::long_series_note(known);
             return rsx! {
                 div { class: "page-loading",
                     Loading { label: "Loading chapters from your sources…" }
+                    if let Some(note) = note {
+                        p { class: "muted small loading-note", "{note}" }
+                    }
                 }
             };
         }
