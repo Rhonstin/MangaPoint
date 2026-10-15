@@ -401,19 +401,42 @@ pub async fn export_series(
     // Now that every file exists, name them (part numbers need the count) and
     // send them.
     let mut sent = Vec::new();
+    let sizes: Vec<u64> = volumes
+        .iter()
+        .map(|v| fs::metadata(&v.temp).map_or(0, |m| m.len()))
+        .collect();
+    let all: u64 = sizes.iter().sum();
+    let mut before = 0u64;
     for (i, volume) in volumes.iter().enumerate() {
         let name = volume_name(job, volume, &volumes, i, extension);
         emit(JobEvent::Writing { file: name.clone() });
-        let tx = events.clone();
+        emit(JobEvent::Sent { done: before, total: all });
+        let (tx_progress, tx_flush) = (events.clone(), events.clone());
+        let mut last = std::time::Instant::now();
         sent.push(
             job.target
-                .write_file_with(&name, &volume.temp, move || {
-                    if let Some(tx) = tx {
-                        let _ = tx.send(JobEvent::Flushing);
-                    }
-                })
+                .write_file_with(
+                    &name,
+                    &volume.temp,
+                    move |written| {
+                        // Several a second is plenty to draw.
+                        let finished = before + written >= all;
+                        if let Some(tx) = &tx_progress {
+                            if finished || last.elapsed() >= std::time::Duration::from_millis(100) {
+                                last = std::time::Instant::now();
+                                let _ = tx.send(JobEvent::Sent { done: before + written, total: all });
+                            }
+                        }
+                    },
+                    move || {
+                        if let Some(tx) = tx_flush {
+                            let _ = tx.send(JobEvent::Flushing);
+                        }
+                    },
+                )
                 .await?,
         );
+        before += sizes[i];
     }
     Ok(ExportOutcome {
         files: sent,

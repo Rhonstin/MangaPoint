@@ -362,9 +362,60 @@ fn forget_export_plan() {
     let _ = std::fs::remove_file(paths().export_job_file());
 }
 
+/// Write down what is left to do: the series being exported (or paused) and
+/// those waiting for it. The plan on disk always says where to go on from.
+fn persist_export_plan(state: AppState, base: &SavedExport, current: &SavedExportItem) {
+    let mut items = vec![current.clone()];
+    items.extend(state.export_waiting.peek().iter().map(|w| SavedExportItem {
+        series_id: w.series_id.clone(),
+        keys: w.keys.clone(),
+    }));
+    save_export_plan(&SavedExport {
+        items,
+        next: 0,
+        ..base.clone()
+    });
+}
+
+/// A series of the saved plan, as it is listed while it waits its turn.
+fn waiting_export(state: AppState, item: &SavedExportItem) -> Option<WaitingExport> {
+    let library = state.library.peek();
+    let series = library.find(&item.series_id)?;
+    let keys: Vec<String> = item
+        .keys
+        .iter()
+        .filter(|k| series.chapters.iter().any(|c| &c.key == *k))
+        .cloned()
+        .collect();
+    (!keys.is_empty()).then(|| WaitingExport {
+        series_id: series.id.clone(),
+        title: series.title.clone(),
+        keys,
+    })
+}
+
+/// The export that goes next, taken off the waiting list.
+fn take_next_waiting(state: AppState) -> Option<WaitingExport> {
+    let mut waiting = state.export_waiting;
+    let mut list = waiting.write();
+    (!list.is_empty()).then(|| list.remove(0))
+}
+
 /// Export the saved series one after another, from the first unfinished one.
-/// The plan on disk always says where to go on from.
+/// The one running is the first of the plan; the others wait behind it, like
+/// downloads, and each is finished (and announced) on its own.
 fn run_saved_export(state: AppState, saved: SavedExport) {
+    // The ones behind the first, in order, ready before the first starts.
+    let mut waiting = state.export_waiting;
+    let mut entries = saved
+        .items
+        .iter()
+        .skip(saved.next)
+        .filter_map(|item| waiting_export(state, item))
+        .collect::<Vec<_>>()
+        .into_iter();
+    let first = entries.next();
+    waiting.set(entries.collect());
     spawn_forever(async move {
         let settings = state.settings.peek().clone();
         let Some(target) = saved.target.clone() else {
@@ -372,25 +423,21 @@ fn run_saved_export(state: AppState, saved: SavedExport) {
             return;
         };
         let grouping = Grouping::from(saved.grouping);
-        let total = saved.items.len();
-        for n in saved.next..total {
-            let item = &saved.items[n];
+        let mut current = first;
+        while let Some(item) = current.take() {
             let Some(series) = state.library.peek().find(&item.series_id).cloned() else {
+                current = take_next_waiting(state);
                 continue;
             };
-            let keys: Vec<String> = item
-                .keys
-                .iter()
-                .filter(|k| series.chapters.iter().any(|c| &c.key == *k))
-                .cloned()
-                .collect();
-            if keys.is_empty() {
-                continue;
-            }
-            save_export_plan(&SavedExport {
-                next: n,
-                ..saved.clone()
-            });
+            let keys = item.keys.clone();
+            persist_export_plan(
+                state,
+                &saved,
+                &SavedExportItem {
+                    series_id: series.id.clone(),
+                    keys: keys.clone(),
+                },
+            );
             let cancel = CancelFlag::new();
             let mut export = ExportJob::new(
                 series.clone(),
@@ -404,11 +451,7 @@ fn run_saved_export(state: AppState, saved: SavedExport) {
             let mut job = state.job;
             job.set(Some(JobView {
                 kind: JobKind::Export,
-                title: if total > 1 {
-                    format!("{} ({} of {total})", series.title, n + 1)
-                } else {
-                    series.title.clone()
-                },
+                title: series.title.clone(),
                 series_id: series.id.clone(),
                 paused: false,
                 progress: JobProgress::default(),
@@ -428,32 +471,34 @@ fn run_saved_export(state: AppState, saved: SavedExport) {
                 describe_target(&target)
             );
             run_export(state, series, export, target.clone(), cancel).await;
-            let (paused, failed) = {
-                let view = job.peek();
-                let view = view.as_ref();
-                (
-                    view.is_some_and(|v| v.paused && v.result.is_none()),
-                    view.and_then(|v| v.result.as_ref()).is_some_and(|r| r.is_err()),
-                )
-            };
+            let paused = job
+                .peek()
+                .as_ref()
+                .is_some_and(|v| v.paused && v.result.is_none());
             if paused {
-                info!("Export paused; it goes on from \"{}\"", saved.items[n].series_id);
+                info!("Export paused; it goes on from \"{}\"", item.series_id);
                 return;
             }
-            if failed {
-                forget_export_plan();
-                return;
-            }
+            // Finished, failed or stopped on purpose: the next one goes on.
+            current = take_next_waiting(state);
         }
         forget_export_plan();
-        if total > 1 {
-            let mut job = state.job;
-            let mut guard = job.write();
-            if let Some(view) = guard.as_mut() {
-                view.result = Some(Ok(format!("Exported {total} series")));
-            }
-        }
     });
+}
+
+/// Take a series that is waiting off the list of exports.
+pub fn remove_waiting_export(state: AppState, series_id: &str) {
+    let mut waiting = state.export_waiting;
+    waiting.write().retain(|w| w.series_id != series_id);
+    // The plan on disk keeps the one running or paused first, then the rest.
+    let saved = JsonFile::<SavedExport>::new(paths().export_job_file()).load();
+    if saved.items.len() > 1 {
+        let mut kept = saved.clone();
+        let first = kept.items.remove(0);
+        kept.items.retain(|i| i.series_id != series_id);
+        kept.items.insert(0, first);
+        save_export_plan(&kept);
+    }
 }
 
 /// Stop the export for now. What it has converted is kept, and it goes on
@@ -480,39 +525,62 @@ pub fn resume_export(state: AppState) {
     if saved.items.is_empty() || saved.next >= saved.items.len() {
         let mut job = state.job;
         job.set(None);
+        let mut waiting = state.export_waiting;
+        waiting.set(Vec::new());
         forget_export_plan();
         return;
     }
     run_saved_export(state, saved);
 }
 
+/// A paused export is given up. The one waiting behind it, if any, takes its
+/// place (paused, so nothing starts by itself).
+pub fn drop_paused_export(state: AppState) {
+    let mut job = state.job;
+    job.set(None);
+    let mut saved = JsonFile::<SavedExport>::new(paths().export_job_file()).load();
+    if saved.next < saved.items.len() {
+        saved.items.remove(saved.next);
+    }
+    saved.next = 0;
+    if saved.items.is_empty() {
+        let mut waiting = state.export_waiting;
+        waiting.set(Vec::new());
+        forget_export_plan();
+    } else {
+        save_export_plan(&saved);
+        restore_export(state);
+    }
+}
+
 /// An export that was not finished when the app was closed comes back paused,
 /// to be resumed when you want it (it can take a lot of the computer).
 pub fn restore_export(state: AppState) {
     let saved = JsonFile::<SavedExport>::new(paths().export_job_file()).load();
-    let Some(item) = saved.items.get(saved.next) else {
-        return;
-    };
-    let Some(series) = state.library.peek().find(&item.series_id).cloned() else {
+    let mut entries = saved
+        .items
+        .iter()
+        .skip(saved.next)
+        .filter_map(|item| waiting_export(state, item))
+        .collect::<Vec<_>>()
+        .into_iter();
+    let Some(first) = entries.next() else {
         forget_export_plan();
         return;
     };
-    let total = saved.items.len();
+    let mut waiting = state.export_waiting;
+    waiting.set(entries.collect());
     let mut job = state.job;
     job.set(Some(JobView {
         kind: JobKind::Export,
-        title: if total > 1 {
-            format!("{} ({} of {total})", series.title, saved.next + 1)
-        } else {
-            series.title.clone()
-        },
-        series_id: series.id.clone(),
+        title: first.title.clone(),
+        series_id: first.series_id.clone(),
         paused: true,
         progress: JobProgress::default(),
         result: None,
         cancel: CancelFlag::new(),
     }));
-    info!("An export of \"{}\" was not finished; it waits to be resumed", series.title);
+    info!("An export of \"{}\" was not finished; it waits to be resumed", first.title);
 }
 
 /// Run one export, keeping the job bar up to date, and record the result.
@@ -559,6 +627,14 @@ pub(super) async fn run_export(
             for f in &outcome.files {
                 info!("Wrote {} ({})", f.location, logic::human_bytes(f.bytes));
             }
+            let speed = job
+                .peek()
+                .as_ref()
+                .and_then(|v| v.progress.writing.as_ref())
+                .and_then(|w| w.average_bytes_per_second());
+            if let Some(speed) = speed {
+                info!("Sent to {} at {}/s on average", describe_target(&target), logic::human_bytes(speed as u64));
+            }
             let record = ExportRecord {
                 id: format!("{}-{}", series.id, now_secs()),
                 series_id: series.id.clone(),
@@ -590,6 +666,7 @@ pub(super) async fn run_export(
             } else if matches!(target, ExportTarget::WebDav { .. }) {
                 summary.push_str(". Sent to the reader.");
             }
+            state.notify(format!("{}: {}", series.title, summary.to_lowercase()));
             crate::notify::finished(state, "Export finished", &format!("{}: {summary}", series.title));
             if let Some(view) = job.write().as_mut() {
                 view.result = Some(Ok(summary));
@@ -677,6 +754,7 @@ pub(super) fn log_event(event: &JobEvent, logged_pages: &mut HashMap<usize, usiz
             }
         }
         JobEvent::Writing { file } => info!("Writing {file}"),
+        JobEvent::Sent { .. } => {}
         JobEvent::Flushing => info!("The file is copied; waiting for the drive to store it"),
     }
 }

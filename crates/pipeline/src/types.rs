@@ -99,6 +99,12 @@ pub enum JobEvent {
     Writing {
         file: String,
     },
+    /// How much of the finished files has reached the target, counting all of
+    /// them: `done` of `total` bytes.
+    Sent {
+        done: u64,
+        total: u64,
+    },
     /// The file is on the drive, but the drive may still be holding the end of
     /// it in memory: it is being forced out, which can take a while.
     Flushing,

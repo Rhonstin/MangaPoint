@@ -278,6 +278,69 @@ pub struct JobProgress {
     pub pages_seen: usize,
     /// The user pressed cancel; the job is winding down.
     pub stopping: bool,
+    /// Set once the finished files are being sent to their target.
+    pub writing: Option<WriteProgress>,
+}
+
+/// How far the finished files have got to the drive, folder or reader.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct WriteProgress {
+    /// The file being sent now.
+    pub file: String,
+    /// Bytes stored so far, of all the files, and the bytes there are in all.
+    pub done: u64,
+    pub total: u64,
+    /// The drive has everything and is being made to keep it.
+    pub flushing: bool,
+    /// When the first file began.
+    began: Option<std::time::Instant>,
+    /// Recent (time, bytes stored), for a speed that follows the drive as it
+    /// slows down or speeds up instead of averaging the whole copy.
+    samples: std::collections::VecDeque<(std::time::Instant, u64)>,
+}
+
+impl WriteProgress {
+    /// How long back the speed looks.
+    const WINDOW: std::time::Duration = std::time::Duration::from_secs(5);
+
+    fn record(&mut self, done: u64, total: u64) {
+        let now = std::time::Instant::now();
+        self.done = done;
+        self.total = total;
+        self.samples.push_back((now, done));
+        while self.samples.len() > 2
+            && self
+                .samples
+                .front()
+                .is_some_and(|(at, _)| now.duration_since(*at) > Self::WINDOW)
+        {
+            self.samples.pop_front();
+        }
+    }
+
+    /// Bytes a second over the whole copy, for the log.
+    pub fn average_bytes_per_second(&self) -> Option<f64> {
+        let seconds = self.began?.elapsed().as_secs_f64();
+        (seconds > 0.0 && self.done > 0).then(|| self.done as f64 / seconds)
+    }
+
+    pub fn fraction(&self) -> Option<f32> {
+        (self.total > 0).then(|| (self.done as f32 / self.total as f32).clamp(0.0, 1.0))
+    }
+
+    /// Bytes a second over the last few seconds, once there is enough to say.
+    pub fn bytes_per_second(&self) -> Option<f64> {
+        let (first_at, first) = *self.samples.front()?;
+        let (last_at, last) = *self.samples.back()?;
+        let seconds = last_at.duration_since(first_at).as_secs_f64();
+        (seconds >= 0.5 && last > first).then(|| (last - first) as f64 / seconds)
+    }
+
+    /// Seconds left at the current speed.
+    pub fn eta_secs(&self) -> Option<u64> {
+        let speed = self.bytes_per_second()?;
+        (self.done < self.total).then(|| ((self.total - self.done) as f64 / speed).ceil() as u64)
+    }
 }
 
 impl JobProgress {
@@ -325,24 +388,41 @@ impl JobProgress {
                 });
             }
             JobEvent::Flushing => {
-                self.note = Some("Making sure the drive has all of it. This can take a minute or two…".into());
+                if let Some(writing) = self.writing.as_mut() {
+                    writing.flushing = true;
+                }
             }
-            JobEvent::Writing { .. } => {
+            JobEvent::Writing { file } => {
                 self.active.clear();
                 self.finished = self.chapter_total;
-                self.note = Some("Writing the file…".into());
+                self.note = None;
+                let writing = self.writing.get_or_insert_with(WriteProgress::default);
+                writing.file = file.clone();
+                writing.flushing = false;
+                writing.began.get_or_insert_with(std::time::Instant::now);
+            }
+            JobEvent::Sent { done, total } => {
+                if let Some(writing) = self.writing.as_mut() {
+                    writing.record(*done, *total);
+                }
             }
         }
     }
 
     /// How fast pages are arriving, once there is enough to say.
     pub fn pages_per_second(&self) -> Option<f32> {
+        if self.writing.is_some() {
+            return None;
+        }
         let seconds = self.started?.elapsed().as_secs_f32();
         (seconds >= 4.0 && self.pages_seen >= 6).then(|| self.pages_seen as f32 / seconds)
     }
 
     /// Seconds left at the pace so far, once there is enough to say.
     pub fn eta_secs(&self) -> Option<u64> {
+        if self.writing.is_some() {
+            return None;
+        }
         let seconds = self.started?.elapsed().as_secs_f32();
         let done = self.fraction();
         (seconds >= 4.0 && (0.03..1.0).contains(&done))
@@ -351,6 +431,10 @@ impl JobProgress {
 
     /// Overall progress, 0.0 to 1.0.
     pub fn fraction(&self) -> f32 {
+        // Once the files are being sent, the bar is about that.
+        if let Some(fraction) = self.writing.as_ref().and_then(WriteProgress::fraction) {
+            return fraction;
+        }
         if self.chapter_total == 0 {
             return 0.0;
         }
@@ -1581,5 +1665,37 @@ mod library_view_tests {
         p.chapter_total = 10;
         p.finished = 5;
         assert_eq!(p.eta_secs(), None, "nothing has started yet");
+    }
+}
+
+#[cfg(test)]
+mod write_progress_tests {
+    use super::*;
+
+    #[test]
+    fn the_bar_follows_the_bytes_stored_once_files_are_being_sent() {
+        let mut p = JobProgress {
+            chapter_total: 4,
+            finished: 4,
+            ..Default::default()
+        };
+        assert_eq!(p.fraction(), 1.0, "all chapters converted");
+        p.apply(&JobEvent::Writing { file: "a.xtc".into() });
+        p.apply(&JobEvent::Sent { done: 0, total: 1000 });
+        assert_eq!(p.fraction(), 0.0, "nothing written yet");
+        p.apply(&JobEvent::Sent { done: 250, total: 1000 });
+        assert_eq!(p.fraction(), 0.25);
+        assert!(p.pages_per_second().is_none() && p.eta_secs().is_none());
+        p.apply(&JobEvent::Flushing);
+        assert!(p.writing.as_ref().unwrap().flushing);
+    }
+
+    #[test]
+    fn speed_needs_a_little_time_and_progress() {
+        let mut w = WriteProgress::default();
+        assert!(w.bytes_per_second().is_none());
+        w.record(0, 100);
+        assert!(w.bytes_per_second().is_none(), "one sample says nothing");
+        assert_eq!(w.eta_secs(), None);
     }
 }

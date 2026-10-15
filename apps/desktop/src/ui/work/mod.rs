@@ -12,7 +12,7 @@ use crate::state::{
     apply_library_dirs, library_files, now_secs, paths, spawn_forever, AppState, ChaptersState,
     DownloadDialog, ExportItem, ExportOpts, ExportPlan, GroupingChoice, JobKind, JobView,
     LoadedChapters, Page, PendingDownload, PlanChapters, PlanEntry, PreviewPage, PreviewState,
-    Shot, TableView, Workspace,
+    Shot, TableView, WaitingExport, Workspace,
 };
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
