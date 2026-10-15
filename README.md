@@ -243,6 +243,10 @@ what they offer, and whether you may download it, depends on the source and your
 country's law. You are responsible for how you use it. Please support the
 creators and licensed releases where you can.
 
+MangaPoint is not affiliated with or endorsed by Xteink, Amazon, Kobo, Onyx (Boox),
+PocketBook, reMarkable or any manga source. Their names are used only to say
+which devices it works with.
+
 ## Acknowledgements
 
 - [Suwayomi-Server](https://github.com/Suwayomi/Suwayomi-Server) and the
