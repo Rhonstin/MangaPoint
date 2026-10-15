@@ -369,6 +369,26 @@ fn apply_reader(settings: &mut library::Settings, draft: &ReaderDraft) -> Result
     Ok(())
 }
 
+/// Write a reader draft over the chosen reader and start the form again from
+/// it. False, with the reason shown, if it is not allowed.
+fn save_reader(state: AppState, draft: &ReaderDraft, revision: &mut Signal<u32>) -> bool {
+    let mut settings = state.settings;
+    let result = apply_reader(&mut settings.write(), draft);
+    match result {
+        Ok(()) => {
+            state.save_settings();
+            state.notify("Reader saved.");
+            let again = *revision.peek() + 1;
+            revision.set(again);
+            true
+        }
+        Err(e) => {
+            state.error(e.to_string());
+            false
+        }
+    }
+}
+
 #[component]
 pub fn DevicesEditor() -> Element {
     let state = use_context::<AppState>();
@@ -393,9 +413,9 @@ pub fn DevicesEditor() -> Element {
                             key: "{d.id}",
                             class: if on { "pill on" } else { "pill" },
                             onclick: move |_| {
-                                let mut settings = state.settings;
-                                settings.write().device = id.clone();
-                                state.save_settings();
+                                if !on {
+                                    state.leave(crate::state::Leave::Reader(id.clone()));
+                                }
                             },
                             "{d.name}"
                         }
@@ -451,27 +471,46 @@ fn ReaderForm(revision: Signal<u32>) -> Element {
     let mut touched = use_signal(|| false);
     let mut locked = use_signal(|| false);
 
-    let draft_ppi = ppi().trim().parse::<u32>().unwrap_or(0);
-    let (draft_w, draft_h) = if touched() {
-        (pixels_from(&width(), draft_ppi), pixels_from(&height(), draft_ppi))
-    } else {
-        (saved.width, saved.height)
-    };
-    let draft = ReaderDraft {
-        name: name(),
-        width: draft_w,
-        height: draft_h,
-        ppi: draft_ppi,
-        setup: setup(),
-    };
+    // What the form holds now. A memo, so the effect below follows every change.
+    let saved_for_draft = saved.clone();
+    let form_now = use_memo(move || {
+        let draft_ppi = ppi().trim().parse::<u32>().unwrap_or(0);
+        let (draft_w, draft_h) = if touched() {
+            (pixels_from(&width(), draft_ppi), pixels_from(&height(), draft_ppi))
+        } else {
+            (saved_for_draft.width, saved_for_draft.height)
+        };
+        ReaderDraft { name: name(), width: draft_w, height: draft_h, ppi: draft_ppi, setup: setup() }
+    });
+    let draft = form_now();
     let dirty = draft != saved;
+    // While there are changes that are not saved, the rest of the app knows, and
+    // asks before the user leaves them behind.
+    {
+        let saved = saved.clone();
+        use_effect(move || {
+            let draft = form_now();
+            let mut unsaved = state.unsaved_reader;
+            if draft != saved {
+                unsaved.set(Some(crate::state::UnsavedReader(std::rc::Rc::new(move || {
+                    let mut revision = revision;
+                    save_reader(state, &draft, &mut revision)
+                }))));
+            } else if unsaved.peek().is_some() {
+                unsaved.set(None);
+            }
+        });
+        use_drop(move || {
+            let mut unsaved = state.unsaved_reader;
+            unsaved.set(None);
+        });
+    }
     let wifi_url_now = setup().wifi_url.clone().unwrap_or_default();
     let wifi_url_to_test = wifi_url_now.clone();
     let (w0, h0) = (
         f64::from(saved.width) / f64::from(saved.ppi.max(1)),
         f64::from(saved.height) / f64::from(saved.ppi.max(1)),
     );
-    let pixels_now = format!("{draft_w} \u{d7} {draft_h} px");
     let remove_id = current.id.clone();
     let known = device_profiles::known(&current.id);
     let info = device_profiles::known_info(&current.id);
@@ -480,12 +519,12 @@ fn ReaderForm(revision: Signal<u32>) -> Element {
     let crosspoint_runs = info.is_none_or(|i| i.crosspoint);
     let note = info.map(|i| i.note).unwrap_or("");
     let reset_id = current.id.clone();
-    let lock_class = if locked() { "btn icon on" } else { "btn icon" };
-    let lock_icon = if locked() { "lock" } else { "lock-open" };
+    let lock_class = if locked() { "btn icon chain on" } else { "btn icon chain" };
+    let lock_icon = if locked() { "link" } else { "unlink" };
     let lock_title = if locked() {
-        "The shape is kept while you change a size. Click to unlock."
+        "Width and height are linked: changing one changes the other. Click to unlink."
     } else {
-        "Lock the shape, so changing one size changes the other"
+        "Link width and height, so changing one changes the other"
     };
     let pressed = if locked() { "true" } else { "false" };
 
@@ -515,6 +554,10 @@ fn ReaderForm(revision: Signal<u32>) -> Element {
                     }
                     span { class: "unit", "in" }
                 }
+                button { class: "{lock_class}", title: "{lock_title}", "aria-pressed": "{pressed}",
+                    onclick: move |_| locked.set(!locked()),
+                    Icon { name: lock_icon, size: 18 }
+                }
                 div { class: "unit-box dim-box",
                     span { class: "pre", "H" }
                     input {
@@ -533,10 +576,6 @@ fn ReaderForm(revision: Signal<u32>) -> Element {
                     }
                     span { class: "unit", "in" }
                 }
-                button { class: "{lock_class}", title: "{lock_title}", "aria-pressed": "{pressed}",
-                    onclick: move |_| locked.set(!locked()),
-                    Icon { name: lock_icon, size: 16 }
-                }
                 div { class: "unit-box dim-box ppi-box",
                     input {
                         r#type: "number", step: "1", min: "50", value: "{ppi}",
@@ -545,7 +584,6 @@ fn ReaderForm(revision: Signal<u32>) -> Element {
                     }
                     span { class: "unit", "ppi" }
                 }
-                span { class: "px-result", title: "The size pages are made at", "= {pixels_now}" }
                 Help { text: "The size of the reader's screen in inches, width and height, and how many pixels it packs into each inch (its density). Pages are made at inches times density, in pixels, so nothing is scaled again on the reader. The Xteink screens are 220 ppi." }
             }
         }
@@ -654,16 +692,16 @@ fn ReaderForm(revision: Signal<u32>) -> Element {
         div { class: "form-footer",
             button { class: "btn danger",
                 title: "Series made for it keep their settings.",
-                onclick: move |_| {
-                    let mut settings = state.settings;
-                    {
-                        let mut st = settings.write();
-                        st.custom_devices.retain(|d| d.id != remove_id);
-                        st.device_presets.remove(&remove_id);
-                        st.reader_setups.remove(&remove_id);
-                        st.device = st.custom_devices.first().map(|d| d.id.clone()).unwrap_or_default();
-                    }
-                    state.save_settings();
+                onclick: {
+                    let remove_name = current.name.clone();
+                    move |_| state.ask(crate::state::Modal {
+                        title: format!("Remove {remove_name}?"),
+                        body: "The reader and its settings are taken off your list. Series made for it keep their settings.".into(),
+                        confirm: "Remove".into(),
+                        cancel: "Keep".into(),
+                        danger: true,
+                        action: crate::state::ModalAction::RemoveReader { id: remove_id.clone() },
+                    })
                 },
                 Icon { name: "trash", size: 15 }
                 "Remove this reader"
@@ -688,19 +726,7 @@ fn ReaderForm(revision: Signal<u32>) -> Element {
                 onclick: {
                     let draft = draft.clone();
                     let mut revision = revision;
-                    move |_| {
-                        let mut settings = state.settings;
-                        let result = apply_reader(&mut settings.write(), &draft);
-                        match result {
-                            Ok(()) => {
-                                state.save_settings();
-                                state.notify("Reader saved.");
-                                let again = *revision.peek() + 1;
-                                revision.set(again);
-                            }
-                            Err(e) => state.error(e.to_string()),
-                        }
-                    }
+                    move |_| { save_reader(state, &draft, &mut revision); }
                 },
                 Icon { name: "check", size: 16 }
                 "Save"

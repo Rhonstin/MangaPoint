@@ -105,6 +105,7 @@ pub fn App() -> Element {
                 _ => rsx! { Shell {} },
             }}
             ModalHost {}
+            UnsavedHost {}
             download_dialog::DownloadDialogHost {}
             ToastHost {}
         }
@@ -259,6 +260,51 @@ fn ShortcutKeys() -> Element {
     }
 }
 
+/// Asked when the user leaves the reader form with changes that are not saved.
+#[component]
+fn UnsavedHost() -> Element {
+    let state = use_context::<AppState>();
+    let Some(to) = state.leave_prompt.read().clone() else { return rsx! {} };
+    let (save_to, discard_to) = (to.clone(), to);
+    rsx! {
+        div { class: "overlay",
+            div { class: "modal",
+                h2 { "You have unsaved settings" }
+                p { "Would you like to save or discard them?" }
+                div { class: "actions",
+                    button { class: "btn",
+                        onclick: move |_| { let mut p = state.leave_prompt; p.set(None); },
+                        "Keep editing"
+                    }
+                    button { class: "btn danger",
+                        onclick: move |_| {
+                            let mut p = state.leave_prompt;
+                            p.set(None);
+                            let mut unsaved = state.unsaved_reader;
+                            unsaved.set(None);
+                            state.leave_now(discard_to.clone());
+                        },
+                        "Discard"
+                    }
+                    button { class: "btn primary",
+                        onclick: move |_| {
+                            let saved = state.unsaved_reader.peek().clone().is_none_or(|u| (u.0)());
+                            if saved {
+                                let mut p = state.leave_prompt;
+                                p.set(None);
+                                let mut unsaved = state.unsaved_reader;
+                                unsaved.set(None);
+                                state.leave_now(save_to.clone());
+                            }
+                        },
+                        "Save"
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Confirmation dialogs.
 #[component]
 fn ModalHost() -> Element {
@@ -320,6 +366,19 @@ fn run_action(state: AppState, action: ModalAction) {
                 work::delete_downloads(state, series_ids)
             }
             ModalAction::DeletePreset { id } => presets::delete_preset(state, id),
+            ModalAction::RemoveReader { id } => {
+                let mut settings = state.settings;
+                {
+                    let mut st = settings.write();
+                    st.custom_devices.retain(|d| d.id != id);
+                    st.device_presets.remove(&id);
+                    st.reader_setups.remove(&id);
+                    st.device = st.custom_devices.first().map(|d| d.id.clone()).unwrap_or_default();
+                }
+                state.save_settings();
+            }
+            ModalAction::ClearFinishedDownloads => state.edit_queue(|q| q.clear_finished()),
+            ModalAction::CancelAllDownloads => work::cancel_all_downloads(state),
             ModalAction::LoadPreset { series_id, preset_id, settings } => {
                 presets::apply_to_series(state, &series_id, preset_id, settings)
             }

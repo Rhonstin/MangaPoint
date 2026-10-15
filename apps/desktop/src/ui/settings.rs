@@ -67,7 +67,7 @@ pub fn SettingsPage() -> Element {
                     button {
                         key: "{label}",
                         class: if sec == section { "nav-item active" } else { "nav-item" },
-                        onclick: move |_| { let mut current = state.settings_section; current.set(sec); },
+                        onclick: move |_| state.leave(crate::state::Leave::Section(sec)),
                         Icon { name: icon, size: 17 }
                         "{label}"
                     }

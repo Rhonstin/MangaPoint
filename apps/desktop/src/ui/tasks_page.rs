@@ -5,7 +5,7 @@
 
 use super::widgets::{open_folder, show_in_folder, Chip, Cover, EmptyState, Icon, NoCover, ProgressBar};
 use super::work::{
-    cancel_all_downloads, cancel_batch, cancel_job, dismiss_batch, forget_exported_file,
+    cancel_batch, cancel_job, dismiss_batch, forget_exported_file,
     load_saved_cover, open_series_from_library, pause_batch, pause_export, prioritize_batch,
     resume_batch, resume_export, retry_batch, saved_cover_key, set_queue_paused,
 };
@@ -109,7 +109,17 @@ pub fn TasksPage() -> Element {
                 }
                 span { class: "grow" }
                 if !finished.is_empty() {
-                    button { class: "btn", onclick: move |_| state.edit_queue(|q| q.clear_finished()),
+                    button { class: "btn",
+                        onclick: {
+                            let finished_count = finished.len();
+                            move |_| state.ask(Modal {
+                            title: "Clear the finished downloads?".into(),
+                            body: format!("{} will be taken off this list. The chapters stay downloaded.", plural(finished_count, "finished download")),
+                            confirm: "Clear".into(),
+                            cancel: "Keep".into(),
+                            danger: true,
+                            action: ModalAction::ClearFinishedDownloads,
+                        }) },
                         "Clear all"
                     }
                 }
@@ -117,7 +127,15 @@ pub fn TasksPage() -> Element {
                     button { class: "btn", onclick: move |_| set_queue_paused(state, !paused),
                         if paused { Icon { name: "play", size: 15 } "Resume" } else { Icon { name: "pause", size: 15 } "Pause" }
                     }
-                    button { class: "btn danger", onclick: move |_| cancel_all_downloads(state),
+                    button { class: "btn danger",
+                        onclick: move |_| state.ask(Modal {
+                            title: "Cancel all downloads?".into(),
+                            body: "The download that is running stops, and the ones waiting are taken out of the queue. What was already downloaded is kept.".into(),
+                            confirm: "Cancel all".into(),
+                            cancel: "Keep downloading".into(),
+                            danger: true,
+                            action: ModalAction::CancelAllDownloads,
+                        }),
                         Icon { name: "x", size: 15 } "Cancel all"
                     }
                 }
@@ -125,23 +143,16 @@ pub fn TasksPage() -> Element {
             if !busy && finished.is_empty() {
                 p { class: "muted small q-hint", "Chapters you add from any series are downloaded here, one series after another." }
             }
+            // One list, like the exports: the one downloading, then those
+            // waiting, then the finished ones. Each row says which it is.
             if let Some(id) = running {
-                h3 { class: "q-title", "Downloading now" }
-                BatchRow { id }
+                BatchRow { key: "{id}", id }
             }
-            if !waiting.is_empty() {
-                h3 { class: "q-title", "Up next" }
-                for id in waiting.iter().copied() {
-                    BatchRow { key: "{id}", id }
-                }
+            for id in waiting.iter().copied() {
+                BatchRow { key: "{id}", id }
             }
-            if !finished.is_empty() {
-                div { class: "q-subhead",
-                    h3 { class: "q-title", "Finished" span { class: "muted", " ({finished.len()})" } }
-                }
-                for id in finished.iter().copied() {
-                    BatchRow { key: "{id}", id }
-                }
+            for id in finished.iter().copied() {
+                BatchRow { key: "{id}", id }
             }
 
             div { class: "q-sect q-sect-next",

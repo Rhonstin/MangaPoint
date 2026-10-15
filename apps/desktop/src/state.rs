@@ -75,6 +75,21 @@ pub enum Page {
     Settings,
 }
 
+/// Where the user was going when unsaved reader settings stopped them: asked
+/// about, then carried on to.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum Leave {
+    Page(Page),
+    Section(SettingsSection),
+    /// Another reader, by id.
+    Reader(String),
+}
+
+/// Writes the reader form's unsaved changes; true if they were saved. Present
+/// only while the form has changes that are not saved.
+#[derive(Clone)]
+pub struct UnsavedReader(pub std::rc::Rc<dyn Fn() -> bool>);
+
 /// The parts of the Settings page, shown in its own sidebar.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum SettingsSection {
@@ -163,6 +178,12 @@ pub enum ModalAction {
         id: String,
         settings: library::ConversionSettings,
     },
+    /// Take a reader off the list (series made for it keep their settings).
+    RemoveReader { id: String },
+    /// Clear the list of finished downloads.
+    ClearFinishedDownloads,
+    /// Stop every download, the one running and those waiting.
+    CancelAllDownloads,
     /// Delete an exported file from disk.
     /// Every file of one export.
     DeleteExport { record_id: String },
@@ -486,6 +507,10 @@ pub struct AppState {
     /// The genres each search result's source lists, once looked up.
     pub search_tags: Signal<HashMap<(String, i64), Vec<String>>>,
     pub settings_section: Signal<SettingsSection>,
+    /// The reader form has changes that are not saved yet.
+    pub unsaved_reader: Signal<Option<UnsavedReader>>,
+    /// Going somewhere was held back by unsaved reader settings; the user is asked.
+    pub leave_prompt: Signal<Option<Leave>>,
     /// Cover images as data URLs, keyed by `source:manga`.
     pub covers: Signal<HashMap<String, std::rc::Rc<str>>>,
     pub toasts: Signal<Vec<Toast>>,
@@ -586,6 +611,8 @@ impl AppState {
             search_filters: sig(crate::logic::SearchFilters::default()),
             search_tags: sig(HashMap::new()),
             settings_section: sig(SettingsSection::default()),
+            unsaved_reader: sig(None),
+            leave_prompt: sig(None),
             covers: sig(HashMap::new()),
             toasts: sig(Vec::new()),
             toasts_hovered: sig(false),
@@ -621,7 +648,44 @@ impl AppState {
         self.services.read().as_ref().map(|s| s.client.clone())
     }
 
+    /// Go to a page. Unsaved reader settings are asked about first.
     pub fn go(&self, page: Page) {
+        self.leave(Leave::Page(page));
+    }
+
+    /// Go somewhere that would lose the reader form's unsaved changes, asking
+    /// what to do with them first; anywhere else, just go.
+    pub fn leave(&self, to: Leave) {
+        let staying = match &to {
+            Leave::Page(page) => *page == Page::Settings,
+            Leave::Section(section) => *section == SettingsSection::Reader,
+            Leave::Reader(_) => false,
+        };
+        if !staying && self.unsaved_reader.peek().is_some() {
+            let mut prompt = self.leave_prompt;
+            prompt.set(Some(to));
+            return;
+        }
+        self.leave_now(to);
+    }
+
+    /// Carry on to where the user was going, the changes dealt with.
+    pub fn leave_now(&self, to: Leave) {
+        match to {
+            Leave::Page(page) => self.go_now(page),
+            Leave::Section(section) => {
+                let mut current = self.settings_section;
+                current.set(section);
+            }
+            Leave::Reader(id) => {
+                let mut settings = self.settings;
+                settings.write().device = id;
+                self.save_settings();
+            }
+        }
+    }
+
+    fn go_now(&self, page: Page) {
         let mut p = self.page;
         // The Export screen borrows the workspace for its own series; the
         // series that was open before it comes back when it is left.

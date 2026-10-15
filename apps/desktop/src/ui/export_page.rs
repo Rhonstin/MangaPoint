@@ -709,6 +709,12 @@ fn SendPanel() -> Element {
     };
     let both = setup.usb && setup.wifi;
     let reader_folder = setup.folder.clone();
+    // The book is made as something the reader opens: if what it was made as is
+    // not listed (the list was changed), it switches to the first that is.
+    use_effect(move || {
+        let _ = state.settings.read().reader_setup().formats.len();
+        presets::fit_output_to_reader(state);
+    });
     // Another reader may not take the way that was chosen: follow what it does take.
     use_effect(move || {
         let setup = state.settings.read().reader_setup();
@@ -909,22 +915,20 @@ fn SendPanel() -> Element {
                 }
             }
 
-            // What the book is made as. One of three; each has its explanation
-            // behind a question mark. The ones the reader does not list are dim.
+            // What the book is made as: only the formats this reader lists (all
+            // three if it lists none, so there is always something to pick). Each
+            // has its explanation behind a question mark.
             div { class: "px-label", style: "margin-top: 16px", "Format" }
             div { class: "seg",
-                for output in OutputFormat::ALL {
+                for output in OutputFormat::ALL
+                    .into_iter()
+                    .filter(|o| reader_formats.is_empty() || reader_formats.iter().any(|f| f.eq_ignore_ascii_case(o.label())))
+                {
                     {
-                        let listed = reader_formats.iter().any(|f| f.eq_ignore_ascii_case(output.label()));
-                        let class = match (output == current_output, listed) {
-                            (true, _) => "on",
-                            (false, true) => "",
-                            (false, false) => "dim",
-                        };
+                        let class = if output == current_output { "on" } else { "" };
                         rsx! {
                             button {
                                 key: "{output.label()}", class,
-                                title: if listed { "" } else { "This reader does not list this format" },
                                 onclick: move |_| presets::set_output(state, output),
                                 "{output.label()}"
                                 Help { text: format_help(output) }
