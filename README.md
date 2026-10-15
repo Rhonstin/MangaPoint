@@ -41,43 +41,75 @@ Everything runs on your computer. There is no account and no server of ours.
 
 ## Features
 
-**Search and download**
-- One search across all your installed sources. Results for the same series from
-  several sources are grouped into one card, and the best source for each is
-  picked by looking at its chapter list.
-- Covers and descriptions come from whichever source answers first.
-- Chapter lists from all sources are merged, with gaps flagged. A download falls
-  back to another source when a page fails.
-- A queue with pause, resume, retry and reordering; downloads continue where they
-  stopped after the app is closed.
-- A library of what you have, with sizes, covers and one place to delete a
-  series or just some of its chapters.
+### Search many sources at once
 
-**Convert**
-- Pages are made at your reader's own size and density: automatic crop, manual
-  crop, double-page spreads, long strips cut into slices, contrast, and several
-  dithering styles.
-- A live preview with a side-by-side "Compare" against the original, and presets
-  (Manga, Manhwa, Manhua, and your own).
-
-**Export**
-- Three formats: **XTC** (black and white, smallest and fastest), **XTCH** (four
-  grays) and a fixed-layout **EPUB 3** of page pictures. Chapters become the
-  table of contents.
-- Send to a folder, a USB drive or SD card (found automatically, with a "Safe to
-  unplug" message), or over Wi-Fi.
-- One file per series, per chapter, or every N chapters. Very long series are cut
-  into parts so no single file is too big for the reader.
-
-**Readers**
-- A catalog of 29 readers from Xteink, Amazon, Kobo, Boox, PocketBook and
-  reMarkable with their screen sizes, densities and file formats. Add your own by
-  typing a name and a size.
-- Each reader has its own folder, export method, firmware (CrossPoint or stock) and
-  the formats it opens, and the Export screen only offers those formats.
+Type a title and every source you installed is asked at the same time. The same
+series from several sources is grouped into one card, with how many chapters it
+has, and the best source for each is picked by looking at its chapter list.
+Covers, descriptions and details come from whichever source answers first.
 
 <div align="center">
-<img src="docs/screenshots/export.png" alt="The Export screen with the sample pages" width="780" />
+<img src="docs/screenshots/search-results.png" alt="Search results: one card per series, with its sources and chapter count" width="780" />
+</div>
+
+### Pick chapters, and download them
+
+Open a series to see every chapter from all its sources merged into one list,
+with the sources that have each one and any gaps flagged. Filter, sort, or type a
+range like `1-20, 25, 30-`, then add them to the downloads. If a page fails,
+another source is tried.
+
+<div align="center">
+<img src="docs/screenshots/series.png" alt="A series page with its merged chapter table" width="780" />
+</div>
+
+### A download queue that keeps going
+
+Downloads run one series after another with pause, resume, retry and reordering,
+and pick up where they stopped if you close the app. A notification tells you
+when something finishes. Your library lists what you have, with sizes, and lets
+you delete a series or only some of its chapters.
+
+<div align="center">
+<img src="docs/screenshots/tasks.png" alt="The Tasks page with a download in progress" width="780" />
+</div>
+
+### Convert for your reader's own screen
+
+Pages are made at your reader's exact size and density, so nothing is scaled
+again on the device. Automatic or manual cropping, double-page spreads, long
+strips cut into screen-sized slices, contrast and dithering are all there, with a
+live preview that shows the source next to the result. Start from a preset
+(Manga, Manhwa, Manhua) or keep your own.
+
+<div align="center">
+<img src="docs/screenshots/export.png" alt="The Export screen: presets, layout and crop options, and the source next to the converted page" width="780" />
+</div>
+
+### Send it where it needs to go
+
+Choose a format, how many files, and where to put them: a folder, a USB drive or
+SD card (found automatically, with a "Safe to unplug" message), or Wi-Fi.
+
+| | |
+|---|---|
+| **XTC**: black and white; the smallest files and the quickest to open | **XTCH**: four grays; twice the size |
+| **EPUB**: a fixed-layout EPUB 3 that nearly every reader opens, with the chapters as its table of contents | **One file** per series, per chapter, or every N chapters; long series are cut into parts |
+
+<div align="center">
+<img src="docs/screenshots/send-to.png" alt="The Send to panel: reader, destination, format and files" width="300" />
+</div>
+
+### Your reader, set up once
+
+A catalog of 29 readers from Xteink, Amazon, Kobo, Boox, PocketBook and reMarkable
+comes with their screen sizes, densities and file formats; add your own by typing
+a name and a size. Each reader keeps its own folder, export method, firmware
+(CrossPoint or stock) and formats, and the Export screen only offers the formats
+that reader opens.
+
+<div align="center">
+<img src="docs/screenshots/reader.png" alt="Settings: your reader, its size, formats, firmware and export method" width="780" />
 </div>
 
 ## Supported readers
