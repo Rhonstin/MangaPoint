@@ -4,7 +4,7 @@
 
 # MangaPoint
 
-**Find manga, download it, and send it to your e-ink reader at exactly the size and format it wants.**
+**The easiest way to get manga onto your e-reader.**<br>Search, download, crop and convert in one app, then send it to your device.
 
 [![CI](https://github.com/W1seGit/MangaPoint/actions/workflows/ci.yml/badge.svg)](https://github.com/W1seGit/MangaPoint/actions/workflows/ci.yml)
 [![Latest release](https://img.shields.io/github/v/release/W1seGit/MangaPoint?display_name=tag&sort=semver)](https://github.com/W1seGit/MangaPoint/releases/latest)
@@ -23,14 +23,20 @@
 
 ---
 
-MangaPoint is a desktop app for reading manga, manhwa and manhua on e-ink
-readers. You search many sources at once, pick chapters, and it downloads them,
-converts every page for your reader's screen (cropping, grayscale, dithering,
-double-page spreads, long strips cut into screen-sized slices) and writes files
-the reader opens directly. It was built for the Xteink readers (X4, X4 Pro, X3)
-and also makes standard EPUB files for Kindle, Kobo, Boox, PocketBook and
-reMarkable.
+Getting manga onto an e-ink reader used to mean a long chain of chores: find a
+site to download from, save hundreds of page images, crop the margins, resize
+them for your screen, convert them to a format your reader opens, and copy the
+result over. MangaPoint does all of it for you, in one app:
 
+|  | Before | With MangaPoint |
+|---|---|---|
+| Finding it | Hunt for a site, one title at a time | Search many sources at once |
+| Getting it | Save page images by hand, or run a script | Pick chapters, press download |
+| Making it fit | Crop, resize and convert in other tools | Done for your reader's own screen, with a live preview |
+| Sending it | Work out the format, then copy files around | Export to a folder, USB drive, SD card or Wi-Fi |
+
+It was built for the Xteink readers (X4, X4 Pro, X3), and it also makes
+standard EPUB files for Kindle, Kobo, Boox, PocketBook and reMarkable.
 Everything runs on your computer. There is no account and no server of ours.
 
 ## Features
