@@ -10,10 +10,47 @@ use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+/// What a book is made as.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum OutputFormat {
+    /// `.xtc`: black and white pages for the Xteink readers.
+    #[default]
+    Xtc,
+    /// `.xtch`: four grays, for the Xteink readers (twice the size, and slower to show).
+    Xtch,
+    /// `.epub`: a fixed-layout book of page pictures, which most readers open.
+    Epub,
+}
+
+impl OutputFormat {
+    pub const ALL: [OutputFormat; 3] = [OutputFormat::Xtc, OutputFormat::Xtch, OutputFormat::Epub];
+
+    /// The file extension, without the dot.
+    pub fn extension(self) -> &'static str {
+        match self {
+            OutputFormat::Xtc => "xtc",
+            OutputFormat::Xtch => "xtch",
+            OutputFormat::Epub => "epub",
+        }
+    }
+
+    /// Its name as shown, and as listed among a reader's file formats.
+    pub fn label(self) -> &'static str {
+        match self {
+            OutputFormat::Xtc => "XTC",
+            OutputFormat::Xtch => "XTCH",
+            OutputFormat::Epub => "EPUB",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ConversionSettings {
+    /// The page format of an XTC or XTCH book. An EPUB ignores it.
     pub format: Format,
+    /// Make an EPUB instead of an XTC or XTCH book.
+    pub epub: bool,
     pub direction: ReadDirection,
     pub layout: Layout,
     /// Trim blank borders automatically.
@@ -36,11 +73,14 @@ pub struct ConversionSettings {
 }
 
 impl Default for ConversionSettings {
-    /// The plan's default profile, with XTCH (4 gray levels) as the format
-    /// because manga needs the grays.
+    /// The default profile: XTC (black and white), which readers show quickly
+    /// and which is half the size, and long strips cut with repeated rows so
+    /// nothing is cut off. XTCH (4 grays) is there to choose, but readers are
+    /// slow with it.
     fn default() -> Self {
         Self {
-            format: Format::Xtch,
+            format: Format::Xtc,
+            epub: false,
             direction: ReadDirection::RightToLeft,
             layout: Layout::Auto,
             crop: CropMode::Margins,
@@ -50,7 +90,7 @@ impl Default for ConversionSettings {
             spread: SpreadMode::Split,
             contrast: 55,
             auto_levels: true,
-            strip_cut: StripCut::Quiet,
+            strip_cut: StripCut::Overlap,
             overlap_percent: 8,
             dither: Dither::FloydSteinberg,
         }
@@ -95,6 +135,24 @@ impl ConversionField {
 }
 
 impl ConversionSettings {
+    /// What the book is made as.
+    pub fn output(&self) -> OutputFormat {
+        match (self.epub, self.format) {
+            (true, _) => OutputFormat::Epub,
+            (false, Format::Xtc) => OutputFormat::Xtc,
+            (false, Format::Xtch) => OutputFormat::Xtch,
+        }
+    }
+
+    /// Choose what the book is made as.
+    pub fn set_output(&mut self, output: OutputFormat) {
+        match output {
+            OutputFormat::Xtc => (self.epub, self.format) = (false, Format::Xtc),
+            OutputFormat::Xtch => (self.epub, self.format) = (false, Format::Xtch),
+            OutputFormat::Epub => self.epub = true,
+        }
+    }
+
     /// The settings in which `self` and `other` differ.
     pub fn differing(&self, other: &ConversionSettings) -> Vec<ConversionField> {
         ConversionField::ALL
@@ -110,7 +168,10 @@ impl ConversionSettings {
     /// Take one setting from `from`.
     pub fn copy_field(&mut self, from: &ConversionSettings, field: ConversionField) {
         match field {
-            ConversionField::Format => self.format = from.format,
+            ConversionField::Format => {
+                self.format = from.format;
+                self.epub = from.epub;
+            }
             ConversionField::Direction => self.direction = from.direction,
             ConversionField::Layout => self.layout = from.layout,
             ConversionField::Crop => self.crop = from.crop,
@@ -224,11 +285,114 @@ impl DownloadSettings {
     }
 }
 
+/// How files get from this computer to a reader.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ExportMethod {
+    /// Over a cable (or the SD card put in this computer): the drive is chosen
+    /// when exporting.
+    #[default]
+    Usb,
+    /// Over Wi-Fi, to the reader's own file transfer.
+    WiFi,
+}
+
+/// What belongs to one reader about getting files onto it. Kept per reader.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ReaderSetup {
+    /// Files can be sent over a cable or from its SD card.
+    pub usb: bool,
+    /// Files can be sent over Wi-Fi.
+    pub wifi: bool,
+    /// The reader's address on Wi-Fi, for [`ExportMethod::WiFi`].
+    pub wifi_url: Option<String>,
+    /// The folder files go into on the reader, for USB and Wi-Fi.
+    pub folder: String,
+    /// The drive (or a folder on it) chosen for USB, as last used.
+    pub reader_dir: Option<PathBuf>,
+    /// The file types the reader opens, such as "XTC" and "XTCH".
+    pub formats: Vec<String>,
+    /// What the reader runs.
+    pub firmware: Firmware,
+}
+
+impl ReaderSetup {
+    /// The ways this reader takes files, USB first.
+    pub fn methods(&self) -> Vec<ExportMethod> {
+        let mut all = Vec::new();
+        if self.usb {
+            all.push(ExportMethod::Usb);
+        }
+        if self.wifi {
+            all.push(ExportMethod::WiFi);
+        }
+        all
+    }
+
+    /// Whether `method` is one of the ways this reader takes files.
+    pub fn allows(&self, method: ExportMethod) -> bool {
+        match method {
+            ExportMethod::Usb => self.usb,
+            ExportMethod::WiFi => self.wifi,
+        }
+    }
+}
+
+impl Default for ReaderSetup {
+    fn default() -> Self {
+        Self {
+            usb: true,
+            wifi: false,
+            wifi_url: None,
+            folder: "Manga".into(),
+            reader_dir: None,
+            formats: vec!["XTC".into(), "XTCH".into()],
+            firmware: Firmware::CrossPoint,
+        }
+    }
+}
+
+/// How far the first-run setup has got. It is kept, so closing the app part
+/// way through picks up where it stopped.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SetupStep {
+    /// Installing the catalog engine.
+    #[default]
+    Engine,
+    /// Choosing sources.
+    Sources,
+    /// Choosing or making a reader.
+    Reader,
+    /// Finished (or never needed: the app was already in use).
+    Done,
+}
+
+fn setup_done() -> SetupStep {
+    SetupStep::Done
+}
+
+fn not_yet() -> bool {
+    false
+}
+
+/// How the app moves between pages and parts of them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Animations {
+    /// Pages and their parts come up one after another, with fades.
+    #[default]
+    Clean,
+    /// Almost no waiting for anything to move: pages just appear.
+    Snappy,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ExportSettings {
     /// Where finished files are written. `None` means the app's default folder.
     pub output_dir: Option<PathBuf>,
+    /// The reader's drive (or a folder on it), as last chosen: files sent
+    /// "on my reader" go into `device_folder` inside it.
+    pub reader_dir: Option<PathBuf>,
     /// Folder created on the device's storage for copied files.
     pub device_folder: String,
     /// Base URL of the reader's WebDAV share, if the user set one up.
@@ -239,6 +403,7 @@ impl Default for ExportSettings {
     fn default() -> Self {
         Self {
             output_dir: None,
+            reader_dir: None,
             device_folder: "Manga".into(),
             webdav_url: None,
         }
@@ -253,8 +418,16 @@ pub struct Settings {
     /// enum's name, which is mapped on load.
     #[serde(deserialize_with = "device_id")]
     pub device: String,
-    /// Devices the user added.
+    /// The user's readers. None to begin with: they are added from the known
+    /// ones, or made.
     pub custom_devices: Vec<DeviceProfile>,
+    /// First-run setup progress. Files from before it existed count as done.
+    #[serde(default = "setup_done")]
+    pub setup_step: SetupStep,
+    /// Whether the readers that used to be built in were turned into readers
+    /// of the user's own. Files from before that did not have them yet.
+    #[serde(default = "not_yet")]
+    pub readers_listed: bool,
     /// The preset a device starts from, by device id.
     pub device_presets: BTreeMap<String, String>,
     pub firmware: Firmware,
@@ -267,6 +440,12 @@ pub struct Settings {
     /// Shrink downloaded pages to save disk space. Off by default: pages are
     /// kept exactly as downloaded, for the best quality.
     pub shrink_downloads: bool,
+    /// Show a system notification when a download or an export finishes.
+    pub notifications: bool,
+    /// Clean (fades, one part after another) or snappy (pages just appear).
+    pub animations: Animations,
+    /// How each reader receives files, by device id.
+    pub reader_setups: BTreeMap<String, ReaderSetup>,
     /// How many chapters and pages to download at once.
     pub download: DownloadSettings,
     /// Where new downloads are kept. `None` means the app's own folder.
@@ -286,11 +465,34 @@ pub struct Settings {
     pub search_excluded_sources: Vec<String>,
 }
 
+impl Settings {
+    /// How the chosen reader receives files. A reader without a setup of its
+    /// own starts from what was kept before readers had one.
+    pub fn reader_setup(&self) -> ReaderSetup {
+        self.reader_setups.get(&self.device_profile().id).cloned().unwrap_or_else(|| ReaderSetup {
+            wifi_url: self.export.webdav_url.clone(),
+            folder: self.export.device_folder.clone(),
+            reader_dir: self.export.reader_dir.clone(),
+            firmware: self.firmware,
+            ..ReaderSetup::default()
+        })
+    }
+
+    /// Change how the chosen reader receives files.
+    pub fn update_reader_setup(&mut self, change: impl FnOnce(&mut ReaderSetup)) {
+        let mut setup = self.reader_setup();
+        change(&mut setup);
+        self.reader_setups.insert(self.device_profile().id, setup);
+    }
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            device: device_profiles::X4_PRO_ID.into(),
+            device: String::new(),
             custom_devices: Vec::new(),
+            setup_step: SetupStep::Engine,
+            readers_listed: true,
             device_presets: BTreeMap::new(),
             firmware: Firmware::CrossPoint,
             advanced_conversion: false,
@@ -298,6 +500,9 @@ impl Default for Settings {
             export: ExportSettings::default(),
             browser_support: false,
             shrink_downloads: false,
+            notifications: true,
+            animations: Animations::Clean,
+            reader_setups: BTreeMap::new(),
             download: DownloadSettings::default(),
             library_dir: None,
             library_dirs: Vec::new(),
@@ -316,16 +521,34 @@ fn device_id<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> {
 }
 
 impl Settings {
-    /// The chosen device. A device that has since been removed falls back to
-    /// the X4 Pro, so export never fails over a stale id.
+    /// The chosen reader. With none chosen (or the chosen one removed) it is
+    /// the first of the user's, and with none at all the Xteink X4 Pro, so
+    /// pages can still be made.
     pub fn device_profile(&self) -> DeviceProfile {
         device_profiles::find(&self.device, &self.custom_devices)
+            .or_else(|| self.devices().into_iter().next())
             .unwrap_or_else(device_profiles::x4_pro)
     }
 
-    /// Every device the user can pick.
+    /// The readers the user has.
     pub fn devices(&self) -> Vec<DeviceProfile> {
         device_profiles::all(&self.custom_devices)
+    }
+
+    /// Settings from before readers were all the user's own: the three that
+    /// used to be built in become theirs, once.
+    pub fn list_old_readers(&mut self) {
+        if self.readers_listed {
+            return;
+        }
+        // The three readers that used to be built in (the others were added later).
+        let old = [device_profiles::X4_PRO_ID, device_profiles::X4_ID, device_profiles::X3_ID];
+        for known in old.iter().rev().filter_map(|id| device_profiles::known(id)) {
+            if !self.custom_devices.iter().any(|d| d.id == known.id) {
+                self.custom_devices.insert(0, known);
+            }
+        }
+        self.readers_listed = true;
     }
 }
 
@@ -334,9 +557,34 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_output_is_xtc_xtch_or_epub() {
+        let mut c = ConversionSettings::default();
+        assert_eq!(c.output(), OutputFormat::Xtc);
+        c.set_output(OutputFormat::Xtch);
+        assert_eq!((c.output(), c.format, c.epub), (OutputFormat::Xtch, Format::Xtch, false));
+        c.set_output(OutputFormat::Epub);
+        assert_eq!(c.output(), OutputFormat::Epub);
+        // Going back to a page format remembers nothing of the EPUB.
+        c.set_output(OutputFormat::Xtc);
+        assert_eq!((c.output(), c.epub), (OutputFormat::Xtc, false));
+        // Taking the format from a preset takes the EPUB choice with it.
+        let mut epub = ConversionSettings::default();
+        epub.set_output(OutputFormat::Epub);
+        let mut other = ConversionSettings::default();
+        other.copy_field(&epub, ConversionField::Format);
+        assert_eq!(other.output(), OutputFormat::Epub);
+        assert_eq!(other.differing(&epub), Vec::new());
+        // Files from before EPUB existed have no such choice.
+        let old: ConversionSettings = serde_json::from_str(r#"{"format":"Xtch"}"#).unwrap();
+        assert_eq!(old.output(), OutputFormat::Xtch);
+    }
+
+    #[test]
     fn defaults_follow_the_plan() {
         let s = Settings::default();
-        assert_eq!(s.device, device_profiles::X4_PRO_ID);
+        assert!(s.devices().is_empty(), "no readers to begin with");
+        assert_eq!(s.device_profile().id, device_profiles::X4_PRO_ID, "pages can still be made");
+        assert_eq!(s.setup_step, SetupStep::Engine);
         assert_eq!(s.conversion.direction, ReadDirection::RightToLeft);
         assert_eq!(s.conversion.contrast, 55);
         assert_eq!(s.conversion.overlap_percent, 8);
@@ -449,6 +697,25 @@ mod tests {
     }
 
     #[test]
+    fn old_files_keep_their_readers_and_skip_the_first_run_setup() {
+        let mut old: Settings = serde_json::from_str(r#"{"device":"xteink-x4"}"#).unwrap();
+        assert_eq!(old.setup_step, SetupStep::Done);
+        assert!(old.devices().is_empty());
+        old.list_old_readers();
+        assert_eq!(old.devices().len(), 3);
+        assert_eq!(old.device_profile().id, device_profiles::X4_ID);
+        old.list_old_readers();
+        assert_eq!(old.devices().len(), 3, "only once");
+        // A reader removed afterwards stays removed.
+        old.custom_devices.retain(|d| d.id != device_profiles::X3_ID);
+        old.list_old_readers();
+        assert_eq!(old.devices().len(), 2);
+        let mut fresh = Settings::default();
+        fresh.list_old_readers();
+        assert!(fresh.devices().is_empty());
+    }
+
+    #[test]
     fn custom_devices_round_trip_and_are_selectable() {
         let mut s = Settings::default();
         let dev = DeviceProfile::custom(&s.devices(), "Kobo Nia", 758, 1024).unwrap();
@@ -470,5 +737,36 @@ mod tests {
         s.export.webdav_url = Some("http://192.168.3.3/".into());
         let json = serde_json::to_string(&s).unwrap();
         assert_eq!(serde_json::from_str::<Settings>(&json).unwrap(), s);
+    }
+
+    #[test]
+    fn a_reader_has_its_own_way_of_receiving_files() {
+        let mut s = Settings::default();
+        s.custom_devices = vec![
+            DeviceProfile::custom(&[], "Mine", 480, 800).unwrap(),
+            DeviceProfile::custom(&[], "Other", 480, 800).unwrap(),
+        ];
+        s.device = s.custom_devices[0].id.clone();
+        s.export.device_folder = "Books".into();
+        s.export.webdav_url = Some("http://192.168.3.3".into());
+        // Without a setup of its own, the older settings are what it starts from.
+        let first = s.reader_setup();
+        assert_eq!(first.methods(), [ExportMethod::Usb]);
+        assert_eq!(first.folder, "Books");
+        assert_eq!(first.wifi_url.as_deref(), Some("http://192.168.3.3"));
+        assert_eq!(first.formats, ["XTC", "XTCH"]);
+        s.update_reader_setup(|r| {
+            r.wifi = true;
+            r.folder = "Manga".into();
+        });
+        assert_eq!(s.reader_setup().methods(), [ExportMethod::Usb, ExportMethod::WiFi]);
+        // Another reader is not affected.
+        s.device = s.custom_devices[1].id.clone();
+        assert_eq!(s.reader_setup().methods(), [ExportMethod::Usb]);
+        // It is kept in the file and comes back.
+        let json = serde_json::to_string(&s).unwrap();
+        let back: Settings = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.reader_setups.len(), 1);
+        assert!(serde_json::from_str::<Settings>("{}").unwrap().reader_setups.is_empty());
     }
 }

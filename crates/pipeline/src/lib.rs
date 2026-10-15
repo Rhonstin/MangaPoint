@@ -11,6 +11,7 @@ pub mod balance;
 pub mod compose;
 mod conversion_cache;
 pub mod download;
+pub mod epub;
 pub mod error;
 pub mod export;
 pub mod fetch;

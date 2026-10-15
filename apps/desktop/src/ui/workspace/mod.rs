@@ -61,6 +61,12 @@ pub fn WorkspacePage() -> Element {
         let id = ws.series_id.clone();
         use_effect(move || load_saved_cover(state, &id));
     }
+    // What the sources say about it: the first to answer with a description is used.
+    let found = state
+        .open_details
+        .read()
+        .clone()
+        .filter(|d| d.series_id == ws.series_id);
     let source_chips: Vec<String> = ws
         .ranked
         .as_ref()
@@ -73,6 +79,7 @@ pub fn WorkspacePage() -> Element {
         .unwrap_or_default();
 
     rsx! {
+        div { class: "rise-in",
         button { class: "btn ghost small", onclick: move |_| state.close_series(origin),
             Icon { name: "arrow-left", size: 16 }
             "{back_label}"
@@ -80,7 +87,9 @@ pub fn WorkspacePage() -> Element {
         div { class: "spacer" }
         if !in_library { div { class: "overview found",
             div { class: "overview-cover",
-                if let Some(key) = cover { Cover { key_id: key } } else { NoCover {} }
+                if let Some(src) = found.as_ref().and_then(|d| d.cover.clone()) {
+                    img { class: "cover", src: "{src}", decoding: "async" }
+                } else if let Some(key) = cover { Cover { key_id: key } } else { NoCover {} }
             }
             div { class: "overview-body",
                 div { class: "overview-title",
@@ -99,12 +108,30 @@ pub fn WorkspacePage() -> Element {
                         Chip { text: format!("{downloaded} downloaded · {}", crate::logic::human_bytes(library_bytes)), kind: Some("ok".to_string()) }
                     }
                 }
+                if let Some(d) = &found {
+                    if !d.info.author.is_empty() || !d.info.status.is_empty() {
+                        p { class: "muted", style: "margin: 10px 0 0",
+                            if !d.info.author.is_empty() { "By {d.info.author}" }
+                            if !d.info.author.is_empty() && !d.info.status.is_empty() { " · " }
+                            "{d.info.status}"
+                        }
+                    }
+                    if !d.info.genres.is_empty() {
+                        div { class: "row wrap", style: "margin-top: 10px",
+                            for g in d.info.genres.iter() { Chip { key: "{g}", text: g.clone() } }
+                        }
+                    }
+                    if !d.info.description.is_empty() {
+                        p { class: "description clamp", style: "margin-top: 12px", "{d.info.description}" }
+                    }
+                }
             }
         } }
 
         // The overview of a series in your library, and below it every chapter.
         if in_library { overview::OverviewTab {} }
         chapters::ChaptersTab {}
+        }
     }
 }
 

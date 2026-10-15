@@ -14,6 +14,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 // Bump this whenever conversion or packing behavior changes.
 const MAGIC: &[u8; 8] = b"MPCACHE1";
 pub(crate) const FILE_NAME: &str = ".mangapoint-converted-v1.bin";
+/// The same for an EPUB, whose page pictures are each their own length.
+pub(crate) const EPUB_FILE_NAME: &str = ".mangapoint-converted-epub-v1.bin";
+const PICTURES_MAGIC: &[u8; 8] = b"MPCACHE2";
 
 fn fingerprint_header(
     settings: &ConversionSettings,
@@ -129,6 +132,76 @@ pub(crate) fn load(
         pages.push(page.to_vec());
     }
     Some(pages)
+}
+
+/// What goes into an EPUB's cache key besides the settings: how many grays the
+/// pictures have, which follows the reader and not the settings.
+pub(crate) fn with_depth(source: [u8; 32], depth: converter::Depth) -> [u8; 32] {
+    let mut hash = Sha256::new();
+    hash.update(b"epub-pictures-v1");
+    hash.update(source);
+    hash.update([depth.max_level()]);
+    hash.finalize().into()
+}
+
+/// The pictures of an EPUB's pages: each one its length, then its bytes.
+pub(crate) fn load_pictures(path: &Path, fingerprint: &[u8; 32]) -> Option<Vec<Vec<u8>>> {
+    let bytes = fs::read(path).ok()?;
+    if bytes.len() < 8 + 32 + 4 + 32 || &bytes[..8] != PICTURES_MAGIC || &bytes[8..40] != fingerprint {
+        return None;
+    }
+    let end = bytes.len() - 32;
+    if Sha256::digest(&bytes[..end]).as_slice() != &bytes[end..] {
+        return None;
+    }
+    let count = u32::from_le_bytes(bytes[40..44].try_into().ok()?) as usize;
+    if count == 0 {
+        return None;
+    }
+    let mut at = 44;
+    let mut pages = Vec::with_capacity(count);
+    for _ in 0..count {
+        let len = u32::from_le_bytes(bytes.get(at..at + 4)?.try_into().ok()?) as usize;
+        at += 4;
+        let page = bytes.get(at..at.checked_add(len)?.min(end))?;
+        if page.len() != len || !(page.starts_with(&[0x89, b'P']) || page.starts_with(&[0xff, 0xd8])) {
+            return None;
+        }
+        pages.push(page.to_vec());
+        at += len;
+    }
+    (at == end).then_some(pages)
+}
+
+pub(crate) fn save_pictures(path: &Path, fingerprint: &[u8; 32], pages: &[Vec<u8>]) {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let tmp = path.with_extension(format!(
+        "{}-{}.part",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    let write = || -> std::io::Result<()> {
+        let mut file = std::io::BufWriter::new(File::create(&tmp)?);
+        let mut hash = Sha256::new();
+        let mut append = |data: &[u8]| -> std::io::Result<()> {
+            hash.update(data);
+            file.write_all(data)
+        };
+        append(PICTURES_MAGIC)?;
+        append(fingerprint)?;
+        append(&(pages.len() as u32).to_le_bytes())?;
+        for page in pages {
+            append(&(page.len() as u32).to_le_bytes())?;
+            append(page)?;
+        }
+        file.write_all(&hash.finalize())?;
+        file.flush()?;
+        drop(file);
+        fs::rename(&tmp, path)
+    };
+    if write().is_err() {
+        let _ = fs::remove_file(tmp);
+    }
 }
 
 /// Publish only complete caches. Failure to cache must never prevent an

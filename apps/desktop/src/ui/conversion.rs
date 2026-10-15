@@ -4,7 +4,7 @@
 use crate::state::AppState;
 use crate::ui::widgets::Help;
 use converter::process::{CropMode, Layout, Margins, SpreadMode, StripCut};
-use converter::xtc::{Format, ReadDirection};
+use converter::xtc::ReadDirection;
 use converter::Dither;
 use dioxus::prelude::*;
 use library::ConversionSettings;
@@ -54,13 +54,6 @@ pub fn ConversionControls(
         move |e: Event<FormData>| ch(edit, e.checked().to_string())
     };
 
-    let on_format = on(|s, v| {
-        s.format = if v == "xtc" {
-            Format::Xtc
-        } else {
-            Format::Xtch
-        }
-    });
     let on_overlap = on(|s, v| s.overlap_percent = number(&v, 8, 30));
     let on_contrast = on(|s, v| s.contrast = number(&v, 55, 100));
     let on_levels = on_check(|s, v| s.auto_levels = v == "true");
@@ -125,16 +118,16 @@ pub fn ConversionControls(
     let cut_tiles = choices(
         vec![
             (
+                "Repeat rows",
+                "Nothing is cut off",
+                "cutrepeat",
+                c.strip_cut == StripCut::Overlap,
+            ),
+            (
                 "Quiet spot",
                 "Cut where little is drawn",
                 "cutquiet",
                 c.strip_cut == StripCut::Quiet,
-            ),
-            (
-                "Repeat rows",
-                "The older way",
-                "cutrepeat",
-                c.strip_cut == StripCut::Overlap,
             ),
         ],
         |s, v| {
@@ -253,9 +246,9 @@ pub fn ConversionControls(
                 h4 { class: "mp-control-heading",
                     "Where long strips are cut"
                     Help { text: if c.strip_cut == StripCut::Quiet {
-                        "Each page ends at the quietest row near its bottom: a gap, a panel edge or a flat area. No row is shown twice."
+                        "Each page ends at the quietest row near its bottom: a gap, a panel edge or a flat area. No row is shown twice, but a page can end a little early and cut a drawing off."
                     } else {
-                        "Each page ends at the full screen height, and its last rows repeat at the top of the next page."
+                        "Each page ends at the full screen height, and its last rows repeat at the top of the next page, so nothing is cut off."
                     } }
                 }
                 div { class: "mp-choice-grid two", role: "group", aria_label: "Where long strips are cut", {cut_tiles.into_iter()} }
@@ -335,13 +328,6 @@ pub fn ConversionControls(
 
             h3 { class: "group", "Appearance" }
             div { class: "field",
-                label { "Quality" }
-                select { aria_label: "Reader file quality", onchange: on_format,
-                    option { value: "xtch", selected: c.format == Format::Xtch, "4 grays (XTCH), best for manga" }
-                    option { value: "xtc", selected: c.format == Format::Xtc, "Black & white (XTC), smaller files" }
-                }
-            }
-            div { class: "field",
                 label { "Contrast ({c.contrast})"
                     Help { text: "50 leaves the page as it is. A little higher (55) usually looks better on e-paper." }
                 }
@@ -352,7 +338,10 @@ pub fn ConversionControls(
                 div { class: "mp-contrast-labels", span { "Softer" } span { "50 neutral" } span { "Stronger" } }
                 button { class: "btn ghost small", disabled: c.contrast == 50, onclick: move |_| reset(|s,_| s.contrast = 50, String::new()), "Reset to neutral" }
             }
-            h4 { class: "mp-control-heading", "Shading style" }
+            h4 { class: "mp-control-heading",
+                "Shading style"
+                Help { text: "How grays are drawn with the few shades the reader has. The smoother the shading, the bigger the file, most of all in an EPUB: 'None' makes the smallest EPUB (about a third of Smooth), 'Smooth' the biggest." }
+            }
             div { class: "mp-choice-grid two", role: "group", aria_label: "Shading style", {shade_tiles.into_iter()} }
             if advanced {
             details { class: "mp-tuning",

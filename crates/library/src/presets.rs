@@ -7,7 +7,7 @@
 
 use crate::settings::ConversionSettings;
 use converter::process::{CropMode, Layout, SpreadMode};
-use converter::xtc::{Format, ReadDirection};
+use converter::xtc::ReadDirection;
 use converter::Dither;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -64,7 +64,6 @@ pub fn builtin_presets() -> Vec<ConversionPreset> {
                 "Korean webtoons. Read left to right. The long vertical strips are joined and cut into screen-sized pages at the gaps between scenes."
                     .into(),
             settings: ConversionSettings {
-                format: Format::Xtch,
                 direction: ReadDirection::LeftToRight,
                 layout: Layout::Webtoon,
                 crop: CropMode::Margins,

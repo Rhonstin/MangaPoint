@@ -99,6 +99,9 @@ pub enum JobEvent {
     Writing {
         file: String,
     },
+    /// The file is on the drive, but the drive may still be holding the end of
+    /// it in memory: it is being forced out, which can take a while.
+    Flushing,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -414,7 +414,8 @@ pub(super) async fn run_batch(state: AppState, id: u64) {
                     state.save_library();
                 }
             }
-            state.edit_queue(|q| {
+            // How far it has got is not kept on disk, so nothing is saved here.
+            state.edit_queue_quiet(|q| {
                 if let Some(b) = q.get_mut(id) {
                     for event in &events {
                         b.progress.apply(event);
@@ -481,6 +482,7 @@ pub(super) async fn run_batch(state: AppState, id: u64) {
                 );
             });
             state.notify(format!("{}: {}", batch.title, summary.to_lowercase()));
+            crate::notify::finished(state, "Download finished", &format!("{}: {summary}", batch.title));
         }
         Err(e) => {
             let cancelled = matches!(e, PipelineError::Cancelled);
@@ -506,7 +508,11 @@ pub(super) async fn run_batch(state: AppState, id: u64) {
             } else {
                 BatchStatus::Failed(message.clone())
             };
-            fail(status, message, unsaved(state));
+            let stopped_on_purpose = cancelled;
+            fail(status, message.clone(), unsaved(state));
+            if !stopped_on_purpose {
+                crate::notify::finished(state, "Download failed", &format!("{}: {message}", batch.title));
+            }
         }
     }
     ensure_series_info(state, &batch.series_id);

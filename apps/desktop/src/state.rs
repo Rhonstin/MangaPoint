@@ -75,6 +75,21 @@ pub enum Page {
     Settings,
 }
 
+/// Where the user was going when unsaved reader settings stopped them: asked
+/// about, then carried on to.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum Leave {
+    Page(Page),
+    Section(SettingsSection),
+    /// Another reader, by id.
+    Reader(String),
+}
+
+/// Writes the reader form's unsaved changes; true if they were saved. Present
+/// only while the form has changes that are not saved.
+#[derive(Clone)]
+pub struct UnsavedReader(pub std::rc::Rc<dyn Fn() -> bool>);
+
 /// The parts of the Settings page, shown in its own sidebar.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum SettingsSection {
@@ -82,6 +97,7 @@ pub enum SettingsSection {
     Reader,
     Downloads,
     Files,
+    Preferences,
     About,
 }
 
@@ -93,6 +109,9 @@ pub enum BootState {
         percent: Option<u8>,
     },
     Ready,
+    /// The first run: the catalog engine is not on this computer, and nothing is
+    /// downloaded until the user says so.
+    NeedsEngine,
     Failed(String),
 }
 
@@ -105,9 +124,20 @@ pub struct Services {
 }
 
 #[derive(Clone, PartialEq, Debug)]
-pub struct Notice {
+pub struct Toast {
+    pub id: u64,
+    pub kind: ToastKind,
     pub text: String,
-    pub error: bool,
+    /// On its way out: it slides off and is then taken away.
+    pub leaving: bool,
+}
+
+/// What a toast says: it worked, something to know, or it failed.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ToastKind {
+    Success,
+    Warning,
+    Error,
 }
 
 /// What a confirmation dialog does when accepted.
@@ -137,6 +167,23 @@ pub enum ModalAction {
     DeletePreset {
         id: String,
     },
+    /// Give a series a preset's settings (replacing its own).
+    LoadPreset {
+        series_id: String,
+        preset_id: Option<String>,
+        settings: library::ConversionSettings,
+    },
+    /// Save a series' settings over one of the user's presets.
+    SavePreset {
+        id: String,
+        settings: library::ConversionSettings,
+    },
+    /// Take a reader off the list (series made for it keep their settings).
+    RemoveReader { id: String },
+    /// Clear the list of finished downloads.
+    ClearFinishedDownloads,
+    /// Stop every download, the one running and those waiting.
+    CancelAllDownloads,
     /// Delete an exported file from disk.
     /// Every file of one export.
     DeleteExport { record_id: String },
@@ -160,7 +207,12 @@ pub struct Modal {
 pub struct SearchView {
     pub query: String,
     pub ranked: Vec<RankedSeries>,
+    /// Sources are still being asked.
     pub searching: bool,
+    /// Every source has answered; the chapter lists of the best-looking series
+    /// are being looked at, to pick the best source for each. The results are
+    /// all there and can be used meanwhile.
+    pub enriching: bool,
     pub answered: usize,
     pub total: usize,
     /// Sources that did not answer, by name.
@@ -171,6 +223,16 @@ pub struct SearchView {
     /// Which search these results belong to. A newer search bumps it, and an
     /// older one still running then stops publishing.
     pub generation: u64,
+}
+
+/// What the sources say about a series opened from a search that is not in
+/// the library yet: shown on its overview.
+#[derive(Clone)]
+pub struct OpenDetails {
+    pub series_id: String,
+    pub info: library::SeriesInfo,
+    /// Where the cover comes from (see `covers`).
+    pub cover: Option<Rc<str>>,
 }
 
 /// The series the user is working on.
@@ -331,6 +393,9 @@ pub struct PreviewPage {
     pub crop_key: String,
     pub source: Option<converter::PlannedPage>,
     pub generation: u64,
+    /// The settings (see `PreviewState::signature`) this page was drawn with.
+    /// A page drawn with the current ones needs no drawing again.
+    pub rendered_for: u64,
 }
 
 /// What the Preview tab is showing: every page of one chapter.
@@ -352,6 +417,10 @@ pub struct PreviewState {
     pub error: Option<String>,
     /// Bumped on every change so an older render never overwrites a newer one.
     pub generation: u64,
+    /// What the pages should look like, as one number: the chapter, the
+    /// conversion settings, the reader, and the crops. Scrolling does not
+    /// change it; anything that changes a page does.
+    pub signature: u64,
     pub selected: usize,
     pub thumb_start: usize,
     /// The first and last page on or near the screen in the scrolling list;
@@ -431,6 +500,10 @@ pub struct JobView {
 #[derive(Clone, Copy)]
 pub struct AppState {
     pub boot: Signal<BootState>,
+    /// The catalog engine was already installed when the app started, so the
+    /// app can be used (offline) while it starts. False on the very first run,
+    /// which has to download it.
+    pub engine_installed: bool,
     pub services: Signal<Option<Services>>,
     pub settings: Signal<Settings>,
     pub sources: Signal<SourceState>,
@@ -444,9 +517,17 @@ pub struct AppState {
     /// The genres each search result's source lists, once looked up.
     pub search_tags: Signal<HashMap<(String, i64), Vec<String>>>,
     pub settings_section: Signal<SettingsSection>,
+    /// Details of the series opened from a search, once the sources have answered.
+    pub open_details: Signal<Option<OpenDetails>>,
+    /// The reader form has changes that are not saved yet.
+    pub unsaved_reader: Signal<Option<UnsavedReader>>,
+    /// Going somewhere was held back by unsaved reader settings; the user is asked.
+    pub leave_prompt: Signal<Option<Leave>>,
     /// Cover images as data URLs, keyed by `source:manga`.
     pub covers: Signal<HashMap<String, std::rc::Rc<str>>>,
-    pub notice: Signal<Option<Notice>>,
+    pub toasts: Signal<Vec<Toast>>,
+    /// The pointer is over the toasts: they stay while it is.
+    pub toasts_hovered: Signal<bool>,
     pub modal: Signal<Option<Modal>>,
     /// Downloaded chapters (their pages are on disk).
     pub library: Signal<LibraryDb>,
@@ -507,19 +588,30 @@ impl AppState {
             Signal::new_in_scope(value, ScopeId::ROOT)
         }
         let sources: SourceState = JsonFile::new(paths().sources_file()).load();
-        let first_page = if sources.onboarding_done {
-            Page::Search
-        } else {
-            Page::Setup
-        };
+        // The first run is walked through before the app shows; see `onboarding`.
+        let first_page = Page::Search;
         Self {
+            engine_installed: catalog::provision::locate_install(
+                &paths()
+                    .suwayomi_dir()
+                    .join(format!("suwayomi-{}", catalog::release::VERSION_TAG)),
+            )
+            .is_ok(),
             boot: sig(BootState::Starting {
                 message: "Starting…".into(),
                 percent: None,
             }),
             services: sig(None),
             settings: sig({
-                let settings = JsonFile::<Settings>::new(paths().settings_file()).load();
+                let mut settings = JsonFile::<Settings>::new(paths().settings_file()).load();
+                settings.list_old_readers();
+                // Dev flag: `cargo run -p mangapoint -- --onboarding` (or
+                // MANGAPOINT_ONBOARDING=1) walks through the first-run setup again.
+                if std::env::args().any(|a| a == "--onboarding")
+                    || std::env::var_os("MANGAPOINT_ONBOARDING").is_some()
+                {
+                    settings.setup_step = library::SetupStep::Engine;
+                }
                 apply_library_dirs(&settings);
                 settings
             }),
@@ -531,8 +623,12 @@ impl AppState {
             search_filters: sig(crate::logic::SearchFilters::default()),
             search_tags: sig(HashMap::new()),
             settings_section: sig(SettingsSection::default()),
+            open_details: sig(None),
+            unsaved_reader: sig(None),
+            leave_prompt: sig(None),
             covers: sig(HashMap::new()),
-            notice: sig(None),
+            toasts: sig(Vec::new()),
+            toasts_hovered: sig(false),
             modal: sig(None),
             library: sig(JsonFile::<LibraryDb>::new(paths().library_file()).load()),
             exports: sig(JsonFile::<ExportsDb>::new(paths().exports_file()).load()),
@@ -565,7 +661,44 @@ impl AppState {
         self.services.read().as_ref().map(|s| s.client.clone())
     }
 
+    /// Go to a page. Unsaved reader settings are asked about first.
     pub fn go(&self, page: Page) {
+        self.leave(Leave::Page(page));
+    }
+
+    /// Go somewhere that would lose the reader form's unsaved changes, asking
+    /// what to do with them first; anywhere else, just go.
+    pub fn leave(&self, to: Leave) {
+        let staying = match &to {
+            Leave::Page(page) => *page == Page::Settings,
+            Leave::Section(section) => *section == SettingsSection::Reader,
+            Leave::Reader(_) => false,
+        };
+        if !staying && self.unsaved_reader.peek().is_some() {
+            let mut prompt = self.leave_prompt;
+            prompt.set(Some(to));
+            return;
+        }
+        self.leave_now(to);
+    }
+
+    /// Carry on to where the user was going, the changes dealt with.
+    pub fn leave_now(&self, to: Leave) {
+        match to {
+            Leave::Page(page) => self.go_now(page),
+            Leave::Section(section) => {
+                let mut current = self.settings_section;
+                current.set(section);
+            }
+            Leave::Reader(id) => {
+                let mut settings = self.settings;
+                settings.write().device = id;
+                self.save_settings();
+            }
+        }
+    }
+
+    fn go_now(&self, page: Page) {
         let mut p = self.page;
         // The Export screen borrows the workspace for its own series; the
         // series that was open before it comes back when it is left.
@@ -585,35 +718,79 @@ impl AppState {
         self.go(back);
     }
 
+    /// Something worked.
     pub fn notify(&self, text: impl Into<String>) {
         let text = text.into();
         tracing::info!("{text}");
-        self.show_notice(text, false);
+        self.show_toast(ToastKind::Success, text);
     }
 
-    /// Show a message, and take it away again after a little while.
-    fn show_notice(&self, text: String, error: bool) {
-        let mut n = self.notice;
-        n.set(Some(Notice {
-            text: text.clone(),
-            error,
-        }));
-        let seconds = if error { 10 } else { 4 };
-        let this = *self;
-        spawn_forever(async move {
-            tokio::time::sleep(std::time::Duration::from_secs(seconds)).await;
-            let same = this.notice.peek().as_ref().is_some_and(|n| n.text == text);
-            if same {
-                let mut n = this.notice;
-                n.set(None);
-            }
-        });
+    /// Something to know, that is not a failure.
+    #[allow(dead_code)]
+    pub fn warn(&self, text: impl Into<String>) {
+        let text = text.into();
+        tracing::warn!("{text}");
+        self.show_toast(ToastKind::Warning, text);
     }
 
+    /// Something failed.
     pub fn error(&self, text: impl Into<String>) {
         let text = text.into();
         tracing::warn!("{text}");
-        self.show_notice(text, true);
+        self.show_toast(ToastKind::Error, text);
+    }
+
+    /// Put a toast on the stack, and take it away again after a while (longer
+    /// for the ones that went wrong; never while the pointer is over them).
+    fn show_toast(&self, kind: ToastKind, text: String) {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut toasts = self.toasts;
+        {
+            let mut stack = toasts.write();
+            // The same message again replaces the one already there.
+            stack.retain(|t| !(t.text == text && t.kind == kind && !t.leaving));
+            stack.push(Toast {
+                id,
+                kind,
+                text,
+                leaving: false,
+            });
+            // Only the newest few are kept.
+            let extra = stack.len().saturating_sub(8);
+            stack.drain(..extra);
+        }
+        let seconds = match kind {
+            ToastKind::Success => 4,
+            ToastKind::Warning => 7,
+            ToastKind::Error => 10,
+        };
+        let this = *self;
+        spawn_forever(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(seconds)).await;
+            while *this.toasts_hovered.peek() {
+                tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+            }
+            this.dismiss_toast(id);
+        });
+    }
+
+    /// Slide a toast away, and remove it once it has gone.
+    pub fn dismiss_toast(&self, id: u64) {
+        let mut toasts = self.toasts;
+        {
+            let mut stack = toasts.write();
+            match stack.iter_mut().find(|t| t.id == id) {
+                Some(t) if !t.leaving => t.leaving = true,
+                _ => return,
+            }
+        }
+        let this = *self;
+        spawn_forever(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(340)).await;
+            let mut toasts = this.toasts;
+            toasts.write().retain(|t| t.id != id);
+        });
     }
 
     pub fn ask(&self, modal: Modal) {
@@ -653,6 +830,15 @@ impl AppState {
         // Kept on disk, so what is waiting and what has finished survive a restart.
         let _ = JsonFile::new(paths().queue_file()).save(&guard.to_saved());
         result
+    }
+
+    /// Change the download queue without saving it. For how far a download
+    /// has got, which is not kept on disk: saving the whole queue (hundreds of
+    /// KB) several times a second held up the window for nothing.
+    pub fn edit_queue_quiet<R>(&self, edit: impl FnOnce(&mut DownloadQueue) -> R) -> R {
+        let mut queue = self.queue;
+        let mut guard = queue.write();
+        edit(&mut guard)
     }
 
     /// Change the saved source speeds.

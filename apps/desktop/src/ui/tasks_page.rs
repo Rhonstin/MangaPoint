@@ -5,7 +5,7 @@
 
 use super::widgets::{open_folder, show_in_folder, Chip, Cover, EmptyState, Icon, NoCover, ProgressBar};
 use super::work::{
-    cancel_all_downloads, cancel_batch, cancel_job, dismiss_batch, forget_exported_file,
+    cancel_batch, cancel_job, dismiss_batch, forget_exported_file,
     load_saved_cover, open_series_from_library, pause_batch, pause_export, prioritize_batch,
     resume_batch, resume_export, retry_batch, saved_cover_key, set_queue_paused,
 };
@@ -41,29 +41,48 @@ pub fn TasksPage() -> Element {
         }
     });
 
-    let queue = state.queue.read().clone();
-    let running = queue.running().map(|b| b.id);
-    let waiting: Vec<u64> = queue
-        .batches
-        .iter()
-        .filter(|b| matches!(b.status, BatchStatus::Waiting | BatchStatus::Paused))
-        .map(|b| b.id)
-        .collect();
-    // Newest first.
-    let finished: Vec<u64> = queue
-        .batches
-        .iter()
-        .rev()
-        .filter(|b| !b.status.is_active())
-        .map(|b| b.id)
-        .collect();
-    let (_, waiting_batches, chapters_left) = queue.counts();
-    let paused = queue.paused;
+    // How the queue is laid out (which batch is running, which wait, which are
+    // finished), not how far the running one has got: each row follows its own
+    // progress, and the page is not drawn again for every page downloaded.
+    let (running, waiting, finished, (waiting_batches, chapters_left), paused) = use_memo(move || {
+        let queue = state.queue.read();
+        let waiting: Vec<u64> = queue
+            .batches
+            .iter()
+            .filter(|b| matches!(b.status, BatchStatus::Waiting | BatchStatus::Paused))
+            .map(|b| b.id)
+            .collect();
+        // Newest first.
+        let finished: Vec<u64> = queue
+            .batches
+            .iter()
+            .rev()
+            .filter(|b| !b.status.is_active())
+            .map(|b| b.id)
+            .collect();
+        let (_, waiting_batches, chapters_left) = queue.counts();
+        (
+            queue.running().map(|b| b.id),
+            waiting,
+            finished,
+            (waiting_batches, chapters_left),
+            queue.paused,
+        )
+    })();
     let busy = running.is_some() || !waiting.is_empty();
-    let job = state.job.read().clone();
+    // Only whether an export is on show matters here (the row itself follows
+    // its progress), so this page is not drawn again for every page converted.
+    let job_shown = use_memo(move || {
+        state
+            .job
+            .read()
+            .as_ref()
+            .map(|j| !matches!(j.result, Some(Ok(_))))
+    })();
     let nothing_exported = state.exports.read().records.is_empty();
 
     rsx! {
+        div { class: "rise-in",
         div { class: "q-head",
             div { class: "grow",
                 h1 { "Tasks" }
@@ -71,7 +90,7 @@ pub fn TasksPage() -> Element {
             }
         }
 
-        if !busy && finished.is_empty() && job.is_none() && nothing_exported {
+        if !busy && finished.is_empty() && job_shown.is_none() && nothing_exported {
             EmptyState {
                 title: "Nothing to do",
                 message: "Pick chapters in any series and add them to the downloads, or export what you have. They go on in the background while you carry on.",
@@ -90,7 +109,17 @@ pub fn TasksPage() -> Element {
                 }
                 span { class: "grow" }
                 if !finished.is_empty() {
-                    button { class: "btn", onclick: move |_| state.edit_queue(|q| q.clear_finished()),
+                    button { class: "btn",
+                        onclick: {
+                            let finished_count = finished.len();
+                            move |_| state.ask(Modal {
+                            title: "Clear the finished downloads?".into(),
+                            body: format!("{} will be taken off this list. The chapters stay downloaded.", plural(finished_count, "finished download")),
+                            confirm: "Clear".into(),
+                            cancel: "Keep".into(),
+                            danger: true,
+                            action: ModalAction::ClearFinishedDownloads,
+                        }) },
                         "Clear all"
                     }
                 }
@@ -98,7 +127,15 @@ pub fn TasksPage() -> Element {
                     button { class: "btn", onclick: move |_| set_queue_paused(state, !paused),
                         if paused { Icon { name: "play", size: 15 } "Resume" } else { Icon { name: "pause", size: 15 } "Pause" }
                     }
-                    button { class: "btn danger", onclick: move |_| cancel_all_downloads(state),
+                    button { class: "btn danger",
+                        onclick: move |_| state.ask(Modal {
+                            title: "Cancel all downloads?".into(),
+                            body: "The download that is running stops, and the ones waiting are taken out of the queue. What was already downloaded is kept.".into(),
+                            confirm: "Cancel all".into(),
+                            cancel: "Keep downloading".into(),
+                            danger: true,
+                            action: ModalAction::CancelAllDownloads,
+                        }),
                         Icon { name: "x", size: 15 } "Cancel all"
                     }
                 }
@@ -106,33 +143,27 @@ pub fn TasksPage() -> Element {
             if !busy && finished.is_empty() {
                 p { class: "muted small q-hint", "Chapters you add from any series are downloaded here, one series after another." }
             }
+            // One list, like the exports: the one downloading, then those
+            // waiting, then the finished ones. Each row says which it is.
             if let Some(id) = running {
-                h3 { class: "q-title", "Downloading now" }
-                BatchRow { id }
+                BatchRow { key: "{id}", id }
             }
-            if !waiting.is_empty() {
-                h3 { class: "q-title", "Up next" }
-                for id in waiting.iter().copied() {
-                    BatchRow { key: "{id}", id }
-                }
+            for id in waiting.iter().copied() {
+                BatchRow { key: "{id}", id }
             }
-            if !finished.is_empty() {
-                div { class: "q-subhead",
-                    h3 { class: "q-title", "Finished" span { class: "muted", " ({finished.len()})" } }
-                }
-                for id in finished.iter().copied() {
-                    BatchRow { key: "{id}", id }
-                }
+            for id in finished.iter().copied() {
+                BatchRow { key: "{id}", id }
             }
 
             div { class: "q-sect q-sect-next",
                 h2 { "Exports" }
             }
             // A finished export is the first file in the list below.
-            if job.as_ref().is_some_and(|j| !matches!(j.result, Some(Ok(_)))) {
+            if job_shown == Some(true) {
                 ExportJobRow {}
             }
             ExportedFiles {}
+        }
         }
     }
 }

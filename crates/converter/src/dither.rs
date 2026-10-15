@@ -21,11 +21,20 @@ const BAYER_4X4: [[u8; 4]; 4] = [[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [
 /// Quantize a grayscale image to `depth`, using `dither`.
 pub fn quantize(img: &GrayImage, depth: Depth, dither: Dither) -> LevelImage {
     let max = depth.max_level();
+    // Full grays are kept as they are: there is nothing to reduce or dither.
+    if depth == Depth::Eight {
+        return LevelImage {
+            width: img.width,
+            height: img.height,
+            depth,
+            levels: img.pixels.clone(),
+        };
+    }
     let levels = match dither {
         Dither::Threshold => img.pixels.iter().map(|&p| nearest(p as f32, max)).collect(),
         Dither::FloydSteinberg => match depth {
             Depth::One => diffuse_floyd::<1>(img),
-            Depth::Two => diffuse_floyd::<3>(img),
+            Depth::Two | Depth::Eight => diffuse_floyd::<3>(img),
         },
         Dither::Atkinson => diffuse(img, max, ATKINSON),
         Dither::Ordered => ordered(img, max),

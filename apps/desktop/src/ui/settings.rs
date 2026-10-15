@@ -6,15 +6,17 @@ use super::devices::DevicesEditor;
 use super::widgets::{Icon, Toggle};
 use crate::logic::{human_bytes, plural};
 use crate::state::{paths, AppState, BootState, Modal, ModalAction, Page, SettingsSection};
+use crate::updates::{self, UpdateState, VERSION};
 use catalog::browser;
 use dioxus::prelude::*;
 use library::{DownloadLimits, DownloadSpeed};
 
 /// The sections, in the order the sidebar lists them.
-const SECTIONS: [(SettingsSection, &str, &str); 4] = [
+const SECTIONS: [(SettingsSection, &str, &str); 5] = [
     (SettingsSection::Reader, "hard-drive", "Your reader"),
     (SettingsSection::Downloads, "download", "Downloads"),
     (SettingsSection::Files, "folder-open", "Files"),
+    (SettingsSection::Preferences, "sliders-horizontal", "Preferences"),
     (SettingsSection::About, "info", "About"),
 ];
 
@@ -65,7 +67,7 @@ pub fn SettingsPage() -> Element {
                     button {
                         key: "{label}",
                         class: if sec == section { "nav-item active" } else { "nav-item" },
-                        onclick: move |_| { let mut current = state.settings_section; current.set(sec); },
+                        onclick: move |_| state.leave(crate::state::Leave::Section(sec)),
                         Icon { name: icon, size: 17 }
                         "{label}"
                     }
@@ -139,6 +141,14 @@ pub fn SettingsPage() -> Element {
                             Toggle {
                                 on: s.download.race_sources,
                                 onchange: move |on: bool| update(|s, v| s.download.race_sources = v == "true", on.to_string()),
+                            }
+                        }
+
+                        Group { title: "Notifications" }
+                        Row { label: "Tell me when something finishes", desc: "A notification from your system when a download or an export is done, or could not be finished.",
+                            Toggle {
+                                on: s.notifications,
+                                onchange: move |on: bool| { let mut st = state.settings; st.write().notifications = on; state.save_settings(); },
                             }
                         }
 
@@ -224,17 +234,11 @@ pub fn SettingsPage() -> Element {
                                 }
                             }
                         }
-                        Row { label: "Folder on the reader", desc: "Where files go when you export straight to the reader.",
-                            input {
-                                r#type: "text", value: "{s.export.device_folder}",
-                                oninput: move |e| update(|s, v| s.export.device_folder = v, e.value()),
-                            }
-                        }
-                        Row { label: "Reader Wi-Fi address", desc: "For sending over Wi-Fi to CrossPoint's file transfer. Not yet tested on a real device.",
-                            input {
-                                r#type: "text", placeholder: "http://192.168.3.3 (optional)",
-                                value: "{s.export.webdav_url.clone().unwrap_or_default()}",
-                                oninput: move |e| update(|s, v| s.export.webdav_url = (!v.trim().is_empty()).then(|| v.trim().to_string()), e.value()),
+                        Row { label: "Save to reader", desc: "This is managed in the Your reader section: how files get to each reader, and the folder they go into.",
+                            button { class: "btn",
+                                onclick: move |_| { let mut current = state.settings_section; current.set(SettingsSection::Reader); },
+                                Icon { name: "hard-drive", size: 15 }
+                                "Your reader"
                             }
                         }
                         Group { title: "Downloaded chapters" }
@@ -272,7 +276,25 @@ pub fn SettingsPage() -> Element {
                             }
                         }
                     },
+                    SettingsSection::Preferences => rsx! {
+                        Group { title: "Animations" }
+                        Row { label: "Animation style", desc: "Clean fades pages in one part after another. Snappy skips that: pages and menus appear as fast as they can.",
+                            div { class: "seg",
+                                button {
+                                    class: if s.animations == library::Animations::Clean { "on" } else { "" },
+                                    onclick: move |_| { let mut st = state.settings; st.write().animations = library::Animations::Clean; state.save_settings(); },
+                                    "Clean"
+                                }
+                                button {
+                                    class: if s.animations == library::Animations::Snappy { "on" } else { "" },
+                                    onclick: move |_| { let mut st = state.settings; st.write().animations = library::Animations::Snappy; state.save_settings(); },
+                                    "Snappy"
+                                }
+                            }
+                        }
+                    },
                     SettingsSection::About => rsx! {
+                        UpdateRow {}
                         Row {
                             label: "Catalog engine",
                             note: match &services {
@@ -293,6 +315,59 @@ pub fn SettingsPage() -> Element {
                     },
                 }}
             }
+        }
+    }
+}
+
+/// The version of MangaPoint, and a button that looks for a newer one and,
+/// when there is one, turns into the button that installs it.
+#[component]
+fn UpdateRow() -> Element {
+    let mut update = use_signal(|| UpdateState::Idle);
+    let note = match update() {
+        UpdateState::Idle => format!("MangaPoint {VERSION}"),
+        UpdateState::Checking => format!("MangaPoint {VERSION}. Looking for a newer version\u{2026}"),
+        UpdateState::UpToDate => format!("MangaPoint {VERSION}. This is the newest version."),
+        UpdateState::Available { ref version } => format!("MangaPoint {VERSION}. Version {version} is out."),
+        UpdateState::Installing => format!("MangaPoint {VERSION}. Getting the new version\u{2026}"),
+        UpdateState::Failed(ref why) => format!("MangaPoint {VERSION}. {why}"),
+    };
+    rsx! {
+        Row { label: "Version", note,
+            {match update() {
+                UpdateState::Available { version } => rsx! {
+                    button { class: "btn primary",
+                        onclick: move |_| {
+                            let version = version.clone();
+                            spawn(async move {
+                                update.set(UpdateState::Installing);
+                                match updates::install(&version).await {
+                                    Ok(()) => update.set(UpdateState::UpToDate),
+                                    Err(why) => update.set(UpdateState::Failed(why)),
+                                }
+                            });
+                        },
+                        Icon { name: "download", size: 15 }
+                        "Update"
+                    }
+                },
+                state => rsx! {
+                    button { class: "btn", disabled: matches!(state, UpdateState::Checking | UpdateState::Installing),
+                        onclick: move |_| {
+                            spawn(async move {
+                                update.set(UpdateState::Checking);
+                                match updates::check().await {
+                                    Ok(Some(version)) => update.set(UpdateState::Available { version }),
+                                    Ok(None) => update.set(UpdateState::UpToDate),
+                                    Err(why) => update.set(UpdateState::Failed(why)),
+                                }
+                            });
+                        },
+                        Icon { name: "refresh-cw", size: 15 }
+                        "Check for updates"
+                    }
+                },
+            }}
         }
     }
 }

@@ -10,7 +10,7 @@ const WIDTH: i32 = 40;
 const HEIGHT: i32 = 60;
 
 /// Letters of the name in a 5 by 7 pixel font.
-fn glyph(c: char) -> [&'static str; 7] {
+pub(super) fn glyph(c: char) -> [&'static str; 7] {
     match c {
         'M' => [
             "10001", "11011", "10101", "10101", "10001", "10001", "10001",

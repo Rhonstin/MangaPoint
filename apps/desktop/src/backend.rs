@@ -19,10 +19,22 @@ static SERVER: Mutex<Option<RunningServer>> = Mutex::new(None);
 
 /// Bring the server up, showing progress, and publish it to the app.
 /// Safe to call again: any server already running is stopped first.
-pub async fn boot(state: AppState) {
+///
+/// The first run does not download the engine by itself: with it missing, this
+/// stops at [`BootState::NeedsEngine`] until called again with `install` set.
+pub async fn boot(state: AppState, install: bool) {
     let mut boot = state.boot;
     let mut services = state.services;
     services.set(None);
+    crate::covers::set_client(None);
+    let installed = provision::locate_install(
+        &paths().suwayomi_dir().join(format!("suwayomi-{VERSION_TAG}")),
+    )
+    .is_ok();
+    if !installed && !install && state.settings.peek().setup_step != library::SetupStep::Done {
+        boot.set(BootState::NeedsEngine);
+        return;
+    }
     boot.set(BootState::Starting {
         message: "Preparing…".into(),
         percent: None,
@@ -32,6 +44,7 @@ pub async fn boot(state: AppState) {
 
     match start(state).await {
         Ok(svc) => {
+            crate::covers::set_client(Some(svc.client.clone()));
             services.set(Some(svc));
             // Make sure the default extension store is known.
             if let Some(client) = state.client() {
@@ -282,7 +295,7 @@ pub async fn enable_browser(state: AppState) {
     let mut settings = state.settings;
     settings.write().browser_support = true;
     state.save_settings();
-    boot(state).await;
+    boot(state, true).await;
 }
 
 /// Turn browser support off and delete the downloaded runtime.
@@ -298,7 +311,7 @@ pub async fn disable_browser(state: AppState) {
         Ok(()) => info!("Removed browser support ({} MB freed)", freed / 1_000_000),
         Err(e) => state.error(format!("Could not remove browser support: {e}")),
     }
-    boot(state).await;
+    boot(state, true).await;
 }
 
 /// Install a built-in source. Returns whether it was installed.

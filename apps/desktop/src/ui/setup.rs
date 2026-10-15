@@ -1,6 +1,7 @@
 //! First run: choose which sources to install.
 
 use super::ask_enable_browser;
+use super::browse::BrowsingCat;
 use super::widgets::{Chip, Icon};
 use crate::backend;
 use crate::state::spawn_forever;
@@ -9,8 +10,25 @@ use dioxus::prelude::*;
 use library::Choice;
 use sources::{Requires, SourceManager};
 
+/// The sources step is done: whatever was not answered counts as skipped.
+pub fn finish_sources(state: AppState) {
+    let mut sources_state = state.sources.read().clone();
+    if let Some(client) = state.client() {
+        SourceManager::new(&*client).finish_onboarding(&mut sources_state);
+    }
+    let installed = sources_state
+        .choices
+        .values()
+        .filter(|c| **c == Choice::Install)
+        .count();
+    let mut s = state.sources;
+    s.set(sources_state);
+    state.save_sources();
+    tracing::info!("First-run setup finished: {installed} source(s) installed");
+}
+
 #[component]
-pub fn Setup() -> Element {
+pub fn Setup(#[props(default = false)] onboarding: bool) -> Element {
     let state = use_context::<AppState>();
 
     let offers = use_resource(move || async move {
@@ -38,21 +56,19 @@ pub fn Setup() -> Element {
         });
     };
     let busy = *state.installing.read();
+    // The recommended ones that have not been answered yet: when there are none
+    // (all installed, or turned down), there is nothing for the button to do.
+    let pending = match &*offers.read() {
+        Some(Some(list)) => list
+            .iter()
+            .filter(|o| o.default.requires == Requires::Nothing && o.available && !o.installed && o.choice.is_none())
+            .count(),
+        _ => 1,
+    };
+    let any_installed = state.sources.read().choices.values().any(|c| *c == Choice::Install);
 
     let finish = move |_| {
-        let mut sources_state = state.sources.read().clone();
-        if let Some(client) = state.client() {
-            SourceManager::new(&*client).finish_onboarding(&mut sources_state);
-        }
-        let installed = sources_state
-            .choices
-            .values()
-            .filter(|c| **c == Choice::Install)
-            .count();
-        let mut s = state.sources;
-        s.set(sources_state);
-        state.save_sources();
-        tracing::info!("First-run setup finished: {installed} source(s) installed");
+        finish_sources(state);
         state.go(Page::Search);
     };
 
@@ -65,10 +81,10 @@ pub fn Setup() -> Element {
                 let installed = o.installed;
                 let skipped = o.choice == Some(Choice::Skip) && !installed;
                 rsx! {
-                    div { class: "list-row", key: "{id}",
-                        div { class: "grow",
+                    div { class: "setup-row", key: "{id}",
+                        div { class: "src-main",
                             div { class: "row wrap",
-                                strong { "{o.default.name}" }
+                                strong { class: "src-name", "{o.default.name}" }
                                 if needs_browser { Chip { text: "needs browser support", kind: Some("warn".to_string()) } }
                                 if installed { Chip { text: "installed", kind: Some("ok".to_string()) } }
                                 if skipped { Chip { text: "skipped" } }
@@ -77,31 +93,23 @@ pub fn Setup() -> Element {
                             div { class: "muted small", "{o.default.description}" }
                         }
                         if o.available && !installed {
-                            button {
-                                class: "btn primary small",
-                                onclick: move |_| {
-                                    let browser_off = !state.settings.read().browser_support;
-                                    if needs_browser && browser_off {
-                                        ask_enable_browser(state, Some(id.to_string()));
-                                    } else {
-                                        spawn_forever(async move {
-                                            backend::install_default(state, id).await;
-                                            state.bump_sources();
-                                        });
-                                    }
-                                },
-                                Icon { name: "download", size: 15 }
-                                "Install"
-                            }
-                            button {
-                                class: "btn small",
-                                onclick: move |_| {
-                                    let mut s = state.sources;
-                                    s.write().choices.insert(id.to_string(), Choice::Skip);
-                                    state.save_sources();
-                                    state.bump_sources();
-                                },
-                                "Skip for now"
+                            div { class: "src-actions",
+                                button {
+                                    class: "btn primary small",
+                                    onclick: move |_| {
+                                        let browser_off = !state.settings.read().browser_support;
+                                        if needs_browser && browser_off {
+                                            ask_enable_browser(state, Some(id.to_string()));
+                                        } else {
+                                            spawn_forever(async move {
+                                                backend::install_default(state, id).await;
+                                                state.bump_sources();
+                                            });
+                                        }
+                                    },
+                                    Icon { name: "download", size: 15 }
+                                    "Install"
+                                }
                             }
                         }
                     }
@@ -119,38 +127,42 @@ pub fn Setup() -> Element {
         .any(|c| *c == Choice::Install);
 
     rsx! {
-        h1 { "Choose your sources" }
-        p { class: "muted",
-            "Sources are the websites MangaPoint searches. Pick the ones you want; you can change this any time in Sources. "
-            "These all passed our full test (search, chapters and page images) when we last checked."
-        }
-        div { class: "card",
-            if !loaded {
-                p { class: "muted", "Loading the list…" }
+        div { class: "onboard-head",
+            if onboarding {
+                div { class: "step-hero", BrowsingCat {} }
             }
-            {rows.into_iter()}
+            h1 { "Choose your sources" }
+            p { class: "muted",
+                "Sources are the websites MangaPoint searches. Pick the ones you want; you can change this any time in Sources. "
+                "These all passed our full test (search, chapters and page images) when we last checked."
+            }
         }
-        div { class: "spacer" }
-        div { class: "row",
+        div { class: "setup-tools",
             button {
-                class: "btn",
-                disabled: busy,
+                class: "btn setup-all",
+                disabled: busy || pending == 0,
                 onclick: install_recommended,
-                if busy { "Installing…" } else { "Install all recommended" }
+                if pending == 0 && !busy {
+                    Icon { name: "check", size: 15 }
+                    if any_installed { "All recommended sources are installed" } else { "Nothing left to install" }
+                } else {
+                    Icon { name: "download", size: 15 }
+                    if busy { "Installing\u{2026}" } else { "Install all recommended" }
+                }
             }
-            div { class: "grow" }
-            button {
-                class: "btn primary",
-                disabled: !installed_any,
-                onclick: finish,
-                Icon { name: "check", size: 15 }
-                "Done"
+            if !onboarding {
+                button {
+                    class: "btn primary small",
+                    disabled: !installed_any,
+                    onclick: finish,
+                    Icon { name: "check", size: 15 }
+                    "Done"
+                }
             }
         }
-        if !installed_any {
-            p { class: "muted small", style: "margin-top: 8px",
-                "Install at least one source to start searching."
-            }
+        if !loaded {
+            p { class: "muted", "Loading the list\u{2026}" }
         }
+        div { class: "setup-list", {rows.into_iter()} }
     }
 }

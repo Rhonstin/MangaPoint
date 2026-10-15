@@ -202,10 +202,10 @@ pub fn select_by_text(text: &str, numbers: &[Option<f64>]) -> Result<Vec<usize>,
 pub enum TargetChoice {
     /// The configured output folder (or the app's default one).
     Folder,
-    /// A mounted reader or SD card.
-    Reader(String),
-    /// The reader's WebDAV share from Settings.
-    WebDav,
+    /// The reader's drive (or SD card).
+    Usb,
+    /// The reader over Wi-Fi.
+    WiFi,
 }
 
 pub fn export_target(
@@ -221,17 +221,26 @@ pub fn export_target(
                 .clone()
                 .unwrap_or_else(|| default_dir.to_path_buf()),
         }),
-        TargetChoice::Reader(mount) => Ok(ExportTarget::Device {
-            mount: mount.into(),
-            folder: settings.export.device_folder.clone(),
-        }),
-        TargetChoice::WebDav => match settings.export.webdav_url.as_deref() {
-            Some(url) if !url.trim().is_empty() => Ok(ExportTarget::WebDav {
-                base_url: url.trim().to_string(),
-                folder: settings.export.device_folder.clone(),
-            }),
-            _ => Err("Set the reader's Wi-Fi address in Settings first.".into()),
-        },
+        TargetChoice::Usb => {
+            let setup = settings.reader_setup();
+            match setup.reader_dir {
+                Some(dir) => Ok(ExportTarget::Device {
+                    mount: dir,
+                    folder: setup.folder,
+                }),
+                None => Err("Choose where the reader is first (under Send to).".into()),
+            }
+        }
+        TargetChoice::WiFi => {
+            let setup = settings.reader_setup();
+            match setup.wifi_url.as_deref() {
+                Some(url) if !url.trim().is_empty() => Ok(ExportTarget::WebDav {
+                    base_url: url.trim().to_string(),
+                    folder: setup.folder,
+                }),
+                _ => Err("Add the reader's Wi-Fi address first (under Send to).".into()),
+            }
+        }
     }
 }
 
@@ -315,6 +324,9 @@ impl JobProgress {
                     )
                 });
             }
+            JobEvent::Flushing => {
+                self.note = Some("Making sure the drive has all of it. This can take a minute or two…".into());
+            }
             JobEvent::Writing { .. } => {
                 self.active.clear();
                 self.finished = self.chapter_total;
@@ -389,6 +401,17 @@ pub fn estimate_export_bytes(pages: usize, format: converter::xtc::Format) -> u6
         converter::xtc::Format::Xtch => 96_022,
     };
     pages as u64 * per_page
+}
+
+/// A rough size of a book as `output`: the XTC and XTCH figures are exact for a
+/// 480 x 800 screen; a page of an EPUB depends on the drawing, and about 24 KB
+/// is what manga comes to.
+pub fn estimate_output_bytes(pages: usize, output: library::OutputFormat) -> u64 {
+    match output {
+        library::OutputFormat::Xtc => estimate_export_bytes(pages, converter::xtc::Format::Xtc),
+        library::OutputFormat::Xtch => estimate_export_bytes(pages, converter::xtc::Format::Xtch),
+        library::OutputFormat::Epub => pages as u64 * 24_000,
+    }
 }
 
 // ---- Wording ---------------------------------------------------------------
@@ -497,6 +520,27 @@ pub fn series_info_from(
         has_cover,
         saved_at: now,
     }
+}
+
+/// How many chapters make a series slow to load: the sources send the whole
+/// list at once, so a long one takes a while.
+pub const LONG_SERIES: usize = 500;
+
+/// What to say while the chapters of a long series load, when how many it has
+/// is known; nothing for a short series or when the count is not known.
+pub fn long_series_note(chapters: Option<usize>) -> Option<String> {
+    let n = chapters.filter(|n| *n > LONG_SERIES)?;
+    // "about 3,000": rounded, with a comma in the thousands.
+    let step = if n >= 1000 { 100 } else { 50 };
+    let rounded = (n + step / 2) / step * step;
+    let text = if rounded >= 1000 {
+        format!("{},{:03}", rounded / 1000, rounded % 1000)
+    } else {
+        rounded.to_string()
+    };
+    Some(format!(
+        "This series has about {text} chapters, so it can take a while to load them from your sources."
+    ))
 }
 
 /// "1 chapter", "2 chapters".
@@ -1036,17 +1080,19 @@ mod tests {
                 path: "/mine".into()
             }
         );
+        assert!(export_target(&TargetChoice::Usb, &s, default_dir).is_err());
+        s.update_reader_setup(|r| r.reader_dir = Some("E:\\".into()));
         assert_eq!(
-            export_target(&TargetChoice::Reader("E:\\".into()), &s, default_dir).unwrap(),
+            export_target(&TargetChoice::Usb, &s, default_dir).unwrap(),
             ExportTarget::Device {
                 mount: "E:\\".into(),
                 folder: "Manga".into()
             }
         );
-        assert!(export_target(&TargetChoice::WebDav, &s, default_dir).is_err());
-        s.export.webdav_url = Some(" http://192.168.3.3 ".into());
+        assert!(export_target(&TargetChoice::WiFi, &s, default_dir).is_err());
+        s.update_reader_setup(|r| r.wifi_url = Some(" http://192.168.3.3 ".into()));
         assert_eq!(
-            export_target(&TargetChoice::WebDav, &s, default_dir).unwrap(),
+            export_target(&TargetChoice::WiFi, &s, default_dir).unwrap(),
             ExportTarget::WebDav {
                 base_url: "http://192.168.3.3".into(),
                 folder: "Manga".into()
@@ -1351,6 +1397,15 @@ mod sort_tests {
 
 #[cfg(test)]
 mod library_view_tests {
+    #[test]
+    fn a_long_series_gets_a_note_and_a_short_one_does_not() {
+        assert_eq!(long_series_note(None), None);
+        assert_eq!(long_series_note(Some(500)), None);
+        assert!(long_series_note(Some(501)).unwrap().contains("about 500 chapters"));
+        assert!(long_series_note(Some(3_187)).unwrap().contains("about 3,200 chapters"));
+        assert!(long_series_note(Some(12_000)).unwrap().contains("about 12,000 chapters"));
+    }
+
     use super::*;
     use library::{DownloadedChapter, DownloadedSeries, SeriesInfo};
 

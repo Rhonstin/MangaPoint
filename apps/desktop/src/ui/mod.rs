@@ -1,6 +1,7 @@
 //! The app's screens.
 
 pub mod cat;
+mod browse;
 mod chapter_table;
 mod conversion;
 mod devices;
@@ -8,9 +9,12 @@ mod download_dialog;
 mod tasks_page;
 mod export_page;
 mod hang;
+mod onboarding;
+mod walker;
 mod icons;
 mod library_page;
 mod ocean;
+mod pixels;
 mod placeholder;
 mod plan_page;
 mod presets;
@@ -27,7 +31,7 @@ mod workspace;
 
 use crate::backend;
 use crate::state::spawn_forever;
-use crate::state::{AppState, BootState, Modal, ModalAction, Page};
+use crate::state::{AppState, BootState, Modal, ModalAction, Page, ToastKind};
 use dioxus::desktop::tao::event::{Event, WindowEvent};
 use dioxus::desktop::use_wry_event_handler;
 use dioxus::prelude::*;
@@ -37,15 +41,31 @@ use widgets::{Icon, ProgressBar};
 const CSS: &str = include_str!("../style.css");
 /// Floats the explanation of a question mark above everything else.
 const TOOLTIP_SCRIPT: &str = include_str!("../js/tooltip.js");
+/// Keyboard shortcuts.
+const KEYS_SCRIPT: &str = include_str!("../js/keys.js");
+/// Remembers the scroll position of each page.
+const SCROLL_SCRIPT: &str = include_str!("../js/scroll.js");
+/// Lets a first-run step slide out of the window.
+const SLIDE_SCRIPT: &str = include_str!("../js/slide.js");
 
 #[component]
 pub fn App() -> Element {
     let state = AppState::init();
     use_context_provider(|| state);
 
+    // Dev flag: `-- --toast-demo` shows one of each kind of toast.
+    use_hook(|| {
+        if std::env::args().any(|a| a == "--toast-demo") {
+            state.notify("Reader saved.");
+            state.warn("That drive is almost full: 300 MB left.");
+            state.error("Nothing answered at http://192.168.3.3. Is the reader on?");
+            // And one of the system's own, to see who it says it is from.
+            crate::notify::finished(state, "Export finished", "The Greatest Estate Developer: Exported 1 file(s).");
+        }
+    });
     // Start the catalog server once, when the app opens.
     use_hook(|| {
-        spawn_forever(backend::boot(state));
+        spawn_forever(backend::boot(state, false));
     });
     // Stop it when the window closes, so no process is left behind.
     use_wry_event_handler(|event, _| {
@@ -61,21 +81,31 @@ pub fn App() -> Element {
     use_hook(|| {
         spawn(async move {
             let _ = document::eval(TOOLTIP_SCRIPT).await;
+            let _ = document::eval(KEYS_SCRIPT).await;
+            let _ = document::eval(SCROLL_SCRIPT).await;
+            let _ = document::eval(SLIDE_SCRIPT).await;
         });
     });
 
+    let snappy = state.settings.read().animations == library::Animations::Snappy;
     let boot = state.boot.read().clone();
+    let setup_step = state.settings.read().setup_step;
     rsx! {
         style { "{CSS}" }
         style { {include_str!("../page-editor.css")} }
         style { {include_str!("../editor-controls.css")} }
-        div { class: "app",
+        div { class: "app", "data-motion": if snappy { "snappy" } else { "clean" },
             {match boot {
-                BootState::Starting { message, percent } => rsx! { Splash { message, percent } },
                 BootState::Failed(message) => rsx! { Failed { message } },
-                BootState::Ready => rsx! { Shell {} },
+                // The very first run: the engine, sources and a reader, step by step.
+                _ if setup_step != library::SetupStep::Done => rsx! { onboarding::Onboarding {} },
+                // An engine still to download waits on the splash. Otherwise the
+                // app opens at once; only what needs the engine (the search) waits.
+                BootState::Starting { message, percent } if !state.engine_installed => rsx! { Splash { message, percent } },
+                _ => rsx! { Shell {} },
             }}
             ModalHost {}
+            UnsavedHost {}
             download_dialog::DownloadDialogHost {}
             ToastHost {}
         }
@@ -87,7 +117,7 @@ fn Splash(message: String, percent: Option<u8>) -> Element {
     let fraction = percent.map(|p| p as f32 / 100.0);
     rsx! {
         div { class: "splash",
-            cat::Cat {}
+            walker::WalkingCat {}
             h1 { "MangaPoint" }
             p { class: "muted", "{message}" }
             ProgressBar { fraction }
@@ -108,7 +138,7 @@ fn Failed(message: String) -> Element {
             button {
                 class: "btn primary",
                 onclick: move |_| {
-                    spawn_forever(backend::boot(state));
+                    spawn_forever(backend::boot(state, true));
                 },
                 "Try again"
             }
@@ -121,8 +151,12 @@ fn Shell() -> Element {
     let state = use_context::<AppState>();
     let page = *state.page.read();
     // How many batches are downloading or waiting, for the badge on Downloads.
-    let (running, waiting, _) = state.queue.read().counts();
-    let in_queue = running + waiting;
+    // The count is all the nav shows: it changes when a batch comes or goes,
+    // not with every page that arrives.
+    let in_queue = use_memo(move || {
+        let (running, waiting, _) = state.queue.read().counts();
+        running + waiting
+    })();
     rsx! {
         nav { class: "nav",
             div { class: "brand",
@@ -148,7 +182,7 @@ fn Shell() -> Element {
                 div { class: if page == Page::Search { "keep" } else { "keep gone" },
                     search::SearchPage {}
                 }
-                div { class: if page == Page::Library { "keep" } else { "keep gone" },
+                div { class: if page == Page::Library { "keep lib" } else { "keep gone lib" },
                     library_page::LibraryPage {}
                 }
                 {match page {
@@ -206,7 +240,67 @@ fn NavItem(page: Page, label: &'static str, icon: &'static str, badge: Option<St
             },
             Icon { name: icon, size: 17 }
             span { class: "grow", "{label}" }
+            if page == Page::Search { ShortcutKeys {} }
             if let Some(count) = badge { span { class: "nav-badge", "{count}" } }
+        }
+    }
+}
+
+/// The shortcut to the search, as keys: Command K on a Mac, Ctrl K elsewhere.
+#[component]
+fn ShortcutKeys() -> Element {
+    let mac = cfg!(target_os = "macos");
+    rsx! {
+        span { class: "kbds", title: if mac { "Press Command+K (or /) to search" } else { "Press Ctrl+K (or /) to search" },
+            kbd {
+                if mac { Icon { name: "command", size: 11 } } else { "Ctrl" }
+            }
+            kbd { "K" }
+        }
+    }
+}
+
+/// Asked when the user leaves the reader form with changes that are not saved.
+#[component]
+fn UnsavedHost() -> Element {
+    let state = use_context::<AppState>();
+    let Some(to) = state.leave_prompt.read().clone() else { return rsx! {} };
+    let (save_to, discard_to) = (to.clone(), to);
+    rsx! {
+        div { class: "overlay",
+            div { class: "modal",
+                h2 { "You have unsaved settings" }
+                p { "Would you like to save or discard them?" }
+                div { class: "actions",
+                    button { class: "btn",
+                        onclick: move |_| { let mut p = state.leave_prompt; p.set(None); },
+                        "Keep editing"
+                    }
+                    button { class: "btn danger",
+                        onclick: move |_| {
+                            let mut p = state.leave_prompt;
+                            p.set(None);
+                            let mut unsaved = state.unsaved_reader;
+                            unsaved.set(None);
+                            state.leave_now(discard_to.clone());
+                        },
+                        "Discard"
+                    }
+                    button { class: "btn primary",
+                        onclick: move |_| {
+                            let saved = state.unsaved_reader.peek().clone().is_none_or(|u| (u.0)());
+                            if saved {
+                                let mut p = state.leave_prompt;
+                                p.set(None);
+                                let mut unsaved = state.unsaved_reader;
+                                unsaved.set(None);
+                                state.leave_now(save_to.clone());
+                            }
+                        },
+                        "Save"
+                    }
+                }
+            }
         }
     }
 }
@@ -272,6 +366,23 @@ fn run_action(state: AppState, action: ModalAction) {
                 work::delete_downloads(state, series_ids)
             }
             ModalAction::DeletePreset { id } => presets::delete_preset(state, id),
+            ModalAction::RemoveReader { id } => {
+                let mut settings = state.settings;
+                {
+                    let mut st = settings.write();
+                    st.custom_devices.retain(|d| d.id != id);
+                    st.device_presets.remove(&id);
+                    st.reader_setups.remove(&id);
+                    st.device = st.custom_devices.first().map(|d| d.id.clone()).unwrap_or_default();
+                }
+                state.save_settings();
+            }
+            ModalAction::ClearFinishedDownloads => state.edit_queue(|q| q.clear_finished()),
+            ModalAction::CancelAllDownloads => work::cancel_all_downloads(state),
+            ModalAction::LoadPreset { series_id, preset_id, settings } => {
+                presets::apply_to_series(state, &series_id, preset_id, settings)
+            }
+            ModalAction::SavePreset { id, settings } => presets::save_to_preset(state, &id, settings),
             ModalAction::DeleteExport { record_id } => work::delete_export(state, record_id),
             ModalAction::DeleteExportedFile { record_id, path } => {
                 work::delete_exported_file(state, record_id, path)
@@ -310,19 +421,39 @@ pub fn ask_enable_browser(state: AppState, then_install: Option<String>) {
 #[component]
 fn ToastHost() -> Element {
     let state = use_context::<AppState>();
-    let notice = state.notice.read().clone();
-    let Some(notice) = notice else { return rsx! {} };
-    let class = if notice.error { "toast error" } else { "toast" };
+    let toasts = state.toasts.read().clone();
+    if toasts.is_empty() {
+        return rsx! {};
+    }
     rsx! {
-        div { class: "{class}",
-            div { class: "grow", "{notice.text}" }
-            button {
-                class: "btn small",
-                onclick: move |_| {
-                    let mut n = state.notice;
-                    n.set(None);
-                },
-                "OK"
+        // The newest sits at the bottom with the older ones stacked behind it;
+        // pointing at the stack spreads them out to read.
+        div {
+            class: "toasts",
+            onmouseenter: move |_| { let mut h = state.toasts_hovered; h.set(true); },
+            onmouseleave: move |_| { let mut h = state.toasts_hovered; h.set(false); },
+            for (i, toast) in toasts.iter().rev().enumerate() {
+                {
+                    let id = toast.id;
+                    let look = match toast.kind {
+                        ToastKind::Success => "success",
+                        ToastKind::Warning => "warning",
+                        ToastKind::Error => "error",
+                    };
+                    rsx! {
+                        div {
+                            key: "{toast.id}",
+                            class: if toast.leaving { "toast {look} leaving" } else { "toast {look}" },
+                            style: "--i: {i}",
+                            role: "status",
+                            cat::ToastCat { look: look.to_string() }
+                            div { class: "toast-text", "{toast.text}" }
+                            button { class: "toast-x", title: "Dismiss", onclick: move |_| state.dismiss_toast(id),
+                                Icon { name: "x", size: 14 }
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -330,11 +461,13 @@ fn ToastHost() -> Element {
 
 #[cfg(test)]
 mod script_tests {
-    const SCRIPTS: [(&str, &str); 4] = [
+    const SCRIPTS: [(&str, &str); 6] = [
         ("crop-drag.js", include_str!("../js/crop-drag.js")),
         ("export-split.js", include_str!("../js/export-split.js")),
         ("preview-editor.js", include_str!("../js/preview-editor.js")),
         ("tooltip.js", include_str!("../js/tooltip.js")),
+        ("keys.js", include_str!("../js/keys.js")),
+        ("scroll.js", include_str!("../js/scroll.js")),
     ];
 
     /// `cropBound` as it is written in HTML: `data-crop-bound`.

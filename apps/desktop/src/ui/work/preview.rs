@@ -203,10 +203,36 @@ pub(super) async fn decode_chapter(
 /// time in the background. The plan appears first, so the screen takes its
 /// shape at once. Settings changes call this with a short delay, so dragging a
 /// slider draws once it settles.
+/// One number for everything that decides how the pages look. `0` if it
+/// cannot be worked out.
+fn preview_signature(state: AppState) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let Some(ws) = state.workspace.peek().clone() else {
+        return 0;
+    };
+    let (key, draft) = {
+        let p = state.preview.peek();
+        (p.chapter_key.clone(), p.draft_crop.clone())
+    };
+    let Some(key) = key else {
+        return 0;
+    };
+    let Some(series) = state.library.peek().find(&ws.series_id).cloned() else {
+        return 0;
+    };
+    let device = state.settings.peek().device_profile();
+    let opts = pipeline::process_options_for(&device, &series.settings);
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    format!("{}|{key}|{opts:?}|{:?}|{draft:?}", ws.series_id, series.crops).hash(&mut hasher);
+    hasher.finish().max(1)
+}
+
 pub fn schedule_preview(state: AppState, delay_ms: u64) {
     let mut preview = state.preview;
+    let signature = preview_signature(state);
     let generation = {
         let mut p = preview.write();
+        p.signature = signature;
         p.generation = next_preview_request();
         p.busy = true;
         p.error = None;
@@ -310,16 +336,17 @@ pub fn schedule_preview(state: AppState, delay_ms: u64) {
                     // Keep the previous drawing of this page until it is
                     // redrawn, but only near the screen: the full-size
                     // drawings of a long chapter would fill the memory.
-                    let (shot, thumbnail, original, kept) = old
+                    let (shot, thumbnail, original, kept, rendered_for) = old
                         .iter()
                         .find(|o| o.crop_key == pipeline::crop_page_key(page))
-                        .map_or((None, None, None, None), |o| {
+                        .map_or((None, None, None, None, 0), |o| {
                             let close = (near.0..=near.1).contains(&position);
                             (
                                 o.shot.clone().filter(|_| close),
                                 o.thumbnail.clone(),
                                 o.original.clone().filter(|_| close),
                                 o.kept,
+                                o.rendered_for,
                             )
                         });
                     let image = match page.source {
@@ -335,6 +362,7 @@ pub fn schedule_preview(state: AppState, delay_ms: u64) {
                         crop_key: pipeline::crop_page_key(page),
                         source: Some(page.clone()),
                         generation: 0,
+                        rendered_for,
                     })
                 })
                 .collect();
@@ -357,6 +385,20 @@ pub fn schedule_preview(state: AppState, delay_ms: u64) {
             full_size_pages(chapter.plan.pages.len(), selected, window)
                 .into_iter()
                 .collect();
+        // Only pages that are not already drawn the way they should look: moving
+        // along the chapter must not draw the pages that are there again.
+        let drawn_now = state.preview.peek().pages.clone();
+        let needs = |i: usize| -> bool {
+            let Some(page) = drawn_now.get(i) else {
+                return true;
+            };
+            i == selected
+                || signature == 0
+                || page.rendered_for != signature
+                || page.thumbnail.is_none()
+                || (full.contains(&i)
+                    && (page.shot.is_none() || (want_source && page.original.is_none())))
+        };
         let jobs: Vec<_> = preview_render_order(
             chapter.plan.pages.len(),
             selected,
@@ -365,6 +407,7 @@ pub fn schedule_preview(state: AppState, delay_ms: u64) {
             window,
         )
         .into_iter()
+        .filter(|i| needs(*i))
         .map(|i| (i, chapter.plan.pages[i].clone()))
         .collect();
         let crops = series.crops.clone();
@@ -453,6 +496,7 @@ pub fn schedule_preview(state: AppState, delay_ms: u64) {
                             next.original = Some(shot(&original));
                         }
                         next.generation = generation;
+                        next.rendered_for = signature;
                         *slot = Rc::new(next);
                     }
                     if index == selected {

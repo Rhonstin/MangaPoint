@@ -1,11 +1,7 @@
 //! Small pieces used by several screens.
 
-use crate::state::spawn_forever;
 use crate::state::AppState;
-use base64::engine::general_purpose::STANDARD;
-use base64::Engine;
 use dioxus::prelude::*;
-use sources::check::image_kind;
 
 /// A Lucide icon by name (see `icons.rs`). Takes the surrounding text color.
 #[component]
@@ -136,15 +132,55 @@ pub fn Busy(label: String, size: Option<u32>) -> Element {
     }
 }
 
+/// What a page that needs the catalog engine shows while it is still
+/// starting: the cat, how far it is, and that the rest of the app works.
+#[component]
+pub fn EngineStarting() -> Element {
+    let state = use_context::<AppState>();
+    let (message, percent) = match &*state.boot.read() {
+        crate::state::BootState::Starting { message, percent } => (message.clone(), *percent),
+        _ => ("Starting the catalog engine…".to_string(), None),
+    };
+    rsx! {
+        div { class: "engine-starting",
+            super::cat::Cat {}
+            strong { "Getting the search ready" }
+            p { class: "muted", "{message}" }
+            div { class: "es-bar", super::ProgressBar { fraction: percent.map(|p| f32::from(p) / 100.0) } }
+            p { class: "muted small", "Your Library and downloads work in the meantime." }
+        }
+    }
+}
+
 /// A cover image, or a placeholder until it has loaded.
 #[component]
 pub fn Cover(key_id: String) -> Element {
     let state = use_context::<AppState>();
     // A shared string: drawing a cover does not copy its picture.
     let url = state.covers.read().get(&key_id).cloned();
+    // The address whose picture has arrived, and the one that could not be had:
+    // until it arrives the cat runs in circles in its place, and a picture that
+    // cannot be had shows the placeholder.
+    let mut arrived = use_signal(String::new);
+    let mut broken = use_signal(String::new);
     match url {
-        Some(src) => rsx! { img { class: "cover", src: "{src}", loading: "lazy" } },
-        None => rsx! { NoCover {} },
+        Some(src) if *broken.read() != *src => {
+            let waiting = *arrived.read() != *src;
+            let (on_load, on_error) = (src.to_string(), src.to_string());
+            rsx! {
+                span { class: "cover-box",
+                    img {
+                        class: "cover", src: "{src}", loading: "lazy", decoding: "async",
+                        onload: move |_| arrived.set(on_load.clone()),
+                        onerror: move |_| broken.set(on_error.clone()),
+                    }
+                    if waiting {
+                        span { class: "cover-wait", super::cat::CirclingCat { size: 56 } }
+                    }
+                }
+            }
+        }
+        _ => rsx! { NoCover {} },
     }
 }
 
@@ -154,39 +190,20 @@ pub fn NoCover() -> Element {
     rsx! { div { class: "cover empty art", dangerous_inner_html: super::placeholder::svg() } }
 }
 
-/// Fetch a cover through the catalog server (it needs the password, so the
-/// web view cannot load it directly) and keep it as a data URL.
-pub fn load_cover(state: AppState, key: String, path: String) {
-    if state.covers.peek().contains_key(&key) {
+/// Point a cover at the sources' picture. Nothing is fetched or kept here:
+/// the page asks for the picture by address when the cover comes into view
+/// (see `covers`). With a series on several sources, all are asked and the
+/// first picture to arrive is used.
+pub fn load_cover_race(state: AppState, key: String, identity: &str, paths: Vec<String>) {
+    if paths.is_empty() {
         return;
     }
-    let Some(client) = state.client() else { return };
-    spawn_forever(async move {
-        if let Ok(bytes) = client.get_bytes(&path).await {
-            let mime = match image_kind(&bytes) {
-                Some("PNG") => "image/png",
-                Some("WebP") => "image/webp",
-                Some("GIF") => "image/gif",
-                Some(_) => "image/jpeg",
-                None => return,
-            };
-            // Shown at poster size, so what the source sent is shrunk the way
-            // a saved cover is, as long as that makes it smaller.
-            let original = bytes.clone();
-            let small = tokio::task::spawn_blocking(move || crate::logic::small_cover(&original))
-                .await
-                .ok()
-                .flatten()
-                .filter(|s| s.len() < bytes.len());
-            let (mime, bytes) = match small {
-                Some(small) => ("image/jpeg", small),
-                None => (mime, bytes),
-            };
-            let url = format!("data:{mime};base64,{}", STANDARD.encode(&bytes));
-            let mut covers = state.covers;
-            covers.write().insert(key, url.into());
-        }
-    });
+    let url: std::rc::Rc<str> = crate::covers::source_url(identity, &paths).into();
+    if state.covers.peek().get(&key) == Some(&url) {
+        return;
+    }
+    let mut covers = state.covers;
+    covers.write().insert(key, url);
 }
 
 pub fn cover_key(source_id: &str, manga_id: i64) -> String {

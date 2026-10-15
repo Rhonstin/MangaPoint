@@ -9,3 +9,32 @@ edition = "2021"
 [workspace.dependencies]
 thiserror = "2"
 
+
+# `cargo run` builds without optimisation by default, which made converting a
+# page about 14 times slower than in a release build (and an export use every
+# core of the machine for minutes). The libraries that do the heavy work, and
+# everything they depend on, are optimised even in a debug build; the app's own
+# screens stay quick to build.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.dev.package.converter]
+opt-level = 3
+
+[profile.dev.package.pipeline]
+opt-level = 3
+
+[profile.dev.package.library]
+opt-level = 3
+
+[profile.dev.package.search]
+opt-level = 3
+
+[profile.dev.package.catalog]
+opt-level = 3
+
+[profile.dev.package.sources]
+opt-level = 3

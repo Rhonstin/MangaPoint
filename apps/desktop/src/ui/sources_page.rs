@@ -1,10 +1,10 @@
 //! Installed sources: where each comes from and whether it works, with
-//! adding new ones in a dialog.
+//! adding new ones in a dialog. The heading and its buttons stay in view.
 
 use super::ask_enable_browser;
-use super::widgets::{open_link, Chip, EmptyState, Icon};
+use super::widgets::{open_link, Chip, EmptyState, EngineStarting, Icon, Loading};
 use crate::backend;
-use crate::logic::{ago, verdict_label};
+use crate::logic::{ago, plural, verdict_label};
 use crate::state::spawn_forever;
 use crate::state::{now_secs, AppState, Modal, ModalAction};
 use catalog::Source;
@@ -36,7 +36,7 @@ pub fn SourcesPage() -> Element {
     let rows: Vec<Element> = match &*installed.read() {
         Some(Some(list)) => list
             .iter()
-            .map(|item| source_row(state, item, &health, &testing, browser_on, now))
+            .map(|item| source_card(state, item, &health, &testing, browser_on, now))
             .collect(),
         _ => Vec::new(),
     };
@@ -55,11 +55,23 @@ pub fn SourcesPage() -> Element {
         });
     };
 
+    // Without the catalog engine there is nothing to list yet.
+    if state.services.read().is_none() {
+        return rsx! { EngineStarting {} };
+    }
+
     rsx! {
-        div { class: "q-head",
+        div { class: "rise-in",
+        div { class: "sources-head",
             div { class: "grow",
                 h1 { "Sources" }
-                p { class: "muted", "The websites MangaPoint searches. “Retest” checks that a source really works: it looks up a series, its chapters and a page image." }
+                p { class: "muted",
+                    if installed_count > 0 {
+                        "{plural(installed_count, \"source\")} searched. Retest checks that one really works."
+                    } else {
+                        "The websites MangaPoint searches."
+                    }
+                }
             }
             button {
                 class: "btn",
@@ -74,7 +86,7 @@ pub fn SourcesPage() -> Element {
             }
         }
 
-        if loading { p { class: "muted", "Loading…" } }
+        if loading { Loading { label: "Loading your sources…" } }
         if !loading && installed_count == 0 {
             EmptyState {
                 title: "No sources yet",
@@ -82,11 +94,12 @@ pub fn SourcesPage() -> Element {
                 compact: true,
             }
         }
-        div { {rows.into_iter()} }
+        div { class: "src-list", {rows.into_iter()} }
+        }
 
         if adding() {
             div { class: if closing() { "overlay out" } else { "overlay" }, onclick: move |_| close(),
-                div { class: "modal wide", onclick: move |e| e.stop_propagation(),
+                div { class: "modal add-sources", onclick: move |e| e.stop_propagation(),
                     AddSources { on_close: move |_| close() }
                 }
             }
@@ -94,11 +107,19 @@ pub fn SourcesPage() -> Element {
     }
 }
 
-/// What the dialog for adding sources shows: the recommended ones, then
-/// any extension store the user adds.
+/// Which list the dialog for adding sources shows.
+#[derive(Clone, Copy, PartialEq)]
+enum AddTab {
+    Recommended,
+    Store,
+}
+
+/// The dialog for adding sources: the recommended ones (tested by
+/// MangaPoint), or any extension store the user adds.
 #[component]
 fn AddSources(on_close: EventHandler<()>) -> Element {
     let state = use_context::<AppState>();
+    let mut tab = use_signal(|| AddTab::Recommended);
     let mut store_url = use_signal(String::new);
     let mut filter = use_signal(String::new);
     let installed = use_resource(move || async move {
@@ -125,139 +146,163 @@ fn AddSources(on_close: EventHandler<()>) -> Element {
             .collect(),
         _ => Vec::new(),
     };
-    let mut any_recommended = false;
+    let missing: Vec<&'static sources::DefaultSource> = sources::DEFAULTS
+        .iter()
+        .filter(|d| match &*installed.read() {
+            Some(Some(list)) => !list.iter().any(|i| i.default.is_some_and(|x| x.id == d.id)),
+            _ => false,
+        })
+        .collect();
+    let loaded = installed.read().is_some();
 
     rsx! {
-        div { class: "modal-head",
+        div { class: "as-head",
             h2 { "Add sources" }
-            button { class: "btn ghost small", title: "Close", onclick: move |_| on_close.call(()),
+            button { class: "btn ghost small square-btn", title: "Close", onclick: move |_| on_close.call(()),
                 Icon { name: "x", size: 16 }
             }
         }
-        h3 { class: "q-title", style: "margin-top: 10px", "Recommended" }
-        p { class: "muted small", style: "margin: 0 0 4px", "Tested by MangaPoint. These are the ones we know work." }
-        for d in sources::DEFAULTS.iter() {
-            {
-                let is_installed = match &*installed.read() {
-                    Some(Some(list)) => list.iter().any(|i| i.default.is_some_and(|x| x.id == d.id)),
-                    _ => true,
-                };
-                let needs_browser = d.requires == Requires::Browser;
-                let id = d.id;
-                if !is_installed { any_recommended = true; }
-                rsx! {
-                    if !is_installed {
-                        div { class: "list-row", key: "{id}",
-                            div { class: "grow",
-                                div { class: "row wrap",
-                                    strong { "{d.name}" }
-                                    if needs_browser { Chip { text: "needs browser support", kind: Some("warn".to_string()) } }
+        div { class: "seg as-tabs",
+            button { class: if tab() == AddTab::Recommended { "on" } else { "" }, onclick: move |_| tab.set(AddTab::Recommended),
+                "Recommended"
+            }
+            button { class: if tab() == AddTab::Store { "on" } else { "" }, onclick: move |_| tab.set(AddTab::Store),
+                "From an extension store"
+            }
+        }
+        div { class: "as-body",
+            if tab() == AddTab::Recommended {
+                p { class: "muted small as-lead", "Tested by MangaPoint. These are the ones we know work." }
+                if loaded && missing.is_empty() {
+                    EmptyState { title: "You have them all", message: "Every recommended source is installed.", compact: true }
+                }
+                div { class: "as-grid",
+                    for d in missing.iter().copied() {
+                        {
+                            let needs_browser = d.requires == Requires::Browser;
+                            let id = d.id;
+                            rsx! {
+                                div { class: "as-card", key: "{id}",
+                                    div { class: "as-card-top",
+                                        div { class: "grow",
+                                            strong { "{d.name}" }
+                                            div { class: "muted small", "{host_of(d.site)}" }
+                                        }
+                                    }
+                                    div { class: "muted small as-desc", "{d.description}" }
+                                    div { class: "as-card-foot",
+                                        if needs_browser { Chip { text: "needs browser support", kind: Some("warn".to_string()) } }
+                                        span { class: "grow" }
+                                        button {
+                                            class: "btn primary small",
+                                            onclick: move |_| {
+                                                if needs_browser && !state.settings.read().browser_support {
+                                                    ask_enable_browser(state, Some(id.to_string()));
+                                                } else {
+                                                    spawn_forever(async move {
+                                                        if backend::install_default(state, id).await {
+                                                            state.notify("Installed. Press Retest to check it.");
+                                                        }
+                                                        state.bump_sources();
+                                                    });
+                                                }
+                                            },
+                                            Icon { name: "download", size: 14 }
+                                            "Install"
+                                        }
+                                    }
                                 }
-                                div { class: "muted small", "{d.description}" }
-                                div { class: "muted small", "{host_of(d.site)}" }
-                            }
-                            button {
-                                class: "btn primary small",
-                                onclick: move |_| {
-                                    if needs_browser && !state.settings.read().browser_support {
-                                        ask_enable_browser(state, Some(id.to_string()));
-                                    } else {
-                                        spawn_forever(async move {
-                                            if backend::install_default(state, id).await {
-                                                state.notify("Installed. Press Retest to check it.");
-                                            }
-                                            state.bump_sources();
-                                        });
-                                    }
-                                },
-                                Icon { name: "download", size: 14 }
-                                "Install"
                             }
                         }
                     }
                 }
-            }
-        }
-        if !any_recommended && installed.read().is_some() {
-            p { class: "muted small", "You have all the recommended sources." }
-        }
-
-        h3 { class: "q-title", "From an extension store" }
-        div { class: "banner warn small", "{EXTENSION_TRUST_WARNING}" }
-        p { class: "muted small", "Add an extension store (an https address), then search it below." }
-        form {
-            class: "row",
-            onsubmit: move |e| {
-                e.prevent_default();
-                let url = store_url.read().clone();
-                spawn_forever(async move {
-                    let Some(client) = state.client() else { return };
-                    let mut sources_state = state.sources.read().clone();
-                    let result = SourceManager::new(&*client).add_store(&mut sources_state, &url).await;
-                    let mut s = state.sources;
-                    s.set(sources_state);
-                    state.save_sources();
-                    match result {
-                        Ok(list) => state.notify(format!("Store added: {} extensions available.", list.len())),
-                        Err(e) => state.error(format!("Could not add that store: {e}")),
+            } else {
+                div { class: "banner warn small", "{EXTENSION_TRUST_WARNING}" }
+                p { class: "muted small as-lead", "Add an extension store (an https address), then search it below." }
+                form {
+                    class: "as-form",
+                    onsubmit: move |e| {
+                        e.prevent_default();
+                        let url = store_url.read().clone();
+                        spawn_forever(async move {
+                            let Some(client) = state.client() else { return };
+                            let mut sources_state = state.sources.read().clone();
+                            let result = SourceManager::new(&*client).add_store(&mut sources_state, &url).await;
+                            let mut s = state.sources;
+                            s.set(sources_state);
+                            state.save_sources();
+                            match result {
+                                Ok(list) => state.notify(format!("Store added: {} extensions available.", list.len())),
+                                Err(e) => state.error(format!("Could not add that store: {e}")),
+                            }
+                            state.bump_sources();
+                        });
+                        store_url.set(String::new());
+                    },
+                    input {
+                        r#type: "url", class: "grow",
+                        placeholder: "https://example.org/repo/index.pb",
+                        value: "{store_url}",
+                        oninput: move |e| store_url.set(e.value()),
                     }
-                    state.bump_sources();
-                });
-                store_url.set(String::new());
-            },
-            input {
-                r#type: "url", class: "grow",
-                placeholder: "https://example.org/repo/index.pb",
-                value: "{store_url}",
-                oninput: move |e| store_url.set(e.value()),
-            }
-            button { class: "btn", r#type: "submit", Icon { name: "plus", size: 15 } "Add store" }
-        }
-        div { class: "spacer" }
-        input {
-            r#type: "search", style: "width: 100%",
-            placeholder: "Search available sources by name…",
-            value: "{filter}",
-            oninput: move |e| filter.set(e.value()),
-        }
-        for ext in candidates.iter() {
-            {
-                let pkg = ext.pkg_name.clone();
-                let name = ext.name.clone();
-                rsx! {
-                    div { class: "list-row", key: "{pkg}",
-                        div { class: "grow",
-                            strong { "{name}" }
-                            span { class: "muted small", " {ext.lang}" }
-                            if ext.is_nsfw { Chip { text: "18+", kind: Some("warn".to_string()) } }
-                        }
-                        button {
-                            class: "btn small",
-                            onclick: move |_| {
-                                let pkg = pkg.clone();
-                                spawn_forever(async move {
-                                    let Some(client) = state.client() else { return };
-                                    let mut sources_state = state.sources.read().clone();
-                                    let result = SourceManager::new(&*client).install_custom(&mut sources_state, &pkg).await;
-                                    let mut s = state.sources;
-                                    s.set(sources_state);
-                                    state.save_sources();
-                                    match result {
-                                        Ok(()) => state.notify("Installed. Press Retest to check it."),
-                                        Err(e) => state.error(format!("Could not install it: {e}")),
+                    button { class: "btn", r#type: "submit", disabled: store_url.read().trim().is_empty(),
+                        Icon { name: "plus", size: 15 } "Add store"
+                    }
+                }
+                div { class: "as-search",
+                    Icon { name: "search", size: 16 }
+                    input {
+                        r#type: "search",
+                        placeholder: "Search the available sources by name…",
+                        value: "{filter}",
+                        oninput: move |e| filter.set(e.value()),
+                    }
+                }
+                div { class: "as-results",
+                    for ext in candidates.iter() {
+                        {
+                            let pkg = ext.pkg_name.clone();
+                            let name = ext.name.clone();
+                            rsx! {
+                                div { class: "as-row", key: "{pkg}",
+                                    div { class: "grow",
+                                        strong { "{name}" }
+                                        span { class: "muted small", "  {ext.lang}" }
                                     }
-                                    state.bump_sources();
-                                });
-                            },
-                            Icon { name: "download", size: 14 }
-                            "Install"
+                                    if ext.is_nsfw { Chip { text: "18+", kind: Some("warn".to_string()) } }
+                                    button {
+                                        class: "btn small",
+                                        onclick: move |_| {
+                                            let pkg = pkg.clone();
+                                            spawn_forever(async move {
+                                                let Some(client) = state.client() else { return };
+                                                let mut sources_state = state.sources.read().clone();
+                                                let result = SourceManager::new(&*client).install_custom(&mut sources_state, &pkg).await;
+                                                let mut s = state.sources;
+                                                s.set(sources_state);
+                                                state.save_sources();
+                                                match result {
+                                                    Ok(()) => state.notify("Installed. Press Retest to check it."),
+                                                    Err(e) => state.error(format!("Could not install it: {e}")),
+                                                }
+                                                state.bump_sources();
+                                            });
+                                        },
+                                        Icon { name: "download", size: 14 }
+                                        "Install"
+                                    }
+                                }
+                            }
                         }
+                    }
+                    if query.len() >= 2 && candidates.is_empty() {
+                        p { class: "muted small", "Nothing matches “{query}” in your stores." }
+                    }
+                    if query.len() < 2 {
+                        p { class: "muted small", "Type at least two letters to search." }
                     }
                 }
             }
-        }
-        if query.len() >= 2 && candidates.is_empty() {
-            p { class: "muted small", "Nothing matches “{query}” in your stores." }
         }
     }
 }
@@ -271,7 +316,7 @@ fn host_of(url: &str) -> String {
         .to_string()
 }
 
-fn source_row(
+fn source_card(
     state: AppState,
     item: &InstalledSource,
     health: &library::HealthDb,
@@ -295,31 +340,29 @@ fn source_row(
         .as_ref()
         .is_some_and(|r| r.verdict == Verdict::NeedsBrowser)
         && !browser_on;
-    let (chip_text, chip_kind, dot) = match &last {
-        None => ("not tested yet".to_string(), None, ""),
+    let (chip_text, chip_kind) = match &last {
+        None => ("not tested yet".to_string(), None),
         Some(r) => {
             let kind = match r.verdict {
                 Verdict::Pass => "ok",
                 Verdict::NeedsBrowser => "warn",
                 _ => "bad",
             };
-            (
-                verdict_label(r.verdict).to_string(),
-                Some(kind.to_string()),
-                kind,
-            )
+            (verdict_label(r.verdict).to_string(), Some(kind.to_string()))
         }
     };
-    let dot_class = format!("src-dot {dot}");
 
     rsx! {
-        div { class: "src-row", key: "{id}",
-            span { class: "{dot_class}", style: "margin-top: 7px" }
+        div { class: "src-card", key: "{id}",
             div { class: "src-main",
                 div { class: "row wrap",
-                    strong { "{name}" }
+                    strong { class: "src-name", "{name}" }
                     span { class: "muted small", "{source.lang}" }
-                    Chip { text: chip_text, kind: chip_kind }
+                    if is_testing {
+                        Chip { text: "testing…", kind: Some("accent".to_string()) }
+                    } else {
+                        Chip { text: chip_text, kind: chip_kind }
+                    }
                     if source.is_nsfw { Chip { text: "18+", kind: Some("warn".to_string()) } }
                 }
                 if let Some(site) = site {
@@ -329,17 +372,10 @@ fn source_row(
                     }
                 }
                 if let Some(text) = description { div { class: "muted small", "{text}" } }
-                div { class: "muted small", "Extension {pkg}" }
-                if is_testing {
-                    div { class: "muted small", "Testing…" }
-                } else if let Some(r) = &last {
+                if let Some(r) = &last {
                     div { class: "muted small", "{r.message} Tested {ago(now, r.at)}, {r.total_ms()} ms." }
                 }
-                if let Some(d) = item.default {
-                    if d.verified_on.starts_with("20") {
-                        div { class: "muted small", "Verified working on {d.verified_on}" }
-                    }
-                }
+                div { class: "muted small src-pkg", "Extension {pkg}" }
             }
             div { class: "src-actions",
                 if needs_browser {
@@ -357,7 +393,7 @@ fn source_row(
                     "Retest"
                 }
                 button {
-                    class: "btn small danger",
+                    class: "btn small ghost danger", title: "Remove this source",
                     onclick: move |_| {
                         state.ask(Modal {
                             title: "Remove this source?".into(),
@@ -369,7 +405,6 @@ fn source_row(
                         });
                     },
                     Icon { name: "trash", size: 14 }
-                    "Remove"
                 }
             }
         }

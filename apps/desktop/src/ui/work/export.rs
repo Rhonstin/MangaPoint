@@ -18,6 +18,7 @@ pub fn open_export(state: AppState, series_ids: Vec<String>) {
         })
         .map(|id| ExportItem {
             series_id: id.clone(),
+            excluded: already_exported(state, id),
             ..Default::default()
         })
         .collect();
@@ -29,6 +30,28 @@ pub fn open_export(state: AppState, series_ids: Vec<String>) {
     plan.set(ExportPlan { items, active: 0 });
     activate_export_series(state, 0);
     state.go(Page::Export);
+}
+
+/// The chapters of a series to leave out when it is exported again: the ones
+/// that were exported before, so what is left is "the other half". Nothing is
+/// left out if everything was exported already (or nothing was).
+pub fn already_exported(state: AppState, series_id: &str) -> HashSet<String> {
+    let exported = state.exports.peek().exported_keys(series_id);
+    let library = state.library.peek();
+    let Some(series) = library.find(series_id) else {
+        return HashSet::new();
+    };
+    let done: HashSet<String> = series
+        .chapters
+        .iter()
+        .filter(|c| exported.contains(&c.key))
+        .map(|c| c.key.clone())
+        .collect();
+    if done.len() == series.chapters.len() {
+        HashSet::new()
+    } else {
+        done
+    }
 }
 
 /// Open the Export screen on the sample pages, to look around and try presets,
@@ -45,6 +68,57 @@ pub fn open_sample(state: AppState) {
     });
     activate_export_series(state, 0);
     state.go(Page::Export);
+}
+
+/// Make the Export screen's list agree with the library: a series that was
+/// removed, or whose downloads were all deleted, cannot be previewed or
+/// exported, so it goes off the list. With none left the sample pages come
+/// back; otherwise the series on show is one that is still there. Does
+/// nothing when the list is already right.
+pub fn reconcile_export_plan(state: AppState) {
+    let plan = state.export_plan.peek().clone();
+    if plan.items.is_empty() {
+        return;
+    }
+    let usable = |id: &str| {
+        state
+            .library
+            .peek()
+            .find(id)
+            .is_some_and(|s| !s.chapters.is_empty())
+    };
+    let kept: Vec<ExportItem> = plan
+        .items
+        .iter()
+        .filter(|i| usable(&i.series_id))
+        .cloned()
+        .collect();
+    if kept.len() != plan.items.len() {
+        if kept.is_empty() {
+            // Nothing left: the sample pages, as when the screen is first opened.
+            let id = crate::sample::ensure_sample(state);
+            let mut plan = state.export_plan;
+            plan.set(ExportPlan {
+                items: vec![ExportItem {
+                    series_id: id,
+                    ..Default::default()
+                }],
+                active: 0,
+            });
+            activate_export_series(state, 0);
+        } else {
+            let active = plan.active.min(kept.len() - 1);
+            let mut plan = state.export_plan;
+            plan.set(ExportPlan { items: kept, active });
+            activate_export_series(state, active);
+        }
+        return;
+    }
+    // The list is right, but what is on show is a series that is gone.
+    let shown = state.workspace.peek().as_ref().map(|w| w.series_id.clone());
+    if shown.as_deref().is_some_and(|id| !usable(id)) {
+        activate_export_series(state, plan.active.min(plan.items.len() - 1));
+    }
 }
 
 /// Edit and preview this series of the Export screen's list.
@@ -108,6 +182,9 @@ pub fn activate_export_series(state: AppState, index: usize) {
 
 /// Add a series to the Export screen's list.
 pub fn add_export_series(state: AppState, series_id: String) {
+    // A series that is gone from the list's point of view must not hold the
+    // place the new one is meant to take.
+    reconcile_export_plan(state);
     let has_chapters = state
         .library
         .peek()
@@ -116,13 +193,37 @@ pub fn add_export_series(state: AppState, series_id: String) {
     if !has_chapters {
         return;
     }
+    let samples: Vec<String> = state
+        .library
+        .peek()
+        .series
+        .iter()
+        .filter(|s| s.is_sample())
+        .map(|s| s.id.clone())
+        .collect();
     let mut plan = state.export_plan;
-    let mut p = plan.write();
-    if !p.items.iter().any(|i| i.series_id == series_id) {
+    let replaced_sample = {
+        let mut p = plan.write();
+        if p.items.iter().any(|i| i.series_id == series_id) {
+            return;
+        }
+        let excluded = already_exported(state, &series_id);
+        let only_sample = p.items.iter().all(|i| samples.contains(&i.series_id));
         p.items.push(ExportItem {
             series_id,
+            excluded,
             ..Default::default()
         });
+        // The sample pages are only there to look around with until a real
+        // series is added: they go, and the new series is the one on show.
+        if only_sample {
+            p.items.retain(|i| !samples.contains(&i.series_id));
+            p.active = 0;
+        }
+        only_sample
+    };
+    if replaced_sample {
+        activate_export_series(state, 0);
     }
 }
 
@@ -318,7 +419,7 @@ fn run_saved_export(state: AppState, saved: SavedExport) {
                 "Export started: \"{}\", {} chapter(s) as {}, {}, to {}",
                 series.title,
                 keys.len(),
-                series.settings.format.extension().to_uppercase(),
+                series.settings.output().extension().to_uppercase(),
                 match grouping {
                     Grouping::Single => "one file".to_string(),
                     Grouping::PerChapter => "one file per chapter".to_string(),
@@ -464,7 +565,7 @@ pub(super) async fn run_export(
                 title: series.title.clone(),
                 chapters: outcome.chapters,
                 pages: outcome.pages,
-                format: series.settings.format.extension().to_string(),
+                format: series.settings.output().extension().to_string(),
                 files: outcome
                     .files
                     .iter()
@@ -476,12 +577,20 @@ pub(super) async fn run_export(
                 target: describe_target(&target),
                 preset_id: series.preset_id.clone(),
                 settings: Some(series.settings.clone()),
+                chapter_keys: export.chapter_keys.clone(),
                 at: now_secs(),
             };
             let mut exports = state.exports;
             exports.write().add(record);
             state.save_exports();
-            let summary = format!("Exported {} file(s)", outcome.files.len());
+            let mut summary = format!("Exported {} file(s)", outcome.files.len());
+            // Files sent to a drive were flushed to it before they got their names.
+            if matches!(target, ExportTarget::Device { .. }) {
+                summary.push_str(". Safe to unplug.");
+            } else if matches!(target, ExportTarget::WebDav { .. }) {
+                summary.push_str(". Sent to the reader.");
+            }
+            crate::notify::finished(state, "Export finished", &format!("{}: {summary}", series.title));
             if let Some(view) = job.write().as_mut() {
                 view.result = Some(Ok(summary));
             }
@@ -497,6 +606,10 @@ pub(super) async fn run_export(
                 info!("Export cancelled");
             } else {
                 warn!("Export failed: {message}");
+            }
+            if !cancelled {
+                crate::notify::finished(state, "Export failed", &format!("{}: {message}", series.title));
+                state.error(format!("{}: {message}", series.title));
             }
             if let Some(view) = job.write().as_mut() {
                 if cancelled && view.paused {
@@ -564,6 +677,7 @@ pub(super) fn log_event(event: &JobEvent, logged_pages: &mut HashMap<usize, usiz
             }
         }
         JobEvent::Writing { file } => info!("Writing {file}"),
+        JobEvent::Flushing => info!("The file is copied; waiting for the drive to store it"),
     }
 }
 

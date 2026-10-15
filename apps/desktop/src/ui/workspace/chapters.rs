@@ -12,6 +12,32 @@ use dioxus::prelude::*;
 use pipeline::SourceChoice;
 use search::missing_numbers;
 
+/// How far the download of this series has got. It is a part of its own, so
+/// the progress coming in redraws only this, not the list of chapters.
+#[component]
+fn ChaptersProgress(series_id: String) -> Element {
+    let state = use_context::<AppState>();
+    let running = state
+        .queue
+        .read()
+        .running()
+        .filter(|b| b.series_id == series_id)
+        .cloned();
+    let Some(batch) = running else {
+        return rsx! {};
+    };
+    rsx! {
+        div { class: "chapters-progress",
+            ProgressBar { fraction: Some(batch.progress.fraction()) }
+            p { class: "muted small", style: "margin: 6px 0 0",
+                "{batch.progress.label()}"
+                if let Some(v) = batch.progress.pages_per_second() { " · about {v:.1} pages a second" }
+                if let Some(n) = &batch.progress.note { " · {n}" }
+            }
+        }
+    }
+}
+
 #[component]
 pub fn ChaptersTab() -> Element {
     let state = use_context::<AppState>();
@@ -20,6 +46,10 @@ pub fn ChaptersTab() -> Element {
     };
     let mut range_text = use_signal(String::new);
     let mut range_error = use_signal(|| None::<String>);
+    // What the list needs of the queue: only this series. A download of another
+    // series does not draw this list again.
+    let queue_series = ws.series_id.clone();
+    let queue_view = use_memo(move || state.queue.read().view_of(&queue_series));
     // What is downloaded can be shown even when the sources cannot be reached.
     let has_downloads = state
         .library
@@ -50,9 +80,32 @@ pub fn ChaptersTab() -> Element {
             };
         }
         ChaptersState::Loading => {
+            // How many chapters there are, if the search or the library already
+            // knows: a long series takes a while, and the page says so.
+            let known = ws
+                .ranked
+                .as_ref()
+                .and_then(|r| {
+                    r.members
+                        .iter()
+                        .filter_map(|m| m.enrichment.as_ref().and_then(|e| e.chapter_count))
+                        .max()
+                        .map(|n| n as usize)
+                })
+                .or_else(|| {
+                    state
+                        .library
+                        .read()
+                        .find(&ws.series_id)
+                        .and_then(|s| s.chapter_total)
+                });
+            let note = crate::logic::long_series_note(known);
             return rsx! {
-                div { class: "card",
+                div { class: "page-loading",
                     Loading { label: "Loading chapters from your sources…" }
+                    if let Some(note) = note {
+                        p { class: "muted small loading-note", "{note}" }
+                    }
                 }
             };
         }
@@ -91,20 +144,10 @@ pub fn ChaptersTab() -> Element {
             })
             .unwrap_or_default()
     };
-    let queue = state.queue.read().clone();
-    let running_here = queue
-        .running()
-        .filter(|b| b.series_id == ws.series_id)
-        .cloned();
-    let working = queue.series_has_work(&ws.series_id);
-    let retry_ids: Vec<u64> = queue
-        .batches
-        .iter()
-        .filter(|b| b.series_id == ws.series_id && !b.status.is_active() && !b.failed.is_empty())
-        .map(|b| b.id)
-        .collect();
-    let queued =
-        |key: &str| !have.contains(key) && queue.chapter_state(&ws.series_id, key).is_some();
+    let view = queue_view.read().clone();
+    let working = view.working;
+    let retry_ids = view.retry_ids.clone();
+    let queued = |key: &str| !have.contains(key) && view.states.contains_key(key);
     let total = loaded.merged.len();
     let numbers: Vec<Option<f64>> = loaded.merged.iter().map(|m| m.number).collect();
     let missing = missing_numbers(&loaded.merged);
@@ -221,7 +264,7 @@ pub fn ChaptersTab() -> Element {
             let key = merged_key(ch);
             let copy = saved.get(&key);
             let in_queue = if copy.is_none() {
-                queue.chapter_state(&ws.series_id, &key)
+                view.states.get(&key).cloned()
             } else {
                 None
             };
@@ -286,16 +329,7 @@ pub fn ChaptersTab() -> Element {
                 }
             }
         }
-        if let Some(batch) = running_here {
-            div { class: "chapters-progress",
-                ProgressBar { fraction: Some(batch.progress.fraction()) }
-                p { class: "muted small", style: "margin: 6px 0 0",
-                    "{batch.progress.label()}"
-                    if let Some(v) = batch.progress.pages_per_second() { " · about {v:.1} pages a second" }
-                    if let Some(n) = &batch.progress.note { " · {n}" }
-                }
-            }
-        }
+        ChaptersProgress { series_id: ws.series_id.clone() }
         if loaded.unreachable > 0 {
             div { class: "banner warn small",
                 Icon { name: "triangle-alert", size: 16 }

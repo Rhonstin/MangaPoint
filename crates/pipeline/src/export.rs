@@ -1,7 +1,6 @@
 //! Getting a finished file onto the reader.
 
 use crate::error::{PipelineError, Result};
-use converter::xtc::Format;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -16,7 +15,6 @@ pub enum ExportTarget {
     /// A mounted reader or SD card; files go into `<mount>/<folder>/`.
     Device { mount: PathBuf, folder: String },
     /// The reader's WebDAV share (CrossPoint's Wi-Fi file transfer).
-    /// Untested against real hardware.
     WebDav { base_url: String, folder: String },
 }
 
@@ -30,13 +28,13 @@ pub struct ExportedFile {
 impl ExportTarget {
     pub async fn write(&self, filename: &str, data: &[u8]) -> Result<ExportedFile> {
         match self {
-            ExportTarget::Folder { path } => write_file(path, filename, data),
+            ExportTarget::Folder { path } => write_file(path, filename, data, false),
             ExportTarget::Device { mount, folder } => {
                 check_space(mount, data.len() as u64)?;
-                write_file(&mount.join(sanitize_component(folder)), filename, data)
+                write_file(&mount.join(sanitize_component(folder)), filename, data, true)
             }
             ExportTarget::WebDav { base_url, folder } => {
-                upload_webdav(base_url, folder, filename, data).await
+                upload_webdav(base_url, folder, filename, data.to_vec()).await
             }
         }
     }
@@ -47,27 +45,65 @@ impl ExportTarget {
     /// never loaded into memory (Wi-Fi uploads are the exception, since they
     /// need the whole body).
     pub async fn write_file(&self, filename: &str, src: &Path) -> Result<ExportedFile> {
+        self.write_file_with(filename, src, || {}).await
+    }
+
+    /// As [`write_file`](Self::write_file), calling `flushing` when a drive has
+    /// the whole file and is being made to really store it.
+    pub async fn write_file_with(
+        &self,
+        filename: &str,
+        src: &Path,
+        flushing: impl FnOnce() + Send + 'static,
+    ) -> Result<ExportedFile> {
         let size = fs::metadata(src)
             .map_err(|e| PipelineError::Io(src.to_path_buf(), e))?
             .len();
+        // Copying gigabytes takes minutes; it must not hold up the thread the
+        // app's window runs on (Windows would call the app "not responding").
+        let (filename_owned, src_owned) = (filename.to_string(), src.to_path_buf());
         match self {
-            ExportTarget::Folder { path } => copy_file(path, filename, src),
+            ExportTarget::Folder { path } => {
+                let path = path.clone();
+                blocking(move || copy_file(&path, &filename_owned, &src_owned, None)).await
+            }
             ExportTarget::Device { mount, folder } => {
                 check_space(mount, size)?;
-                copy_file(&mount.join(sanitize_component(folder)), filename, src)
+                let dir = mount.join(sanitize_component(folder));
+                blocking(move || copy_file(&dir, &filename_owned, &src_owned, Some(Box::new(flushing)))).await
             }
             ExportTarget::WebDav { base_url, folder } => {
-                let data = fs::read(src).map_err(|e| PipelineError::Io(src.to_path_buf(), e))?;
-                upload_webdav(base_url, folder, filename, &data).await
+                let data = tokio::fs::read(src)
+                    .await
+                    .map_err(|e| PipelineError::Io(src.to_path_buf(), e))?;
+                upload_webdav(base_url, folder, filename, data).await
             }
         }
     }
 }
 
+/// Run slow file work on a thread of its own and wait for it.
+async fn blocking<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T> + Send + 'static,
+) -> Result<T> {
+    tokio::task::spawn_blocking(work)
+        .await
+        .map_err(|e| PipelineError::Upload(format!("the copy was interrupted: {e}")))?
+}
+
 /// Copy `src` into `dir` under a name that does not exist yet. Written to a
 /// temporary name first, so a full disk never leaves a half-file that looks
 /// complete.
-fn copy_file(dir: &Path, filename: &str, src: &Path) -> Result<ExportedFile> {
+///
+/// With `flush`, the file is forced out to the drive before it gets its real
+/// name, so that when this returns it is safe to unplug (a card or a reader
+/// can otherwise still be holding the end of the file in memory).
+fn copy_file(
+    dir: &Path,
+    filename: &str,
+    src: &Path,
+    flush: Option<Box<dyn FnOnce() + Send>>,
+) -> Result<ExportedFile> {
     fs::create_dir_all(dir).map_err(|e| PipelineError::Io(dir.to_path_buf(), e))?;
     let path = unique_path(dir, filename);
     let tmp = path.with_extension("part");
@@ -75,6 +111,10 @@ fn copy_file(dir: &Path, filename: &str, src: &Path) -> Result<ExportedFile> {
         let _ = fs::remove_file(&tmp);
         PipelineError::Io(tmp.clone(), e)
     })?;
+    if let Some(flushing) = flush {
+        flushing();
+        flush_to_disk(&tmp)?;
+    }
     fs::rename(&tmp, &path).map_err(|e| PipelineError::Io(path.clone(), e))?;
     Ok(ExportedFile {
         location: path.display().to_string(),
@@ -82,7 +122,16 @@ fn copy_file(dir: &Path, filename: &str, src: &Path) -> Result<ExportedFile> {
     })
 }
 
-fn write_file(dir: &Path, filename: &str, data: &[u8]) -> Result<ExportedFile> {
+/// Force a written file out to its drive.
+fn flush_to_disk(path: &Path) -> Result<()> {
+    fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .and_then(|file| file.sync_all())
+        .map_err(|e| PipelineError::Io(path.to_path_buf(), e))
+}
+
+fn write_file(dir: &Path, filename: &str, data: &[u8], flush: bool) -> Result<ExportedFile> {
     let io = |p: &Path| {
         let p = p.to_path_buf();
         move |e| PipelineError::Io(p, e)
@@ -91,6 +140,9 @@ fn write_file(dir: &Path, filename: &str, data: &[u8]) -> Result<ExportedFile> {
     let path = unique_path(dir, filename);
     let tmp = path.with_extension("part");
     fs::write(&tmp, data).map_err(io(&tmp))?;
+    if flush {
+        flush_to_disk(&tmp)?;
+    }
     fs::rename(&tmp, &path).map_err(io(&path))?;
     Ok(ExportedFile {
         location: path.display().to_string(),
@@ -125,12 +177,25 @@ pub struct Drive {
     pub available_bytes: u64,
 }
 
-/// Removable drives currently mounted: SD cards, USB sticks, and a reader in
-/// USB drive mode.
+/// Is this mounted disk one a person plugs in? The system's "removable" flag
+/// is right for flash drives and SD cards on Windows, but Linux marks many
+/// card slots and USB disks as fixed, so the places where desktops mount
+/// external media count as well.
+fn looks_external(mount: &Path, removable: bool) -> bool {
+    if removable {
+        return true;
+    }
+    let m = mount.to_string_lossy();
+    m.starts_with("/Volumes/") || m.starts_with("/media/") || m.starts_with("/run/media/")
+}
+
+/// Drives that look plugged in right now: SD cards, USB sticks, and a reader
+/// in USB drive mode. It is a list of suggestions; the user can always pick
+/// any folder instead.
 pub fn removable_drives() -> Vec<Drive> {
     Disks::new_with_refreshed_list()
         .iter()
-        .filter(|d| d.is_removable())
+        .filter(|d| looks_external(d.mount_point(), d.is_removable()))
         .map(|d| Drive {
             mount: d.mount_point().to_path_buf(),
             name: d.name().to_string_lossy().into_owned(),
@@ -140,11 +205,17 @@ pub fn removable_drives() -> Vec<Drive> {
         .collect()
 }
 
-/// Fail early, with a clear message, if the card is too full. A mount we
-/// cannot find in the drive list is let through rather than blocked.
+/// Fail early, with a clear message, if the card is too full. `mount` may be
+/// the drive itself or any folder on it; a place we cannot match to a drive is
+/// let through rather than blocked.
 fn check_space(mount: &Path, needed: u64) -> Result<()> {
     let disks = Disks::new_with_refreshed_list();
-    let Some(disk) = disks.iter().find(|d| d.mount_point() == mount) else {
+    // The drive that holds the place: the deepest mount point it is under.
+    let Some(disk) = disks
+        .iter()
+        .filter(|d| mount.starts_with(d.mount_point()))
+        .max_by_key(|d| d.mount_point().components().count())
+    else {
         return Ok(());
     };
     // Leave a little room for the filesystem.
@@ -209,7 +280,7 @@ pub fn output_file_name(
     first: Option<f64>,
     last: Option<f64>,
     part: Option<usize>,
-    format: Format,
+    extension: &str,
 ) -> String {
     let mut name = sanitize_component(series);
     if let Some(p) = part {
@@ -222,7 +293,7 @@ pub fn output_file_name(
         (Some(a), Some(b)) => name.push_str(&format!(" - Ch {}-{}", number(a), number(b))),
         _ => {}
     }
-    format!("{name}.{}", format.extension())
+    format!("{name}.{extension}")
 }
 
 // ---- WebDAV ----------------------------------------------------------------
@@ -239,11 +310,50 @@ fn encode_segment(s: &str) -> String {
         .collect()
 }
 
+/// Ask the reader's WebDAV share whether it is there. `Ok` means something
+/// answered like a file share; `Err` is a sentence about what went wrong.
+pub async fn check_webdav(base_url: &str) -> std::result::Result<(), String> {
+    let base = base_url.trim();
+    if !(base.starts_with("http://") || base.starts_with("https://")) {
+        return Err("The address should start with http://".to_string());
+    }
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(8))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let propfind = reqwest::Method::from_bytes(b"PROPFIND").expect("valid method");
+    let response = client
+        .request(propfind, format!("{}/", base.trim_end_matches('/')))
+        .header("Depth", "0")
+        .send()
+        .await
+        .map_err(|_| format!("Nothing answered at {base}. Is the reader on, on the same Wi-Fi, and in file transfer mode?"))?;
+    let status = response.status();
+    if status.is_success() || status.as_u16() == 207 {
+        Ok(())
+    } else {
+        Err(format!("Something answered at {base}, but it said {status}."))
+    }
+}
+
+/// The most a single file sent over Wi-Fi may be. The reader's web server has
+/// to take the whole file in one request, and it is a small chip: one file of
+/// 2.8 GB (more than a 32-bit size can say) took an X4 Pro down. Bigger books
+/// are sent in parts of at most this size.
+pub const WIFI_MAX_FILE_BYTES: u64 = 512 * 1024 * 1024;
+
+/// How long a file of `bytes` may take to send: at least ten minutes, and
+/// long enough for a slow link (about 100 KB a second).
+fn upload_timeout(bytes: usize) -> Duration {
+    Duration::from_secs(600.max(bytes as u64 / 100_000))
+}
+
 async fn upload_webdav(
     base_url: &str,
     folder: &str,
     filename: &str,
-    data: &[u8],
+    data: Vec<u8>,
 ) -> Result<ExportedFile> {
     let fail = |m: String| PipelineError::Upload(m);
     if !(base_url.starts_with("http://") || base_url.starts_with("https://")) {
@@ -251,7 +361,7 @@ async fn upload_webdav(
     }
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(600))
+        .timeout(upload_timeout(data.len()))
         .build()
         .map_err(|e| fail(e.to_string()))?;
     let dir_url = format!(
@@ -264,9 +374,10 @@ async fn upload_webdav(
     let _ = client.request(mkcol, &dir_url).send().await;
 
     let file_url = format!("{dir_url}{}", encode_segment(filename));
+    let bytes = data.len() as u64;
     let response = client
         .put(&file_url)
-        .body(data.to_vec())
+        .body(data)
         .send()
         .await
         .map_err(|e| fail(e.to_string()))?;
@@ -274,7 +385,7 @@ async fn upload_webdav(
     if status.is_success() {
         Ok(ExportedFile {
             location: file_url,
-            bytes: data.len() as u64,
+            bytes,
         })
     } else {
         Err(fail(format!("the reader answered {status}")))
@@ -284,6 +395,7 @@ async fn upload_webdav(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use converter::xtc::Format;
     use std::io::{Read, Write};
     use std::net::TcpListener;
 
@@ -292,6 +404,12 @@ mod tests {
             std::env::temp_dir().join(format!("mangapoint-export-{tag}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&d);
         d
+    }
+
+    #[test]
+    fn a_slow_link_gets_more_time_for_a_big_file() {
+        assert_eq!(upload_timeout(1_000), Duration::from_secs(600));
+        assert_eq!(upload_timeout(512 * 1024 * 1024), Duration::from_secs(5368));
     }
 
     #[test]
@@ -313,7 +431,7 @@ mod tests {
 
     #[test]
     fn file_names_describe_the_chapters() {
-        let n = |a, b, p| output_file_name("Berserk", a, b, p, Format::Xtch);
+        let n = |a, b, p| output_file_name("Berserk", a, b, p, Format::Xtch.extension());
         assert_eq!(n(Some(1.0), Some(12.0), None), "Berserk - Ch 1-12.xtch");
         assert_eq!(n(Some(5.0), Some(5.0), None), "Berserk - Ch 5.xtch");
         assert_eq!(
@@ -322,7 +440,7 @@ mod tests {
         );
         assert_eq!(n(None, None, None), "Berserk.xtch");
         assert_eq!(
-            output_file_name("A/B", Some(1.0), Some(2.0), None, Format::Xtc),
+            output_file_name("A/B", Some(1.0), Some(2.0), None, Format::Xtc.extension()),
             "A_B - Ch 1-2.xtc"
         );
     }
@@ -489,5 +607,59 @@ mod tests {
         .await
         .unwrap_err();
         assert!(matches!(err, PipelineError::Upload(_)));
+    }
+
+    #[test]
+    fn places_where_desktops_mount_external_media_count_as_drives() {
+        assert!(looks_external(Path::new("E:\\"), true));
+        assert!(looks_external(Path::new("/Volumes/XTEINK"), false));
+        assert!(looks_external(Path::new("/media/me/XTEINK"), false));
+        assert!(looks_external(Path::new("/run/media/me/XTEINK"), false));
+        assert!(!looks_external(Path::new("/"), false));
+        assert!(!looks_external(Path::new("/home"), false));
+        assert!(!looks_external(Path::new("C:\\"), false));
+    }
+
+    #[tokio::test]
+    async fn a_file_sent_to_a_drive_is_flushed_and_lands_in_its_folder() {
+        let mount = temp("device-flush");
+        fs::create_dir_all(&mount).unwrap();
+        let src = mount.join("book.xtc");
+        fs::write(&src, vec![7u8; 4096]).unwrap();
+        let target = ExportTarget::Device {
+            mount: mount.clone(),
+            folder: "Manga".into(),
+        };
+        let sent = target.write_file("My Book.xtc", &src).await.unwrap();
+        assert!(sent.location.ends_with("My Book.xtc"));
+        assert_eq!(fs::read(mount.join("Manga").join("My Book.xtc")).unwrap().len(), 4096);
+        assert!(!mount.join("Manga").join("My Book.part").exists(), "no half-written file is left");
+        let _ = fs::remove_dir_all(mount);
+    }
+
+    /// A one-answer server for a test: replies with `status_line` to the first
+    /// request it gets.
+    fn answer_once(status_line: &'static str) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 2048];
+                let _ = stream.read(&mut buf);
+                let _ = write!(stream, "HTTP/1.1 {status_line}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn the_reader_check_tells_an_answering_share_from_everything_else() {
+        assert!(check_webdav(&answer_once("207 Multi-Status")).await.is_ok());
+        let refused = check_webdav(&answer_once("401 Unauthorized")).await.unwrap_err();
+        assert!(refused.contains("401"), "{refused}");
+        assert!(check_webdav("192.168.1.5").await.unwrap_err().contains("http://"));
+        // Nothing listening at all.
+        let dead = check_webdav("http://127.0.0.1:9").await.unwrap_err();
+        assert!(dead.contains("Nothing answered"), "{dead}");
     }
 }

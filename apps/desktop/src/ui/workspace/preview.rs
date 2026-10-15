@@ -2,7 +2,8 @@
 //! PDF viewer, with the original beside each converted page.
 use super::crop_editor::SourceCanvas;
 use crate::state::{AppState, Shot, Zoom};
-use crate::ui::widgets::{Busy, EmptyState, Icon};
+use crate::ui::cat::CirclingCat;
+use crate::ui::widgets::{EmptyState, Icon};
 use crate::ui::work::{prepare_preview, schedule_preview, select_preview_page};
 use converter::plan::Source;
 use dioxus::prelude::*;
@@ -87,6 +88,8 @@ fn EditorRow(
     chapter: String,
     crop_key: String,
     draft: Signal<CropRect>,
+    /// The page is being drawn again: it is darkened, with the cat on it.
+    busy: bool,
 ) -> Element {
     let state = use_context::<AppState>();
     rsx! {
@@ -135,7 +138,10 @@ fn EditorRow(
                         if let Some(shot) = result {
                             img { src: "{shot.url}", alt: "Page {index + 1} exactly as exported to the reader", draggable: "false" }
                         } else {
-                            div { class: "editor-image-loading", "Drawing page…" }
+                            div { class: "editor-image-loading" }
+                        }
+                        if busy {
+                            div { class: "render-veil", CirclingCat { size: 96 } }
                         }
                         if let Some(seam) = seam.as_ref().filter(|s| s.rows > 0) {
                             div {
@@ -221,6 +227,74 @@ fn track_scroll(state: AppState, first: i64, last: i64, current: i64) {
     }
 }
 
+/// The zoom as a small menu, as in a document editor: a box showing the zoom
+/// (type a percentage in it) and a list of the ready-made ones.
+#[component]
+fn ZoomMenu() -> Element {
+    let mut state = use_context::<AppState>();
+    let mut open = use_signal(|| false);
+    let zoom = state.preview.read().view.zoom;
+    let label = match zoom {
+        Zoom::Fit => "Fit page".to_string(),
+        Zoom::Width => "Fit width".to_string(),
+        Zoom::Custom(percent) => format!("{percent}%"),
+    };
+    let mut choose = move |zoom: Zoom| {
+        state.preview.write().view.zoom = zoom;
+        open.set(false);
+    };
+    let class = if open() { "zoom-menu is-open" } else { "zoom-menu" };
+    rsx! {
+        div { class: "{class}",
+            div { class: "zoom-field",
+                span { class: "zoom-icon", Icon { name: "zoom-in", size: 15 } }
+                input {
+                    r#type: "text", value: "{label}", "aria-label": "Zoom", spellcheck: "false",
+                    onfocus: move |_| open.set(true),
+                    onchange: move |e| {
+                        if let Some(parsed) = parse_zoom(&e.value()) {
+                            choose(parsed);
+                        }
+                    },
+                }
+                button { class: "zoom-chevron", title: "Zoom choices", onclick: move |_| open.set(!open()),
+                    Icon { name: "chevron-down", size: 15 }
+                }
+            }
+            if open() {
+                div { class: "menu-scrim", onclick: move |_| open.set(false) }
+                div { class: "menu down zoom-list",
+                    button { class: if zoom == Zoom::Fit { "menu-item on" } else { "menu-item" }, onclick: move |_| choose(Zoom::Fit), "Fit page" }
+                    button { class: if zoom == Zoom::Width { "menu-item on" } else { "menu-item" }, onclick: move |_| choose(Zoom::Width), "Fit width" }
+                    div { class: "menu-sep" }
+                    for percent in [50u16, 75, 90, 100, 125, 150, 200] {
+                        button {
+                            key: "{percent}",
+                            class: if zoom == Zoom::Custom(percent) { "menu-item on" } else { "menu-item" },
+                            onclick: move |_| choose(Zoom::Custom(percent)),
+                            "{percent}%"
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// What was typed in the zoom box: "125", "125%", "fit", "fit width".
+fn parse_zoom(text: &str) -> Option<Zoom> {
+    let text = text.trim().to_lowercase();
+    if text.contains("width") {
+        return Some(Zoom::Width);
+    }
+    if text.starts_with("fit") {
+        return Some(Zoom::Fit);
+    }
+    let number: u32 = text.trim_end_matches('%').trim().parse().ok()?;
+    let clamped = number.clamp(u32::from(Zoom::MIN_PERCENT), u32::from(Zoom::MAX_PERCENT));
+    Some(Zoom::Custom(clamped as u16))
+}
+
 #[component]
 pub fn PreviewTab() -> Element {
     let mut state = use_context::<AppState>();
@@ -301,67 +375,7 @@ pub fn PreviewTab() -> Element {
                     span { class: "muted", "/ {total}" }
                 }
                 div { class: "editor-toolbar-actions",
-                    span { class: "editor-status",
-                        if p.busy {
-                            Busy { label: "Updating…", size: 28 }
-                        } else {
-                            Icon { name: "check", size: 13 }
-                            " Ready"
-                        }
-                    }
-                    label { class: "check-label", title: "Show the downloaded artwork beside each reader page",
-                        input {
-                            r#type: "checkbox", checked: compare,
-                            onchange: move |_| {
-                                state.preview.write().view.show_original = !compare;
-                                schedule_preview(state, 0);
-                            },
-                        }
-                        "Compare"
-                    }
-                    div { class: "seg zoom-seg", role: "group", "aria-label": "Preview zoom",
-                        button {
-                            class: if view.zoom == Zoom::Fit { "on" } else { "" },
-                            onclick: move |_| state.preview.write().view.zoom = Zoom::Fit,
-                            "Fit page"
-                        }
-                        button {
-                            class: if view.zoom == Zoom::Width { "on" } else { "" },
-                            onclick: move |_| state.preview.write().view.zoom = Zoom::Width,
-                            "Fit width"
-                        }
-                        button {
-                            class: if matches!(view.zoom, Zoom::Custom(_)) { "on" } else { "" },
-                            onclick: move |_| {
-                                let percent = match view.zoom { Zoom::Custom(p) => p, _ => 100 };
-                                state.preview.write().view.zoom = Zoom::Custom(percent);
-                            },
-                            "Custom zoom"
-                        }
-                    }
-                    if let Zoom::Custom(percent) = view.zoom {
-                        div { class: "editor-custom-zoom",
-                            input {
-                                r#type: "range", min: "{Zoom::MIN_PERCENT}", max: "{Zoom::MAX_PERCENT}", step: "5",
-                                value: "{percent}", "aria-label": "Zoom percentage",
-                                oninput: move |e| {
-                                    if let Ok(v) = e.value().parse::<u16>() {
-                                        state.preview.write().view.zoom = Zoom::Custom(v.clamp(Zoom::MIN_PERCENT, Zoom::MAX_PERCENT));
-                                    }
-                                },
-                            }
-                            input {
-                                r#type: "number", min: "{Zoom::MIN_PERCENT}", max: "{Zoom::MAX_PERCENT}", step: "5",
-                                value: "{percent}", "aria-label": "Zoom percentage",
-                                onchange: move |e| {
-                                    if let Ok(v) = e.value().parse::<u16>() {
-                                        state.preview.write().view.zoom = Zoom::Custom(v.clamp(Zoom::MIN_PERCENT, Zoom::MAX_PERCENT));
-                                    }
-                                },
-                            }
-                            span { class: "muted", "%" }
-                        }
-                    }
+                    ZoomMenu {}
                 }
             }
             if let Some(error) = &p.error { div { class: "banner bad small", "{error}" } }
@@ -424,14 +438,24 @@ pub fn PreviewTab() -> Element {
                         }
                     }
                     div { class: "editor-scroll",
-                        div { class: if compare { "editor-columns comparing" } else { "editor-columns" },
+                        div { class: if compare { "editor-columns comparing" } else { "editor-columns solo" },
+                            button {
+                                class: if compare { "compare-tab on" } else { "compare-tab" },
+                                title: "Show the downloaded artwork beside each reader page",
+                                "aria-pressed": "{compare}",
+                                onclick: move |_| {
+                                    state.preview.write().view.show_original = !compare;
+                                    schedule_preview(state, 0);
+                                },
+                                "Compare"
+                            }
                             if compare {
                                 span { class: "source-pane",
                                     if p.strip { "Source section · joined strip" } else { "Source artwork" }
                                     if view.editing_crop { " · drag the edges to crop" }
                                 }
                             }
-                            span { class: "result-pane", "Reader result · {device.name} · {device.width} × {device.height}" }
+                            span { class: "result-pane", title: "{device.name}", "Reader result · {device.width} × {device.height}" }
                         }
                         if total == 0 && p.error.is_none() {
                             div { class: "editor-image-loading", "Preparing the chapter…" }
@@ -452,6 +476,10 @@ pub fn PreviewTab() -> Element {
                                 chapter: chapter.clone(),
                                 crop_key: page.crop_key.clone(),
                                 draft,
+                                // Darkened only while this page is being drawn again: a page drawn the
+                                // way it should look is left alone, whatever else is loading.
+                                busy: (i + 1 >= p.window.0 && i <= p.window.1 + 1)
+                                    && (page.shot.is_none() || (p.busy && page.rendered_for != p.signature)),
                             }
                         }
                     }
@@ -515,5 +543,16 @@ mod tests {
             "height:800px;width:480px;aspect-ratio:480/800;"
         );
         assert!(reader_style(Zoom::Width, 480, 800).starts_with("height:auto;width:100%;"));
+    }
+
+    #[test]
+    fn typed_zooms_are_understood() {
+        assert_eq!(parse_zoom("125"), Some(Zoom::Custom(125)));
+        assert_eq!(parse_zoom(" 90 % "), Some(Zoom::Custom(90)));
+        assert_eq!(parse_zoom("Fit page"), Some(Zoom::Fit));
+        assert_eq!(parse_zoom("fit width"), Some(Zoom::Width));
+        assert_eq!(parse_zoom("1"), Some(Zoom::Custom(Zoom::MIN_PERCENT)));
+        assert_eq!(parse_zoom("99999"), Some(Zoom::Custom(Zoom::MAX_PERCENT)));
+        assert_eq!(parse_zoom("big"), None);
     }
 }

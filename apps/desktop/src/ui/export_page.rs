@@ -5,11 +5,11 @@
 //! folds away to give the others room.
 
 use super::conversion::ConversionControls;
-use super::devices::DeviceSelect;
-use super::presets::{apply_to_series, delete_preset};
-use super::widgets::{pick_folder, Chip, Cover, Icon, NoCover};
+use super::devices::ReaderPicker;
+use super::presets;
+use super::widgets::{pick_folder, Chip, Cover, Help, Icon, NoCover};
 use super::work::{
-    activate_export_series, add_export_series, load_saved_cover, open_sample, remove_export_series,
+    activate_export_series, add_export_series, load_saved_cover, open_sample, reconcile_export_plan, remove_export_series,
     saved_cover_key, schedule_preview, start_export_plan,
 };
 use super::workspace::crop_editor::CropInspector;
@@ -17,7 +17,7 @@ use super::workspace::preview::{switch_chapter, PreviewTab};
 use crate::logic::{self, plural, TargetChoice};
 use crate::state::{AppState, GroupingChoice, JobKind, Modal, ModalAction};
 use dioxus::prelude::*;
-use library::{CropRect, DownloadedSeries};
+use library::{ConversionSettings, CropRect, DownloadedSeries, OutputFormat};
 use pipeline::export::removable_drives;
 use std::time::Duration;
 
@@ -81,6 +81,22 @@ pub fn ExportPage() -> Element {
         if state.export_plan.peek().items.is_empty() {
             open_sample(state);
         }
+    });
+    // Series that were removed (or lost every downloaded chapter) while this
+    // list was open go off it, and the sample pages come back if none is left.
+    let usable_series = use_memo(move || {
+        state
+            .library
+            .read()
+            .series
+            .iter()
+            .filter(|s| !s.chapters.is_empty())
+            .map(|s| s.id.clone())
+            .collect::<Vec<_>>()
+    });
+    use_effect(move || {
+        let _ = usable_series();
+        reconcile_export_plan(state);
     });
     // Opened again after other pages were visited: they changed what the
     // preview shows, so put the series of the list back.
@@ -186,40 +202,149 @@ const SPLIT_SCRIPT: &str = include_str!("../js/export-split.js");
 
 // ---- left: presets -------------------------------------------------------
 
+/// What a preset in the list is.
+#[derive(Clone, Copy, PartialEq)]
+enum PresetKind {
+    /// How the series was last exported.
+    Last,
+    /// One that comes with the app: it cannot be changed.
+    Builtin,
+    /// One the user made: it can be saved to, renamed and deleted.
+    Mine,
+}
+
+/// One preset in the list. Choosing it opens it, showing what it is for; one of
+/// your own shows its name as a box to rename it by, and a save and a delete
+/// button while it is chosen or pointed at.
+#[component]
+fn PresetItem(
+    kind: PresetKind,
+    /// `None` for how a series was exported without a preset.
+    preset_id: Option<String>,
+    name: String,
+    description: String,
+    settings: ConversionSettings,
+    on: bool,
+    series_id: String,
+    series_settings: ConversionSettings,
+) -> Element {
+    let state = use_context::<AppState>();
+    let differs = settings != series_settings;
+    let edited = on && differs;
+    let class = match (kind, on) {
+        (PresetKind::Last, true) => "px-preset last on",
+        (PresetKind::Last, false) => "px-preset last",
+        (_, true) => "px-preset on",
+        (_, false) => "px-preset",
+    };
+    let load = {
+        let (sid, pid, set, label) = (series_id.clone(), preset_id.clone(), settings.clone(), name.clone());
+        move |_| {
+            if differs {
+                state.ask(Modal {
+                    title: format!("Load “{label}”?"),
+                    body: "Loading a preset replaces this series' current settings with the preset's. Changes you made and did not save to a preset are lost.".into(),
+                    confirm: "Load".into(),
+                    cancel: "Cancel".into(),
+                    danger: false,
+                    action: ModalAction::LoadPreset { series_id: sid.clone(), preset_id: pid.clone(), settings: set.clone() },
+                });
+            } else {
+                presets::apply_to_series(state, &sid, pid.clone(), set.clone());
+            }
+        }
+    };
+    let (save_id, save_name, save_settings) = (preset_id.clone().unwrap_or_default(), name.clone(), series_settings.clone());
+    let (delete_id, delete_name) = (preset_id.clone().unwrap_or_default(), name.clone());
+    let rename_id = preset_id.clone().unwrap_or_default();
+    rsx! {
+        div { class: "{class}", onclick: load,
+            div { class: "px-preset-head",
+                if kind == PresetKind::Mine {
+                    input {
+                        class: "px-name", r#type: "text", maxlength: "40", value: "{name}",
+                        readonly: !on, "aria-label": "Preset name",
+                        title: if on { "Click to rename" } else { "" },
+                        // Once chosen, the name is the box to rename it by.
+                        onclick: move |e| { if on { e.stop_propagation(); } },
+                        onchange: move |e| {
+                            let result = state.edit_presets(|p| p.rename(&rename_id, e.value().trim()));
+                            match result {
+                                Ok(()) => state.save_presets(),
+                                Err(err) => state.error(err.to_string()),
+                            }
+                        },
+                    }
+                } else {
+                    span { class: "grow px-item-name", "{name}" }
+                }
+                if edited { Chip { text: "edited", kind: Some("warn".to_string()) } }
+                if kind == PresetKind::Mine {
+                    div { class: "px-actions",
+                        button { class: "px-icon", title: "Save this series' settings to this preset",
+                            onclick: move |e| {
+                                e.stop_propagation();
+                                state.ask(Modal {
+                                    title: format!("Save to “{save_name}”?"),
+                                    body: "The preset is replaced with this series' current settings. Every series that uses the preset follows it.".into(),
+                                    confirm: "Save".into(),
+                                    cancel: "Cancel".into(),
+                                    danger: false,
+                                    action: ModalAction::SavePreset { id: save_id.clone(), settings: save_settings.clone() },
+                                });
+                            },
+                            Icon { name: "save", size: 15 }
+                        }
+                        button { class: "px-icon danger", title: "Delete this preset",
+                            onclick: move |e| {
+                                e.stop_propagation();
+                                state.ask(Modal {
+                                    title: format!("Delete “{delete_name}”?"),
+                                    body: "The preset is removed. Series that used it keep their settings.".into(),
+                                    confirm: "Delete".into(),
+                                    cancel: "Keep".into(),
+                                    danger: true,
+                                    action: ModalAction::DeletePreset { id: delete_id.clone() },
+                                });
+                            },
+                            Icon { name: "trash", size: 15 }
+                        }
+                    }
+                }
+                if on { Icon { name: "check", size: 14 } }
+            }
+            if on && !description.is_empty() {
+                p { class: "px-desc", "{description}" }
+            }
+        }
+    }
+}
+
 #[component]
 fn PresetsPanel() -> Element {
     let state = use_context::<AppState>();
-    let nonce = use_signal(|| 0u32);
     let Some(series) = active_series(state) else {
         return rsx! {};
     };
     let entries = state.presets.read().all();
-    let default_id = state.settings.read().default_preset_id.clone();
-    let current = series
-        .preset_id
-        .as_ref()
-        .and_then(|id| entries.iter().find(|e| &e.preset.id == id))
-        .cloned();
-    let changed = current
-        .as_ref()
-        .is_some_and(|e| e.preset.settings != series.settings);
-    let series_id = series.id.clone();
-    let settings_now = series.settings.clone();
-    // How this series was converted the last time it was exported, if that
-    // differs from how it is set now.
-    let last_export = state
+    // How this series was last exported, if it has been.
+    let last = state
         .exports
         .read()
         .records
         .iter()
         .rev()
         .find(|r| r.series_id == series.id && r.settings.is_some())
-        .cloned()
-        .filter(|r| r.settings.as_ref() != Some(&series.settings));
-    let rename_key = format!(
-        "{}-{nonce}",
-        current.as_ref().map_or("none", |e| e.preset.id.as_str())
-    );
+        .cloned();
+    // The last export is the one chosen while the series is as it was exported
+    // (and no other preset has been picked since).
+    let last_on = last.as_ref().is_some_and(|r| {
+        r.settings.as_ref() == Some(&series.settings) && r.preset_id == series.preset_id
+    });
+    let series_id = series.id.clone();
+    let settings_now = series.settings.clone();
+    let builtins: Vec<_> = entries.iter().filter(|e| e.builtin).cloned().collect();
+    let mine: Vec<_> = entries.iter().filter(|e| !e.builtin).cloned().collect();
 
     // A name for a new preset that no other has.
     let new_name = {
@@ -234,138 +359,65 @@ fn PresetsPanel() -> Element {
         }
         name
     };
+    let new_series_id = series_id.clone();
+    let new_settings = settings_now.clone();
 
     rsx! {
-        Panel { title: "Presets", icon: "layers", id: "presets", height: 190,
-            if let Some(record) = last_export {
-                {
-                    let (sid, preset, settings) = (series_id.clone(), record.preset_id.clone(), record.settings.clone().unwrap_or_default());
-                    rsx! {
-                        div { class: "px-note",
-                            span { class: "muted small", "Not what the last export of this series used." }
-                            button { class: "btn small", onclick: move |_| apply_to_series(state, &sid, preset.clone(), settings.clone()),
-                                Icon { name: "rotate-ccw", size: 14 } "Use the last export's settings"
-                            }
-                        }
-                    }
-                }
-            }
+        Panel { title: "Presets", icon: "layers", id: "presets", height: 280,
             div { class: "px-list",
-                for e in entries.iter() {
-                    {
-                        let on = current.as_ref().is_some_and(|c| c.preset.id == e.preset.id);
-                        let (id, settings, sid) = (e.preset.id.clone(), e.preset.settings.clone(), series_id.clone());
-                        rsx! {
-                            button {
-                                key: "{e.preset.id}",
-                                class: if on { "px-item on" } else { "px-item" },
-                                title: "{e.preset.description}",
-                                onclick: move |_| apply_to_series(state, &sid, Some(id.clone()), settings.clone()),
-                                span { class: "grow px-item-name", "{e.preset.name}" }
-                                if default_id.as_deref() == Some(e.preset.id.as_str()) { Chip { text: "default" } }
-                                if e.builtin && e.modified { Chip { text: "changed", kind: Some("warn".to_string()) } }
-                                if on { Icon { name: "check", size: 14 } }
-                            }
-                        }
+                if let Some(record) = last {
+                    PresetItem {
+                        key: "{series_id}-last-export",
+                        kind: PresetKind::Last,
+                        preset_id: record.preset_id.clone(),
+                        name: "Last export",
+                        description: "The settings this series was last exported with, so the next part matches the first.",
+                        settings: record.settings.clone().unwrap_or_default(),
+                        on: last_on,
+                        series_id: series_id.clone(),
+                        series_settings: settings_now.clone(),
                     }
                 }
-            }
-            if let Some(entry) = current {
-                {
-                    let (id_a, id_b, id_c, id_d, id_e, id_f) = (
-                        entry.preset.id.clone(),
-                        entry.preset.id.clone(),
-                        entry.preset.id.clone(),
-                        entry.preset.id.clone(),
-                        entry.preset.id.clone(),
-                        entry.preset.id.clone(),
-                    );
-                    let (name_for_modal, builtin, modified) = (entry.preset.name.clone(), entry.builtin, entry.modified);
-                    let (sid_undo, undo_settings) = (series_id.clone(), entry.preset.settings.clone());
-                    let (update_settings, default_settings) = (settings_now.clone(), settings_now.clone());
-                    let is_default = default_id.as_deref() == Some(entry.preset.id.as_str());
-                    rsx! {
-                        div { class: "px-section",
-                            if !builtin {
-                                RenameBox { identity: rename_key.clone(), preset_id: id_a.clone(), name: entry.preset.name.clone(), nonce }
-                            }
-                            if !entry.preset.description.is_empty() {
-                                p { class: "px-note", "{entry.preset.description}" }
-                            }
-                            if changed {
-                                p { class: "px-note", style: "color: var(--warn)", "This series has changes the preset doesn't." }
-                                div { class: "px-buttons",
-                                    button { class: "btn small",
-                                        onclick: move |_| {
-                                            let result = state.edit_presets(|p| p.overwrite(&id_b, update_settings.clone()));
-                                            match result {
-                                                Ok(()) => { state.save_presets(); state.notify("Preset updated."); }
-                                                Err(e) => state.error(e.to_string()),
-                                            }
-                                        },
-                                        Icon { name: "check", size: 14 } "Save to preset"
-                                    }
-                                    button { class: "btn ghost small",
-                                        onclick: move |_| apply_to_series(state, &sid_undo, Some(id_c.clone()), undo_settings.clone()),
-                                        Icon { name: "rotate-ccw", size: 14 } "Undo"
-                                    }
-                                }
-                            }
-                            div { class: "px-buttons",
-                                if !is_default {
-                                    button { class: "btn ghost small", title: "New series start from this preset",
-                                        onclick: move |_| {
-                                            let mut s = state.settings;
-                                            {
-                                                let mut st = s.write();
-                                                st.conversion = default_settings.clone();
-                                                st.default_preset_id = Some(id_d.clone());
-                                            }
-                                            state.save_settings();
-                                            state.notify("New series will start from this preset.");
-                                        },
-                                        "Use for new series"
-                                    }
-                                }
-                                if builtin && modified {
-                                    button { class: "btn ghost small", onclick: move |_| delete_preset(state, id_e.clone()),
-                                        Icon { name: "rotate-ccw", size: 14 } "Put back the original"
-                                    }
-                                }
-                                if !builtin {
-                                    button { class: "btn ghost small danger",
-                                        onclick: move |_| state.ask(Modal {
-                                            title: format!("Delete {name_for_modal}?"),
-                                            body: "Series using it keep their settings.".into(),
-                                            confirm: "Delete".into(),
-                                            cancel: "Keep".into(),
-                                            danger: true,
-                                            action: ModalAction::DeletePreset { id: id_f.clone() },
-                                        }),
-                                        Icon { name: "trash", size: 14 } "Delete"
-                                    }
-                                }
-                            }
-                        }
+                for e in builtins.iter() {
+                    PresetItem {
+                        key: "{e.preset.id}",
+                        kind: PresetKind::Builtin,
+                        preset_id: Some(e.preset.id.clone()),
+                        name: e.preset.name.clone(),
+                        description: e.preset.description.clone(),
+                        settings: e.preset.settings.clone(),
+                        on: !last_on && series.preset_id.as_deref() == Some(e.preset.id.as_str()),
+                        series_id: series_id.clone(),
+                        series_settings: settings_now.clone(),
                     }
                 }
-            }
-            div { class: "px-buttons",
-                button { class: "btn small", title: "Keep this series' settings as a preset of your own",
+                for e in mine.iter() {
+                    PresetItem {
+                        key: "{e.preset.id}",
+                        kind: PresetKind::Mine,
+                        preset_id: Some(e.preset.id.clone()),
+                        name: e.preset.name.clone(),
+                        description: e.preset.description.clone(),
+                        settings: e.preset.settings.clone(),
+                        on: !last_on && series.preset_id.as_deref() == Some(e.preset.id.as_str()),
+                        series_id: series_id.clone(),
+                        series_settings: settings_now.clone(),
+                    }
+                }
+                button { class: "px-new", title: "Keep this series' settings as a preset of your own",
                     onclick: move |_| {
-                        let result = state.edit_presets(|p| p.save_new(&new_name, settings_now.clone()));
+                        let result = state.edit_presets(|p| p.save_new(&new_name, new_settings.clone()));
                         match result {
                             Ok(id) => {
                                 state.save_presets();
                                 let mut library = state.library;
-                                library.write().set_preset(&series_id, Some(id));
+                                library.write().set_preset(&new_series_id, Some(id));
                                 state.save_library();
-                                state.notify("Preset saved. Rename it here.");
                             }
                             Err(e) => state.error(e.to_string()),
                         }
                     },
-                    Icon { name: "plus", size: 14 } "New preset from these settings"
+                    Icon { name: "plus", size: 14 } "New preset"
                 }
             }
         }
@@ -402,7 +454,6 @@ fn EditPanel() -> Element {
 
     rsx! {
         Panel { title: "Edit", icon: "sliders-horizontal", id: "edit",
-            DeviceSelect {}
             CropSection { identity: "{chapter}/{key}", draft, crop_key: key.clone(), saved }
             ConversionControls {
                 value: series.settings.clone(),
@@ -525,6 +576,8 @@ fn ChaptersPanel() -> Element {
     let all_on = included == series.chapters.len();
     let all_keys: Vec<String> = series.chapters.iter().map(|c| c.key.clone()).collect();
     let shown = state.preview.read().chapter_key.clone();
+    // Chapters of an earlier export are marked.
+    let exported = state.exports.read().exported_keys(&series.id);
 
     rsx! {
         Panel {
@@ -576,6 +629,9 @@ fn ChaptersPanel() -> Element {
                                     span { class: "px-chapter-no", { c.number.map(logic::format_number).unwrap_or_else(|| "–".into()) } }
                                     span { class: "grow px-chapter-name", title: "{c.name}", "{c.name}" }
                                 }
+                                if exported.contains(&c.key) {
+                                    span { class: "chip tiny", title: "Already in an export", "exported" }
+                                }
                                 span { class: "muted small", "{logic::human_bytes(c.bytes)}" }
                             }
                         }
@@ -588,10 +644,65 @@ fn ChaptersPanel() -> Element {
 
 // ---- right: where it goes and how it is split ------------------------
 
+/// A drive that was found goes into the box that says where the reader is, but
+/// only when the place chosen is not there (nothing chosen yet, or it was
+/// unplugged): a drive picked by hand is never replaced by what turns up.
+fn adopt_found(state: AppState, found: &[pipeline::export::Drive]) {
+    let chosen_is_there = state
+        .settings
+        .peek()
+        .reader_setup()
+        .reader_dir
+        .as_ref()
+        .is_some_and(|d| d.exists());
+    if chosen_is_there {
+        return;
+    }
+    if let Some(drive) = found.first() {
+        let mount = drive.mount.clone();
+        let mut settings = state.settings;
+        settings.write().update_reader_setup(|r| r.reader_dir = Some(mount));
+        state.save_settings();
+    }
+}
+
+const USB_HELP: &str = "Plug the reader in with USB (drive mode), or put its SD card in this computer. It shows up in the box by itself. With more than one drive, Choose picks the one to use.";
+const WIFI_HELP: &str = "Switch on the reader's Wi-Fi file transfer, then type the address it shows. Test checks that it answers.";
+
+/// What a format is, shown behind its question mark.
+fn format_help(output: OutputFormat) -> &'static str {
+    match output {
+        OutputFormat::Xtc => "Black and white pages, made for the Xteink readers. The smallest files, and the quickest to open and turn. The one to pick if you are not sure.",
+        OutputFormat::Xtch => "Four grays instead of two, also for the Xteink readers. Files are twice the size, and the reader is slower and laggier with them, so it is the less recommended choice.",
+        OutputFormat::Epub => "An ordinary e-book that nearly every reader opens: Kindle (through Send to Kindle), Kobo, Boox, PocketBook, and the Xteink too. Each page is a picture the size of the reader's screen, made as small as it can be. Long series are cut into parts of 800 pages.",
+    }
+}
+
 #[component]
 fn SendPanel() -> Element {
     let state = use_context::<AppState>();
-    let mut drives = use_signal(removable_drives);
+    let starts_on_usb = matches!(state.export_opts.peek().target, TargetChoice::Usb);
+    let mut drives = use_signal(move || if starts_on_usb { removable_drives() } else { Vec::new() });
+    // Drives are only looked for while the reader is sent to by USB, every few
+    // seconds, and not at all once this screen is left (the loop ends with it).
+    use_future(move || async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            if !matches!(state.export_opts.peek().target, TargetChoice::Usb) {
+                continue;
+            }
+            if let Ok(now) = tokio::task::spawn_blocking(removable_drives).await {
+                adopt_found(state, &now);
+                if *drives.peek() != now {
+                    drives.set(now);
+                }
+            }
+        }
+    });
+    // A drive that is already plugged in when the screen opens is taken at once.
+    use_hook(move || adopt_found(state, &drives.peek()));
+    let mut testing = use_signal(|| false);
+    let mut choosing = use_signal(|| false);
     let opts = state.export_opts.read().clone();
     let settings = state.settings.read().clone();
     let mut export_opts = state.export_opts;
@@ -601,37 +712,71 @@ fn SendPanel() -> Element {
         .clone()
         .unwrap_or_else(|| crate::state::paths().default_export_dir());
     let folder_text = folder.display().to_string();
+    let setup = settings.reader_setup();
+    let reader_dir = setup.reader_dir.clone();
+    let reader_text = reader_dir.as_ref().map(|d| d.display().to_string());
+    let reader_there = reader_dir.as_ref().is_some_and(|d| d.exists());
+    let on_reader = !matches!(opts.target, TargetChoice::Folder);
+    // The way of reaching the reader: the one chosen if this reader takes it.
+    let via = match opts.target {
+        TargetChoice::WiFi if setup.wifi => library::ExportMethod::WiFi,
+        _ if setup.usb => library::ExportMethod::Usb,
+        _ => library::ExportMethod::WiFi,
+    };
+    let both = setup.usb && setup.wifi;
+    let reader_folder = setup.folder.clone();
+    // The book is made as something the reader opens: if what it was made as is
+    // not listed (the list was changed), it switches to the first that is.
+    use_effect(move || {
+        let _ = state.settings.read().reader_setup().formats.len();
+        presets::fit_output_to_reader(state);
+    });
+    // Another reader may not take the way that was chosen: follow what it does take.
+    use_effect(move || {
+        let setup = state.settings.read().reader_setup();
+        let target = state.export_opts.read().target.clone();
+        let fixed = match target {
+            TargetChoice::Usb if !setup.usb => Some(TargetChoice::WiFi),
+            TargetChoice::WiFi if !setup.wifi => Some(TargetChoice::Usb),
+            _ => None,
+        };
+        if let Some(fixed) = fixed {
+            let mut opts = state.export_opts;
+            opts.write().target = fixed;
+        }
+    });
+    let wifi_url = setup.wifi_url.clone().unwrap_or_default();
+    let wifi_url_to_test = wifi_url.clone();
     let every_n_valid = opts.every_n.trim().parse::<usize>().is_ok_and(|n| n >= 1);
+    // What the book is made as, and which of the three the reader lists.
+    let current_output = active_series(state).map_or(OutputFormat::Xtc, |s| s.settings.output());
+    let reader_formats = setup.formats.clone();
 
     rsx! {
-        Panel { title: "Send to", icon: "file-down", id: "send", height: 330,
+        Panel { title: "Send to", icon: "file-down", id: "send", height: 740,
+            div { class: "px-label", "Reader" }
+            ReaderPicker {}
+            div { class: "px-label", style: "margin-top: 16px", "Send to" }
             div { class: "seg stack",
                 button {
                     class: if matches!(opts.target, TargetChoice::Folder) { "on" } else { "" },
                     onclick: move |_| export_opts.write().target = TargetChoice::Folder,
                     Icon { name: "folder-open", size: 16 } "Folder on this computer"
                 }
-                for d in drives.read().iter() {
-                    {
-                        let mount = d.mount.display().to_string();
-                        let on = opts.target == TargetChoice::Reader(mount.clone());
-                        let label = format!("Reader / SD card ({mount})");
-                        rsx! {
-                            button {
-                                key: "{mount}",
-                                class: if on { "on" } else { "" },
-                                onclick: { let mount = mount.clone(); move |_| export_opts.write().target = TargetChoice::Reader(mount.clone()) },
-                                Icon { name: "hard-drive", size: 16 } "{label}"
-                            }
+                button {
+                    class: if on_reader { "on" } else { "" },
+                    onclick: move |_| {
+                        if !on_reader {
+                            export_opts.write().target = if setup.usb { TargetChoice::Usb } else { TargetChoice::WiFi };
+                            spawn(async move {
+                                if let Ok(now) = tokio::task::spawn_blocking(removable_drives).await {
+                                    adopt_found(state, &now);
+                                    drives.set(now);
+                                }
+                            });
                         }
-                    }
-                }
-                if settings.export.webdav_url.as_deref().is_some_and(|u| !u.trim().is_empty()) {
-                    button {
-                        class: if matches!(opts.target, TargetChoice::WebDav) { "on" } else { "" },
-                        onclick: move |_| export_opts.write().target = TargetChoice::WebDav,
-                        Icon { name: "wifi", size: 16 } "Over Wi-Fi"
-                    }
+                    },
+                    Icon { name: "hard-drive", size: 16 } "On my reader"
                 }
             }
             if matches!(opts.target, TargetChoice::Folder) {
@@ -652,8 +797,161 @@ fn SendPanel() -> Element {
                     }
                 }
             }
-            button { class: "btn ghost small", style: "margin-top: 8px", onclick: move |_| drives.set(removable_drives()),
-                Icon { name: "refresh-cw", size: 14 } "Look for my reader"
+            if on_reader {
+                div { class: "reader-way",
+                    if both {
+                        div { class: "seg",
+                            button {
+                                class: if via == library::ExportMethod::Usb { "on" } else { "" },
+                                onclick: move |_| export_opts.write().target = TargetChoice::Usb,
+                                "USB"
+                                Help { text: USB_HELP }
+                            }
+                            button {
+                                class: if via == library::ExportMethod::WiFi { "on" } else { "" },
+                                onclick: move |_| export_opts.write().target = TargetChoice::WiFi,
+                                "Wi-Fi"
+                                Help { text: WIFI_HELP }
+                            }
+                        }
+                    } else {
+                        div { class: "px-label way-label",
+                            if via == library::ExportMethod::Usb { "USB" } else { "Wi-Fi" }
+                            Help { text: if via == library::ExportMethod::Usb { USB_HELP } else { WIFI_HELP } }
+                        }
+                    }
+                    {match via {
+                        library::ExportMethod::Usb => rsx! {
+                            div { class: "menu-anchor",
+                                div { class: "folder-pick",
+                                    span { class: "grow folder-path", title: "{reader_text.clone().unwrap_or_default()}",
+                                        if let Some(text) = &reader_text { "{text}" } else { "No drive found yet" }
+                                    }
+                                    button { class: "btn small", onclick: move |_| choosing.set(!choosing()), "Choose…" }
+                                }
+                                if choosing() {
+                                    div { class: "menu-scrim", onclick: move |_| choosing.set(false) }
+                                    div { class: "menu down",
+                                        for d in drives.read().iter() {
+                                            {
+                                                let mount = d.mount.clone();
+                                                let on = reader_text.as_deref() == Some(mount.display().to_string().as_str());
+                                                let name = if d.name.trim().is_empty() { "Drive".to_string() } else { d.name.clone() };
+                                                let label = format!("{} · {name} · {} free", mount.display(), logic::human_bytes(d.available_bytes));
+                                                rsx! {
+                                                    button {
+                                                        key: "{label}", class: "menu-item",
+                                                        onclick: move |_| {
+                                                            let mut s = state.settings;
+                                                            s.write().update_reader_setup(|r| r.reader_dir = Some(mount.clone()));
+                                                            state.save_settings();
+                                                            choosing.set(false);
+                                                        },
+                                                        Icon { name: "hard-drive", size: 15 }
+                                                        span { class: "grow", "{label}" }
+                                                        if on { Icon { name: "check", size: 14 } }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        if drives.read().is_empty() {
+                                            div { class: "menu-empty", "No drive found yet" }
+                                        }
+                                        button { class: "menu-item",
+                                            onclick: move |_| {
+                                                choosing.set(false);
+                                                let start = reader_dir.clone();
+                                                spawn(async move {
+                                                    if let Some(dir) = pick_folder("Where is your reader?", start).await {
+                                                        let mut s = state.settings;
+                                                        s.write().update_reader_setup(|r| r.reader_dir = Some(dir));
+                                                        state.save_settings();
+                                                    }
+                                                });
+                                            },
+                                            Icon { name: "folder-open", size: 15 }
+                                            "Browse for a folder…"
+                                        }
+                                    }
+                                }
+                            }
+                            if reader_text.is_some() && !reader_there {
+                                div { class: "reader-note bad", "That place is not there now. Plug the reader in, or choose another." }
+                            }
+                        },
+                        library::ExportMethod::WiFi => rsx! {
+                            label { class: "px-field",
+                                span { "Reader address" }
+                                div { class: "row",
+                                    input {
+                                        class: "grow", r#type: "text", placeholder: "http://192.168.3.3", value: "{wifi_url}",
+                                        onchange: move |e| {
+                                            let v = e.value().trim().to_string();
+                                            let mut settings = state.settings;
+                                            settings.write().update_reader_setup(|r| r.wifi_url = (!v.is_empty()).then_some(v));
+                                            state.save_settings();
+                                        },
+                                    }
+                                    button { class: "btn small", disabled: testing() || wifi_url.trim().is_empty(),
+                                        onclick: move |_| {
+                                            let url = wifi_url_to_test.clone();
+                                            spawn(async move {
+                                                testing.set(true);
+                                                match pipeline::export::check_webdav(&url).await {
+                                                    Ok(()) => state.notify("The reader answered."),
+                                                    Err(message) => state.error(message),
+                                                }
+                                                testing.set(false);
+                                            });
+                                        },
+                                        if testing() { "Looking…" } else { "Test" }
+                                    }
+                                }
+                            }
+                            div { class: "reader-note warn",
+                                Icon { name: "triangle-alert", size: 14 }
+                                " Wi-Fi is slow: a whole series can take an hour or more to send. We recommend USB, or Wi-Fi for a few chapters at a time."
+                            }
+                        },
+                    }}
+                    label { class: "px-field",
+                        span { "Folder on the reader" }
+                        input {
+                            r#type: "text", value: "{reader_folder}",
+                            onchange: move |e| {
+                                let v = e.value().trim().to_string();
+                                if !v.is_empty() {
+                                    let mut settings = state.settings;
+                                    settings.write().update_reader_setup(|r| r.folder = v);
+                                    state.save_settings();
+                                }
+                            },
+                        }
+                    }
+                }
+            }
+
+            // What the book is made as: only the formats this reader lists (all
+            // three if it lists none, so there is always something to pick). Each
+            // has its explanation behind a question mark.
+            div { class: "px-label", style: "margin-top: 16px", "Format" }
+            div { class: "seg",
+                for output in OutputFormat::ALL
+                    .into_iter()
+                    .filter(|o| reader_formats.is_empty() || reader_formats.iter().any(|f| f.eq_ignore_ascii_case(o.label())))
+                {
+                    {
+                        let class = if output == current_output { "on" } else { "" };
+                        rsx! {
+                            button {
+                                key: "{output.label()}", class,
+                                onclick: move |_| presets::set_output(state, output),
+                                "{output.label()}"
+                                Help { text: format_help(output) }
+                            }
+                        }
+                    }
+                }
             }
 
             div { class: "px-label", style: "margin-top: 16px", "Files" }
@@ -695,16 +993,16 @@ fn ExportFooter() -> Element {
     let plan = state.export_plan.read().clone();
     let library = state.library.read().clone();
     let opts = state.export_opts.read().clone();
-    let busy = state
-        .job
-        .read()
-        .as_ref()
-        .is_some_and(|j| j.result.is_none());
-    let exporting = state
-        .job
-        .read()
-        .as_ref()
-        .is_some_and(|j| j.kind == JobKind::Export && j.result.is_none());
+    // Whether something runs, not how far it has got: the footer is not drawn
+    // again for every page.
+    let (busy, exporting) = use_memo(move || {
+        let job = state.job.read();
+        let running = job.as_ref().is_some_and(|j| j.result.is_none());
+        let exporting = job
+            .as_ref()
+            .is_some_and(|j| j.kind == JobKind::Export && j.result.is_none());
+        (running, exporting)
+    })();
 
     let (mut series_count, mut chapters, mut pages, mut bytes) = (0usize, 0usize, 0usize, 0u64);
     for item in plan.items.iter().filter(|i| !i.off) {
@@ -723,7 +1021,7 @@ fn ExportFooter() -> Element {
         chapters += included.len();
         let p: usize = included.iter().map(|c| c.pages).sum();
         pages += p;
-        bytes += logic::estimate_export_bytes(p, series.settings.format);
+        bytes += logic::estimate_output_bytes(p, series.settings.output());
     }
     let every_n_valid = opts.every_n.trim().parse::<usize>().is_ok_and(|n| n >= 1);
 
@@ -780,7 +1078,7 @@ fn AddSeries(on_close: EventHandler<()>) -> Element {
                 let has_cover = s.info.as_ref().is_some_and(|i| i.has_cover);
                 rsx! {
                     button { key: "{s.id}", class: "px-add-row",
-                        onclick: move |_| add_export_series(state, id.clone()),
+                        onclick: move |_| { add_export_series(state, id.clone()); on_close.call(()); },
                         div { class: "px-layer-cover",
                             if has_cover { Cover { key_id: saved_cover_key(&s.id) } } else { NoCover {} }
                         }
@@ -810,27 +1108,3 @@ fn CropSection(
     rsx! { CropInspector { key: "{identity}", draft, crop_key, saved } }
 }
 
-/// The name of one of your presets, edited in place.
-#[component]
-fn RenameBox(identity: String, preset_id: String, name: String, nonce: Signal<u32>) -> Element {
-    let state = use_context::<AppState>();
-    rsx! {
-        div { key: "{identity}",
-            label { class: "px-label", "Preset name" }
-            input {
-                class: "px-input", r#type: "text", maxlength: "40", value: "{name}",
-                onchange: move |e| {
-                    let result = state.edit_presets(|p| p.rename(&preset_id, e.value().trim()));
-                    match result {
-                        Ok(()) => state.save_presets(),
-                        Err(err) => {
-                            state.error(err.to_string());
-                            let mut n = nonce;
-                            n.set(nonce() + 1);
-                        }
-                    }
-                },
-            }
-        }
-    }
-}

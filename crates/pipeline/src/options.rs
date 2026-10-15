@@ -1,6 +1,6 @@
 //! Mapping saved settings onto the converter's options.
 
-use converter::ProcessOptions;
+use converter::{Depth, ProcessOptions};
 use device_profiles::DeviceProfile;
 use library::{ConversionSettings, Settings};
 
@@ -26,7 +26,23 @@ pub fn process_options_for(
         strip_cut: conversion.strip_cut,
         overlap_percent: conversion.overlap_percent,
         dither: conversion.dither,
-        depth: conversion.format.depth(),
+        depth: output_depth(device, conversion),
+    }
+}
+
+/// How many grays the pages are made with. An XTC or XTCH book is as its
+/// format says. An EPUB follows the reader's screen: four grays (dithered the
+/// way the settings say) for a reader that shows four, and the full grays,
+/// which it shows as it can, for one that shows more.
+pub fn output_depth(device: &DeviceProfile, conversion: &ConversionSettings) -> Depth {
+    if conversion.epub {
+        if device.gray_levels <= 4 {
+            Depth::Two
+        } else {
+            Depth::Eight
+        }
+    } else {
+        conversion.format.depth()
     }
 }
 
@@ -46,11 +62,27 @@ mod tests {
         let mut s = Settings::default();
         let o = process_options(&s);
         assert_eq!((o.width, o.height), (480, 800));
-        assert_eq!(o.depth, Depth::Two, "default is XTCH");
+        assert_eq!(o.depth, Depth::One, "default is XTC");
         assert_eq!(o.contrast, 55);
 
-        s.conversion.format = Format::Xtc;
-        assert_eq!(process_options(&s).depth, Depth::One);
+        s.conversion.format = Format::Xtch;
+        assert_eq!(process_options(&s).depth, Depth::Two);
+    }
+
+    #[test]
+    fn an_epub_follows_the_readers_screen() {
+        let mut c = ConversionSettings::default();
+        c.set_output(library::OutputFormat::Epub);
+        let xteink = device_profiles::x4_pro();
+        let kindle = device_profiles::known("kindle-paperwhite-12").unwrap();
+        assert_eq!(output_depth(&xteink, &c), Depth::Two);
+        assert_eq!(output_depth(&kindle, &c), Depth::Eight);
+        assert_eq!((process_options_for(&kindle, &c).width, process_options_for(&kindle, &c).height), (1264, 1680));
+        // XTC and XTCH ignore the screen.
+        c.set_output(library::OutputFormat::Xtc);
+        assert_eq!(output_depth(&kindle, &c), Depth::One);
+        c.set_output(library::OutputFormat::Xtch);
+        assert_eq!(output_depth(&kindle, &c), Depth::Two);
     }
 
     #[test]

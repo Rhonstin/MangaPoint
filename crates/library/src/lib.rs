@@ -29,8 +29,8 @@ pub use presets::{
     builtin_presets, ConversionPreset, Deleted, PresetEntry, PresetError, PresetsDb,
 };
 pub use settings::{
-    ConversionField, ConversionSettings, DownloadLimits, DownloadSettings, DownloadSpeed,
-    ExportSettings, Settings,
+    Animations, ConversionField, ConversionSettings, DownloadLimits, DownloadSettings,
+    DownloadSpeed, ExportMethod, ExportSettings, OutputFormat, ReaderSetup, Settings, SetupStep,
 };
 pub use sources::{Choice, SourceState};
 pub use speeds::{SourceSpeed, SpeedDb};

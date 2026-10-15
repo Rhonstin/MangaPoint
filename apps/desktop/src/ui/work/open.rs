@@ -16,6 +16,21 @@ pub(super) fn reset_workspace_state(state: AppState) {
     source.set(SourceChoice::Adaptive);
 }
 
+/// Wait for the catalog engine if it is still starting (up to a minute and a
+/// half). True if it is running.
+pub(super) async fn wait_for_engine(state: AppState) -> bool {
+    for _ in 0..450 {
+        if state.client().is_some() {
+            return true;
+        }
+        if !matches!(*state.boot.peek(), crate::state::BootState::Starting { .. }) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    state.client().is_some()
+}
+
 /// Open a search result: show its chapters and fetch their lists.
 pub fn open_series_from_search(state: AppState, ranked: RankedSeries) {
     let title = ranked.title.clone();
@@ -33,7 +48,41 @@ pub fn open_series_from_search(state: AppState, ranked: RankedSeries) {
     state.go(Page::Series);
 
     let members = logic::one_per_source(&ranked.members, 4);
+    let mut open_details = state.open_details;
+    open_details.set(None);
+    // What the sources say about it (description, author, cover) is asked of
+    // all of them at once and shown as soon as the first has it.
+    {
+        let sources: Vec<(i64, Option<String>)> = ranked
+            .members
+            .iter()
+            .map(|m| (m.candidate.manga_id, m.candidate.thumbnail.clone()))
+            .collect();
+        let names: Vec<(String, String)> = logic::one_per_source(&ranked.members, 8)
+            .iter()
+            .map(|m| (m.candidate.source_id.clone(), m.candidate.source_name.clone()))
+            .collect();
+        let wanted = series_id.clone();
+        spawn_forever(async move {
+            wait_for_engine(state).await;
+            let Some(client) = state.client() else { return };
+            let (details, thumbnails) = details_race(&client, Vec::new(), sources).await;
+            let still_here = state
+                .workspace
+                .peek()
+                .as_ref()
+                .is_some_and(|w| w.series_id == wanted);
+            if let (Some(details), true) = (details, still_here) {
+                let info = logic::series_info_from(&details, names, false, now_secs());
+                let cover = (!thumbnails.is_empty())
+                    .then(|| Rc::<str>::from(crate::covers::source_url(&wanted, &thumbnails)));
+                let mut open_details = state.open_details;
+                open_details.set(Some(crate::state::OpenDetails { series_id: wanted, info, cover }));
+            }
+        });
+    }
     spawn_forever(async move {
+        wait_for_engine(state).await;
         let result = load_chapters(state, members).await;
         // The user may have opened something else meanwhile.
         let still_here = state
@@ -77,6 +126,7 @@ pub fn open_series_from_library(state: AppState, series_id: &str) {
     chapters.set(ChaptersState::Loading);
     let id = series_id.to_string();
     spawn_forever(async move {
+        wait_for_engine(state).await;
         // Series downloaded before sources were kept find theirs again from
         // their downloaded chapters.
         let sources = if sources.is_empty() {
@@ -325,39 +375,27 @@ pub fn saved_cover_key(series_id: &str) -> String {
     format!("saved:{series_id}")
 }
 
-/// Show the cover saved with a series, once it has been read from disk.
+/// Show the cover saved with a series: its address is given to the page,
+/// which asks for the picture when it is in view.
 pub fn load_saved_cover(state: AppState, series_id: &str) {
     let key = saved_cover_key(series_id);
-    if state.covers.peek().contains_key(&key) {
+    let path = library_files().cover_path(series_id);
+    let Ok(meta) = std::fs::metadata(&path) else {
+        return;
+    };
+    // The address changes when the picture on disk does.
+    let version = meta
+        .modified()
+        .ok()
+        .and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_secs())
+        ^ meta.len();
+    let url: Rc<str> = crate::covers::saved_url(series_id, version).into();
+    if state.covers.peek().get(&key) == Some(&url) {
         return;
     }
-    let path = library_files().cover_path(series_id);
-    spawn_forever(async move {
-        let Ok(mut bytes) = tokio::fs::read(&path).await else {
-            return;
-        };
-        // A cover saved before they were kept small is shrunk once, on disk.
-        if bytes.len() > logic::COVER_KEEP_BYTES {
-            let big = bytes.clone();
-            let small = tokio::task::spawn_blocking(move || logic::small_cover(&big))
-                .await
-                .ok()
-                .flatten();
-            if let Some(small) = small.filter(|s| s.len() < bytes.len()) {
-                let _ = tokio::fs::write(&path, &small).await;
-                bytes = small;
-            }
-        }
-        let mime = match bytes.first() {
-            Some(0x89) => "image/png",
-            Some(b'R') => "image/webp",
-            Some(b'G') => "image/gif",
-            _ => "image/jpeg",
-        };
-        let url = format!("data:{mime};base64,{}", STANDARD.encode(&bytes));
-        let mut covers = state.covers;
-        covers.write().insert(key, url.into());
-    });
+    let mut covers = state.covers;
+    covers.write().insert(key, url);
 }
 
 /// Fetch and keep what the sources say about a downloaded series (its
@@ -379,22 +417,21 @@ pub fn ensure_series_info(state: AppState, series_id: &str) {
     busy.write().insert(id.clone());
     spawn_forever(async move {
         let files = library_files();
-        // The first chapter that the server still knows about.
-        let mut details = None;
-        for chapter in series.chapters.iter().take(4) {
-            if let Ok(found) = client.manga_of_chapter(chapter.chapter_id).await {
-                details = Some(found);
-                break;
-            }
-        }
-        // A series saved without downloading anything is looked up by where it was found.
-        if details.is_none() {
-            for source in series.sources.iter().take(4) {
-                if let Ok(found) = client.manga_details(source.manga_id).await {
-                    details = Some(found);
-                    break;
-                }
-            }
+        // Every source of the series is asked at once; the details come from
+        // whichever answers first with a description, and what it leaves out
+        // is filled in from the others.
+        let (details, thumbnails) = details_race(
+            &client,
+            series.chapters.iter().map(|c| (c.source_id.clone(), c.chapter_id)).collect(),
+            series.sources.iter().map(|s| (s.manga_id, s.thumbnail.clone())).collect(),
+        )
+        .await;
+        // Taken out of the library while the sources were being asked: nothing
+        // is written for it, or its folder would come back.
+        if state.library.peek().find(&id).is_none() {
+            let mut busy = state.info_busy;
+            busy.write().remove(&id);
+            return;
         }
         if let Some(details) = details {
             let names: HashMap<String, String> = client
@@ -417,19 +454,18 @@ pub fn ensure_series_info(state: AppState, series_id: &str) {
                 }
             }
             let mut has_cover = false;
-            let cover_path = details
-                .thumbnail_url
-                .clone()
-                .or_else(|| series.sources.iter().find_map(|s| s.thumbnail.clone()));
-            if let Some(path) = cover_path.as_deref() {
-                if let Ok(bytes) = client.get_bytes(path).await {
-                    if let Some(small) = logic::small_cover(&bytes) {
-                        let target = files.cover_path(&id);
-                        if let Some(dir) = target.parent() {
-                            let _ = std::fs::create_dir_all(dir);
-                        }
-                        has_cover = std::fs::write(&target, &small).is_ok();
+            // The cover is the first picture to arrive from any of the sources.
+            if let Some(bytes) = crate::covers::first_picture(&client, thumbnails).await {
+                let small = tokio::task::spawn_blocking(move || logic::small_cover(&bytes))
+                    .await
+                    .ok()
+                    .flatten();
+                if let Some(small) = small {
+                    let target = files.cover_path(&id);
+                    if let Some(dir) = target.parent() {
+                        let _ = std::fs::create_dir_all(dir);
                     }
+                    has_cover = std::fs::write(&target, &small).is_ok();
                 }
             }
             let info = logic::series_info_from(&details, source_names, has_cover, now_secs());
@@ -446,6 +482,81 @@ pub fn ensure_series_info(state: AppState, series_id: &str) {
         let mut busy = state.info_busy;
         busy.write().remove(&id);
     });
+}
+
+/// What the sources say about a series, from all of them at once: the first
+/// answer that has a description is the one used, and anything it lacks (an
+/// author, the genres) is taken from the others that came in by then. Also the
+/// cover addresses to try, the best first. Nothing when no source answers.
+pub(super) async fn details_race(
+    client: &Arc<catalog::SuwayomiClient>,
+    chapters: Vec<(String, i64)>,
+    sources: Vec<(i64, Option<String>)>,
+) -> (Option<catalog::MangaDetails>, Vec<String>) {
+    use futures_util::stream::FuturesUnordered;
+    use futures_util::FutureExt;
+    type Asked = futures_util::future::BoxFuture<'static, Option<catalog::MangaDetails>>;
+    let mut asking: FuturesUnordered<Asked> = FuturesUnordered::new();
+    // A chapter downloaded from each source (series downloaded before their
+    // sources were kept can only be found this way).
+    let mut seen = HashSet::new();
+    for (source_id, chapter_id) in chapters {
+        if !seen.insert(source_id) || seen.len() > 3 {
+            continue;
+        }
+        let client = client.clone();
+        asking.push(async move { client.manga_of_chapter(chapter_id).await.ok() }.boxed());
+    }
+    // Where it was found on each source.
+    for (manga_id, _) in sources.iter().take(6) {
+        let (client, id) = (client.clone(), *manga_id);
+        asking.push(async move { client.manga_details(id).await.ok() }.boxed());
+    }
+    let blank = |s: &Option<String>| s.as_deref().is_none_or(|s| s.trim().is_empty());
+    let mut merged: Option<catalog::MangaDetails> = None;
+    let mut thumbnails: Vec<String> = Vec::new();
+    let gather = async {
+        while let Some(found) = asking.next().await {
+            let Some(d) = found else { continue };
+            if let Some(path) = &d.thumbnail_url {
+                if !thumbnails.contains(path) {
+                    thumbnails.push(path.clone());
+                }
+            }
+            match merged.as_mut() {
+                None => merged = Some(d),
+                Some(m) => {
+                    if blank(&m.description) {
+                        m.description = d.description;
+                    }
+                    if blank(&m.author) {
+                        m.author = d.author;
+                    }
+                    if blank(&m.artist) {
+                        m.artist = d.artist;
+                    }
+                    if m.genre.is_empty() {
+                        m.genre = d.genre;
+                    }
+                    if blank(&m.status) {
+                        m.status = d.status;
+                    }
+                }
+            }
+            if merged.as_ref().is_some_and(|m| !blank(&m.description)) {
+                break;
+            }
+        }
+    };
+    let _ = tokio::time::timeout(Duration::from_secs(20), gather).await;
+    for (_, thumbnail) in &sources {
+        if let Some(path) = thumbnail {
+            if !thumbnails.contains(path) {
+                thumbnails.push(path.clone());
+            }
+        }
+    }
+    (merged, thumbnails)
 }
 
 pub(super) async fn load_chapters(

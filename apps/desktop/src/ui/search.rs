@@ -1,6 +1,6 @@
 //! Searching every installed source at once.
 
-use super::widgets::{cover_key, load_cover, Busy, Chip, Cover, EmptyState, Icon, Loading};
+use super::widgets::{cover_key, load_cover_race, Busy, Chip, Cover, EmptyState, EngineStarting, Icon, Loading};
 use crate::logic::{self, ExplicitFilter, SearchFilters, SearchSort, COMMON_GENRES, SERIES_TYPES};
 use crate::state::now_secs;
 use crate::state::spawn_forever;
@@ -14,6 +14,48 @@ use sources::SourceManager;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use tracing::{info, warn};
+
+/// What was learned of the chapter lists of series already looked at, for a
+/// while: searching for the same thing again (or something that turns up the
+/// same series) does not ask the sources a second time.
+type Remembered = HashMap<(String, i64), (Instant, search::Enrichment)>;
+static ENRICHED: std::sync::Mutex<Option<Remembered>> = std::sync::Mutex::new(None);
+
+/// How long what was learned is trusted.
+const ENRICHED_FOR: Duration = Duration::from_secs(20 * 60);
+
+/// The chapter lists of `candidates`, from what is remembered where it is fresh
+/// and from the sources for the rest.
+async fn enrich_remembered(
+    client: &catalog::SuwayomiClient,
+    candidates: &[search::Candidate],
+) -> HashMap<(String, i64), search::Enrichment> {
+    let mut found = HashMap::new();
+    let mut missing = Vec::new();
+    {
+        let cache = ENRICHED.lock().ok();
+        let known = cache.as_ref().and_then(|c| c.as_ref());
+        for candidate in candidates {
+            match known.and_then(|k| k.get(&candidate.key())) {
+                Some((at, enrichment)) if at.elapsed() < ENRICHED_FOR => {
+                    found.insert(candidate.key(), enrichment.clone());
+                }
+                _ => missing.push(candidate.clone()),
+            }
+        }
+    }
+    // Eight lookups at once, and no source is waited on for long: a series
+    // whose list is slow keeps what it had.
+    let fetched = search::enrich(client, &missing, Duration::from_secs(10), 8).await;
+    if let Ok(mut cache) = ENRICHED.lock() {
+        let map = cache.get_or_insert_with(HashMap::new);
+        for (key, enrichment) in &fetched {
+            map.insert(key.clone(), (Instant::now(), enrichment.clone()));
+        }
+    }
+    found.extend(fetched);
+    found
+}
 
 /// A source as the search page shows it.
 #[derive(Clone, PartialEq)]
@@ -155,12 +197,15 @@ pub fn SearchPage() -> Element {
     // Before anything is searched the box sits in the middle of the window, under
     // the cat. Searching moves it up and widens it (see style.css).
     let idle = view.query.is_empty() && !view.searching;
+    // Until the catalog engine is up there is nothing to search with: show how
+    // far it is instead of the box, which then arrives.
+    if state.services.read().is_none() {
+        return rsx! { EngineStarting {} };
+    }
     rsx! {
-      div { class: if idle { "search-stage idle" } else { "search-stage" },
+      div { class: if idle { "search-stage idle arrive" } else { "search-stage arrive" },
         div { class: "search-hero",
-            super::ocean::OceanCat {}
-            h2 { "What are we reading?" }
-            p { class: "muted", "Type a title below and the cat will go looking for it." }
+            super::ocean::OceanHero {}
         }
         // The search box is all there is at the top. It is a grid of two things
         // in one place: an invisible copy of the full-size box, which holds the
@@ -189,7 +234,10 @@ pub fn SearchPage() -> Element {
                     onsubmit: move |e| {
                         e.prevent_default();
                         let q = text.read().trim().to_string();
-                        if !q.is_empty() {
+                        if q.is_empty() {
+                            // Searching for nothing goes back to the start.
+                            clear_search(state);
+                        } else {
                             run_search(state, q);
                         }
                     },
@@ -247,7 +295,7 @@ pub fn SearchPage() -> Element {
                             }
                         }
                         // Submitting the form (this button or Enter) starts the search.
-                        button { class: "search-circle", r#type: "submit", title: "Search", disabled: view.searching,
+                        button { class: "search-circle", r#type: "submit", title: "Search",
                             Icon { name: "search", size: 18 }
                         }
                     }
@@ -281,6 +329,8 @@ pub fn SearchPage() -> Element {
         }
         if view.searching {
             Loading { label: format!("Searching… {} of {} sources answered", view.answered, view.total) }
+        } else if view.enriching {
+            p { class: "muted small", style: "margin: 6px 2px 0", "Checking chapter lists to pick the best source for each…" }
         } else if !view.query.is_empty() && view.ranked.is_empty() && !view.no_sources && !view.none_selected {
             EmptyState {
                 title: "The cat looked everywhere",
@@ -652,6 +702,17 @@ fn SeriesCard(index: usize) -> Element {
 
 /// Run a search across all installed sources, filling the results in as
 /// each source answers.
+/// Forget the results and show the start of the Search page again. A search
+/// still running is dropped (it stops publishing once the generation moves on).
+pub fn clear_search(state: AppState) {
+    let mut view = state.search;
+    let generation = view.peek().generation + 1;
+    view.set(SearchView {
+        generation,
+        ..Default::default()
+    });
+}
+
 pub fn run_search(state: AppState, query: String) {
     spawn_forever(async move {
         let Some(client) = state.client() else { return };
@@ -732,13 +793,18 @@ pub fn run_search(state: AppState, query: String) {
                 &enrichment,
                 &lang,
                 &preferred,
-                true,
+                Phase::Asking,
             ) {
                 info!("Search for \"{query}\" was replaced by a newer search");
                 return;
             }
         }
         drop(stream);
+        // Every source has answered: the results are all there to use. What
+        // follows only improves which source each one is shown from.
+        if !publish(state, generation, &search, &query, &enrichment, &lang, &preferred, Phase::Checking) {
+            return;
+        }
 
         // Look at the chapter lists of the best-looking series to rank their sources properly.
         let top: Vec<_> = state
@@ -754,7 +820,7 @@ pub fn run_search(state: AppState, query: String) {
             search.candidates().len(),
             started.elapsed().as_secs_f32()
         );
-        enrichment = search::enrich(&*client, &top, Duration::from_secs(25), 4).await;
+        enrichment = enrich_remembered(&client, &top).await;
         let current = publish(
             state,
             generation,
@@ -763,7 +829,7 @@ pub fn run_search(state: AppState, query: String) {
             &enrichment,
             &lang,
             &preferred,
-            false,
+            Phase::Done,
         );
         state.save_health();
         if !current {
@@ -777,6 +843,17 @@ pub fn run_search(state: AppState, query: String) {
     });
 }
 
+/// How far a search has got.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Phase {
+    /// Sources are still being asked.
+    Asking,
+    /// Every source has answered; chapter lists are being looked at.
+    Checking,
+    /// All done.
+    Done,
+}
+
 /// Show the results so far. Returns false, doing nothing, if a newer search
 /// has replaced this one.
 #[allow(clippy::too_many_arguments)]
@@ -788,7 +865,7 @@ fn publish(
     enrichment: &HashMap<(String, i64), search::Enrichment>,
     lang: &str,
     preferred: &[String],
-    still_searching: bool,
+    phase: Phase,
 ) -> bool {
     if state.search.peek().generation != generation {
         return false;
@@ -803,23 +880,39 @@ fn publish(
     };
     let ranked = rank_series(search.clusters(), query, &ctx);
 
-    // Fetch the covers of the first screenful.
-    for series in ranked.iter().take(30) {
+    // Point every result at its cover. Nothing is fetched here: the page asks
+    // for the covers in view, and when the series is on several sources they
+    // are all asked, the first picture to arrive being the one shown.
+    let mut ahead: Vec<(String, Vec<String>)> = Vec::new();
+    for (position, series) in ranked.iter().enumerate() {
         let best = &series.best().candidate;
-        if let Some(path) = &best.thumbnail {
-            load_cover(
-                state,
-                cover_key(&best.source_id, best.manga_id),
-                path.clone(),
-            );
+        let mut paths: Vec<String> = best.thumbnail.iter().cloned().collect();
+        for member in series.members.iter().take(6) {
+            if let Some(path) = &member.candidate.thumbnail {
+                if !paths.contains(path) {
+                    paths.push(path.clone());
+                }
+            }
+        }
+        load_cover_race(
+            state,
+            cover_key(&best.source_id, best.manga_id),
+            &library::series_id(&series.title),
+            paths.clone(),
+        );
+        // The first screenfuls are fetched now, while the results are looked at.
+        if position < 18 {
+            ahead.push((library::series_id(&series.title), paths));
         }
     }
+    crate::covers::prefetch(ahead);
 
     let mut view = state.search;
     view.set(SearchView {
         query: query.to_string(),
         ranked,
-        searching: still_searching,
+        searching: phase == Phase::Asking,
+        enriching: phase == Phase::Checking,
         answered: search.answered,
         total: search.total_sources,
         failed: search

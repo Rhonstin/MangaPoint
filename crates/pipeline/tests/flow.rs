@@ -599,13 +599,13 @@ async fn conversion_cache_invalidates_for_settings_device_and_format() {
     j.device.width = 320;
     j.device.height = 512;
     assert_eq!(export(&lib, &j).await.unwrap().cached_chapters, 0);
-    j.series.settings.format = Format::Xtc;
+    j.series.settings.format = Format::Xtch;
     assert_eq!(export(&lib, &j).await.unwrap().cached_chapters, 0);
     let final_run = export(&lib, &j).await.unwrap();
     assert_eq!(final_run.cached_chapters, 3);
     let bytes = fs::read(&final_run.files[0].location).unwrap();
     let file = XtcFile::parse(&bytes).unwrap();
-    assert_eq!(file.format, Format::Xtc);
+    assert_eq!(file.format, Format::Xtch);
     let image = file.decode_page(0).unwrap().image;
     assert_eq!((image.width, image.height), (320, 512));
     let _ = fs::remove_dir_all(lib.root);
@@ -670,11 +670,11 @@ async fn one_file_holds_every_chapter_with_a_working_chapter_menu() {
         .await
         .unwrap();
 
-    assert_eq!(names(&out), ["Test Series - Ch 1-3.xtch"]);
+    assert_eq!(names(&out), ["Test Series - Ch 1-3.xtc"]);
     assert_eq!((out.pages, out.chapters), (9, 3));
     let bytes = fs::read(&out.files[0].location).unwrap();
     let file = XtcFile::parse(&bytes).unwrap();
-    assert_eq!(file.format, Format::Xtch);
+    assert_eq!(file.format, Format::Xtc);
     assert_eq!(file.title, TITLE);
     assert_eq!(file.read_direction(), Some(ReadDirection::RightToLeft));
     let menu: Vec<_> = file
@@ -698,6 +698,100 @@ async fn one_file_holds_every_chapter_with_a_working_chapter_menu() {
     let _ = fs::remove_dir_all(lib.root);
 }
 
+/// Read an EPUB's text file, and list its picture names.
+fn epub_text(path: &str, name: &str) -> String {
+    use std::io::Read;
+    let mut zip = zip::ZipArchive::new(fs::File::open(path).unwrap()).unwrap();
+    let mut s = String::new();
+    zip.by_name(name).unwrap().read_to_string(&mut s).unwrap();
+    s
+}
+
+fn epub_pictures(path: &str) -> Vec<String> {
+    let zip = zip::ZipArchive::new(fs::File::open(path).unwrap()).unwrap();
+    let mut names: Vec<String> = zip
+        .file_names()
+        .filter(|n| n.ends_with(".png") || n.ends_with(".jpg"))
+        .map(String::from)
+        .collect();
+    names.sort_by_key(|n| n.trim_start_matches("OEBPS/").split('.').next().unwrap().parse::<usize>().unwrap());
+    names
+}
+
+#[tokio::test]
+async fn an_epub_has_every_page_the_chapters_and_the_readers_screen() {
+    let (lib, series) = three_chapters("ex-epub").await;
+    let mut j = job(&lib, &series, Grouping::Single);
+    j.series.settings.set_output(library::OutputFormat::Epub);
+    let out = export(&lib, &j).await.unwrap();
+    assert_eq!(names(&out), ["Test Series - Ch 1-3.epub"]);
+    assert_eq!((out.pages, out.chapters), (9, 3));
+    let path = out.files[0].location.clone();
+
+    // An Xteink shows four grays, so its pages are 2-bit PNGs.
+    let pictures = epub_pictures(&path);
+    assert_eq!(pictures.len(), 9);
+    assert!(pictures.iter().all(|n| n.ends_with(".png")), "{pictures:?}");
+    let opf = epub_text(&path, "OEBPS/c.opf");
+    assert!(opf.contains("page-progression-direction=\"rtl\""), "manga reads right to left");
+    assert!(opf.contains("pre-paginated"));
+    assert_eq!(opf.matches("<itemref").count(), 9);
+    let nav = epub_text(&path, "OEBPS/n.xhtml");
+    for (name, page) in [("Chapter 1", 1), ("Chapter 2", 4), ("Chapter 3", 7)] {
+        assert!(nav.contains(&format!("<a href=\"{page}.xhtml\">{name}</a>")), "{nav}");
+    }
+    assert!(epub_text(&path, "OEBPS/1.xhtml").contains("width=480,height=800"));
+    assert_eq!(lib.leftover_scratch(), 0, "temporary files are cleaned up");
+
+    // The same export again comes from the cached pictures and is the same book.
+    let again = export(&lib, &j).await.unwrap();
+    assert_eq!(again.cached_chapters, 3);
+    assert_eq!(epub_pictures(&again.files[0].location), pictures);
+    let _ = fs::remove_dir_all(lib.root);
+}
+
+#[tokio::test]
+async fn an_epub_for_a_reader_with_many_grays_is_made_of_jpegs_at_its_size() {
+    let (lib, series) = three_chapters("ex-epub-kindle").await;
+    let mut j = job(&lib, &series, Grouping::PerChapter);
+    j.device = device_profiles::known("kindle-paperwhite-12").unwrap();
+    j.series.settings.set_output(library::OutputFormat::Epub);
+    j.cover = true;
+    let out = export(&lib, &j).await.unwrap();
+    assert_eq!(names(&out).len(), 3);
+    let path = out.files[0].location.clone();
+    let pictures = epub_pictures(&path);
+    // The cover first, then the chapter's three pages.
+    assert_eq!(pictures.len(), 4);
+    assert!(pictures.iter().all(|n| n.ends_with(".jpg")), "{pictures:?}");
+    let mut zip = zip::ZipArchive::new(fs::File::open(&path).unwrap()).unwrap();
+    let mut bytes = Vec::new();
+    std::io::Read::read_to_end(&mut zip.by_name(&pictures[1]).unwrap(), &mut bytes).unwrap();
+    let page = image::load_from_memory(&bytes).unwrap();
+    assert_eq!((page.width(), page.height()), (1264, 1680));
+    assert!(epub_text(&path, "OEBPS/1.xhtml").contains("width=1264,height=1680"));
+    let _ = fs::remove_dir_all(lib.root);
+}
+
+#[tokio::test]
+async fn a_long_epub_is_cut_into_parts_a_reader_can_open() {
+    let (lib, series) = three_chapters("ex-epub-parts").await;
+    let mut j = job(&lib, &series, Grouping::Single);
+    j.series.settings.set_output(library::OutputFormat::Epub);
+    // Parts of at most four pages: three chapters of three pages each.
+    j.max_pages_per_file = 4;
+    let out = export(&lib, &j).await.unwrap();
+    assert_eq!(
+        names(&out),
+        [
+            "Test Series - Part 1 - Ch 1.epub",
+            "Test Series - Part 2 - Ch 2.epub",
+            "Test Series - Part 3 - Ch 3.epub"
+        ]
+    );
+    let _ = fs::remove_dir_all(lib.root);
+}
+
 #[tokio::test]
 async fn one_file_per_chapter_and_one_file_every_n_chapters() {
     let (lib, series) = three_chapters("ex-group").await;
@@ -707,9 +801,9 @@ async fn one_file_per_chapter_and_one_file_every_n_chapters() {
     assert_eq!(
         names(&per),
         [
-            "Test Series - Ch 1.xtch",
-            "Test Series - Ch 2.xtch",
-            "Test Series - Ch 3.xtch"
+            "Test Series - Ch 1.xtc",
+            "Test Series - Ch 2.xtc",
+            "Test Series - Ch 3.xtc"
         ]
     );
     let one = XtcFile::parse(&fs::read(&per.files[1].location).unwrap())
@@ -718,14 +812,14 @@ async fn one_file_per_chapter_and_one_file_every_n_chapters() {
     assert_eq!(one, (3, 1));
 
     // Every 2 chapters: "Ch 1-2" and "Ch 3". The per-chapter run above already
-    // wrote "Ch 3.xtch" into the same folder, so the new copy is numbered
+    // wrote "Ch 3.xtc" into the same folder, so the new copy is numbered
     // rather than overwriting it.
     let every2 = export(&lib, &job(&lib, &series, Grouping::EveryN(2)))
         .await
         .unwrap();
     assert_eq!(
         names(&every2),
-        ["Test Series - Ch 1-2.xtch", "Test Series - Ch 3 (2).xtch"]
+        ["Test Series - Ch 1-2.xtc", "Test Series - Ch 3 (2).xtc"]
     );
     let _ = fs::remove_dir_all(lib.root);
 }
@@ -745,7 +839,7 @@ async fn a_subset_of_the_downloaded_chapters_can_be_exported() {
         })
         .unwrap();
     assert_eq!(file, ["Chapter 1", "Chapter 3"]);
-    assert_eq!(names(&out), ["Test Series - Ch 1-3.xtch"]);
+    assert_eq!(names(&out), ["Test Series - Ch 1-3.xtc"]);
 
     j.chapter_keys = vec!["nope".into()];
     assert!(matches!(
@@ -764,9 +858,9 @@ async fn a_page_limit_starts_a_new_file_with_part_numbers() {
     assert_eq!(
         names(&out),
         [
-            "Test Series - Part 1 - Ch 1.xtch",
-            "Test Series - Part 2 - Ch 2.xtch",
-            "Test Series - Part 3 - Ch 3.xtch"
+            "Test Series - Part 1 - Ch 1.xtc",
+            "Test Series - Part 2 - Ch 2.xtc",
+            "Test Series - Part 3 - Ch 3.xtc"
         ]
     );
     let _ = fs::remove_dir_all(lib.root);
@@ -932,7 +1026,7 @@ async fn a_lone_unnumbered_chapter_is_named_after_itself() {
     let exported = export(&lib, &job(&lib, &series, Grouping::PerChapter))
         .await
         .unwrap();
-    assert_eq!(names(&exported), ["Test Series - Author's note.xtch"]);
+    assert_eq!(names(&exported), ["Test Series - Author's note.xtc"]);
     let _ = fs::remove_dir_all(lib.root);
 }
 

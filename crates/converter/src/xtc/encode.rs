@@ -42,6 +42,12 @@ pub fn encode_page(img: &LevelImage) -> Result<Vec<u8>, XtcError> {
     let (magic, data) = match img.depth {
         Depth::One => (XTG_MAGIC, encode_xtg_data(img)),
         Depth::Two => (XTH_MAGIC, encode_xth_data(img)),
+        Depth::Eight => {
+            return Err(XtcError::DepthMismatch {
+                expected: Depth::Two,
+                found: Depth::Eight,
+            })
+        }
     };
     let mut out = Vec::with_capacity(PAGE_HEADER_SIZE + data.len());
     out.extend_from_slice(&magic.to_le_bytes());
@@ -122,6 +128,7 @@ pub(crate) fn validate_page(bytes: &[u8], index: usize) -> Result<(u32, u32, Dep
     let expected = match depth {
         Depth::One => xtg_data_size(width, height),
         Depth::Two => xth_data_size(width, height),
+        Depth::Eight => unreachable!("a page's depth comes from its magic, which is One or Two"),
     };
     if size != expected || bytes.len() != PAGE_HEADER_SIZE + expected {
         return Err(bad("bitmap length does not match the page dimensions"));
@@ -155,6 +162,7 @@ pub fn decode_page(bytes: &[u8], index: usize) -> Result<DecodedPage, XtcError> 
     let expected = match depth {
         Depth::One => xtg_data_size(width, height),
         Depth::Two => xth_data_size(width, height),
+        Depth::Eight => unreachable!("a page's depth comes from its magic, which is One or Two"),
     };
     if data_size != expected {
         return Err(bad("dataSize does not match the page dimensions"));
@@ -188,6 +196,7 @@ pub fn decode_page(bytes: &[u8], index: usize) -> Result<DecodedPage, XtcError> 
                 }
             }
         }
+        Depth::Eight => unreachable!("a page's depth comes from its magic, which is One or Two"),
     }
     Ok(DecodedPage {
         image: LevelImage {

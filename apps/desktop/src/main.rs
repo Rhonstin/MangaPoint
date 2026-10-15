@@ -1,16 +1,23 @@
 //! MangaPoint: search manga, convert it for an Xteink reader, export.
 
+// A release build is a window, not a console program.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 mod assets;
 mod backend;
+mod covers;
+mod logfile;
 mod logic;
+mod notify;
 mod queue;
 mod sample;
 mod state;
+mod updates;
 mod ui;
 
 use dioxus::desktop::tao::window::Icon;
 use dioxus::desktop::{Config, LogicalSize, WindowBuilder};
-use tracing_subscriber::fmt::time::uptime;
+use tracing_subscriber::fmt::time::SystemTime;
 use tracing_subscriber::EnvFilter;
 
 /// What the console shows by default: MangaPoint's own progress messages
@@ -22,13 +29,24 @@ const DEFAULT_LOG: &str = "mangapoint=info,error";
 fn init_logging() {
     let filter =
         EnvFilter::try_from_env("MANGAPOINT_LOG").unwrap_or_else(|_| EnvFilter::new(DEFAULT_LOG));
+    // The log is kept in the data folder (added to at every start, rolled over
+    // at a size limit); a debug build also prints it.
+    let file = logfile::LogFile::open(state::paths().root().join("logs")).ok();
     // Installed before Dioxus starts, so its own logger steps aside.
     let _ = tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_target(false)
-        .with_timer(uptime())
+        .with_ansi(false)
+        .with_timer(SystemTime)
+        .with_writer(logfile::Sink(file))
         .compact()
         .try_init();
+    // A crash leaves its reason in the log.
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        tracing::error!("The app crashed: {info}");
+        previous(info);
+    }));
 }
 
 fn main() {
@@ -47,6 +65,7 @@ fn main() {
     }
 
     init_logging();
+    notify::register();
     // Ctrl+C in the terminal would otherwise leave the catalog server running
     // and holding its database, so the next start could not open it.
     let _ = ctrlc::set_handler(|| {
@@ -54,7 +73,8 @@ fn main() {
         std::process::exit(130);
     });
     tracing::info!(
-        "MangaPoint starting; data folder: {}",
+        "MangaPoint {} starting; data folder: {}",
+        env!("CARGO_PKG_VERSION"),
         state::paths().root().display()
     );
     // The cat is the window and taskbar icon (Windows and Linux; macOS takes
@@ -65,7 +85,14 @@ fn main() {
         .with_title("MangaPoint")
         .with_inner_size(LogicalSize::new(1480.0, 940.0))
         .with_min_inner_size(LogicalSize::new(1280.0, 720.0));
-    let mut config = Config::new().with_window(window).with_menu(None);
+    // Covers are handed to the page by address, not kept in memory; see `covers`.
+    covers::tidy_cache();
+    let mut config = Config::new()
+        .with_window(window)
+        .with_menu(None)
+        .with_asynchronous_custom_protocol(covers::SCHEME, |_id, request, responder| {
+            covers::serve(request, responder)
+        });
     // Developer switch: let tools such as an automated UI test connect to the
     // app's web view. Off unless MANGAPOINT_DEBUG_PORT is set; the port only
     // listens on this computer.
