@@ -2,7 +2,7 @@
 
 use super::ask_enable_browser;
 use super::browse::BrowsingCat;
-use super::widgets::{Chip, Icon};
+use super::widgets::{Chip, Icon, Loading};
 use crate::backend;
 use crate::state::spawn_forever;
 use crate::state::{AppState, Page};
@@ -11,10 +11,16 @@ use library::Choice;
 use sources::{Requires, SourceManager};
 
 /// The sources step is done: whatever was not answered counts as skipped.
+/// Going Back and Next again changes nothing the second time, so nothing is
+/// saved or logged then.
 pub fn finish_sources(state: AppState) {
-    let mut sources_state = state.sources.read().clone();
+    let before = state.sources.read().clone();
+    let mut sources_state = before.clone();
     if let Some(client) = state.client() {
         SourceManager::new(&*client).finish_onboarding(&mut sources_state);
+    }
+    if sources_state == before {
+        return;
     }
     let installed = sources_state
         .choices
@@ -24,7 +30,7 @@ pub fn finish_sources(state: AppState) {
     let mut s = state.sources;
     s.set(sources_state);
     state.save_sources();
-    tracing::info!("First-run setup finished: {installed} source(s) installed");
+    tracing::info!("Sources chosen in the first-run setup: {installed} to install");
 }
 
 #[component]
@@ -161,7 +167,7 @@ pub fn Setup(#[props(default = false)] onboarding: bool) -> Element {
             }
         }
         if !loaded {
-            p { class: "muted", "Loading the list\u{2026}" }
+            Loading { label: "Loading sources\u{2026}" }
         }
         div { class: "setup-list", {rows.into_iter()} }
     }

@@ -7,6 +7,7 @@ use crate::state::{AppState, Modal, ModalAction, Page};
 use crate::ui::widgets::{Chip, EmptyState, Icon, ProgressBar};
 use crate::ui::work::{open_export, retry_batch};
 use dioxus::prelude::*;
+use library::PageQuality;
 use std::collections::HashSet;
 
 /// A chapter shown in the table: saved already, or on its way, or failed.
@@ -105,7 +106,7 @@ pub fn DownloadsTab() -> Element {
         .flat_map(|b| b.skipped.iter().cloned())
         .take(3)
         .collect();
-    let shrink = state.settings.read().shrink_downloads;
+    let quality = state.settings.read().page_quality;
 
     if rows.is_empty() {
         return rsx! {
@@ -210,10 +211,10 @@ pub fn DownloadsTab() -> Element {
             }
         }
         p { class: "muted small", style: "margin: 8px 0 0",
-            if shrink {
-                "Space-saving mode is on, so tall pages are shrunk as they download. Change it in Settings → Downloads."
-            } else {
-                "Pages are saved exactly as downloaded, for the best quality. Settings → Downloads has a save-space option."
+            match quality {
+                PageQuality::Ultra => "Pages are saved as small as possible (ultra). Change it in Settings → Downloads.",
+                PageQuality::Save => "Tall pages are shrunk as they download to save space. Change it in Settings → Downloads.",
+                PageQuality::Full => "Pages are saved exactly as downloaded, for the best quality. Change it in Settings → Downloads.",
             }
         }
     }

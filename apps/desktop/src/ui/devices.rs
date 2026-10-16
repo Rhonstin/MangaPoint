@@ -186,6 +186,11 @@ pub fn DeviceAdder(
     /// Keep the list open (the first-run setup), instead of while the box has focus.
     #[props(default = false)]
     always_open: bool,
+    /// Wait this long before putting the cursor in the box. A page that is
+    /// still sliding in must not be focused: the browser scrolls it into view
+    /// and the page jumps.
+    #[props(default = 0)]
+    focus_after_ms: u64,
 ) -> Element {
     let state = use_context::<AppState>();
     let mut text = use_signal(String::new);
@@ -193,12 +198,20 @@ pub fn DeviceAdder(
     // The row that Enter would take: moved with the arrows or Tab, and back to
     // the first whenever the text changes.
     let mut active = use_signal(|| 0usize);
-    // Keep the row Enter would take in view when the list is long.
+    // Keep the row Enter would take in view when the list is long. Only the
+    // list scrolls: scrollIntoView would also scroll every page around it, and
+    // the first-run page that is still sliding in sits far off to the side.
     use_effect(move || {
         let _ = active();
         spawn(async move {
             let _ = document::eval(
-                "document.querySelector('.adder-opt.active')?.scrollIntoView({block: 'nearest'})",
+                "const o = document.querySelector('.adder-opt.active'); \
+                 const l = o && o.closest('.adder-list'); \
+                 if (l) { \
+                   const lr = l.getBoundingClientRect(), r = o.getBoundingClientRect(); \
+                   if (r.top < lr.top) l.scrollTop += r.top - lr.top; \
+                   else if (r.bottom > lr.bottom) l.scrollTop += r.bottom - lr.bottom; \
+                 }",
             )
             .await;
         });
@@ -247,7 +260,12 @@ pub fn DeviceAdder(
                     "aria-label": "Add a reader",
                     onmounted: move |e| {
                         if !always_open {
-                            spawn(async move { let _ = e.set_focus(true).await; });
+                            spawn(async move {
+                                if focus_after_ms > 0 {
+                                    tokio::time::sleep(std::time::Duration::from_millis(focus_after_ms)).await;
+                                }
+                                let _ = e.set_focus(true).await;
+                            });
                         }
                     },
                     onfocus: move |_| focused.set(true),
@@ -643,7 +661,11 @@ fn ReaderForm(revision: Signal<u32>) -> Element {
             }
         }
         if setup().wifi {
-            p { class: "sx-note warn", "Wi-Fi is slow. A whole series can take an hour or more to send, because the reader takes files very slowly. We recommend USB (or the SD card in your computer), and Wi-Fi for a few chapters at a time." }
+            p { class: "sx-note warn",
+                strong { "Wi-Fi is not recommended. " }
+                "The files can be very large, the reader takes them very slowly (a whole series can take an hour or more), and sending too much at once can freeze the reader. "
+                "It has not been tested much, so use it at your own risk. USB, or the reader's SD card in your computer, is much safer."
+            }
             div { class: "sx-row",
                 div { class: "sx-text",
                     div { class: "sx-label", "Reader address"

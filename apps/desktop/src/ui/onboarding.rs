@@ -159,16 +159,13 @@ fn EngineStep() -> Element {
             {match boot {
                 BootState::NeedsEngine => rsx! {
                     h1 { "Install the catalog engine" }
-                    p { class: "muted",
+                    p { class: "muted", title: "{folder}",
                         "MangaPoint finds manga and downloads chapters through a helper program, the catalog engine (Suwayomi). "
-                        "It is necessary: without it, searching and downloading cannot work."
+                        "Searching and downloading cannot work without it. "
+                        "It is a one-time 340 MB download from GitHub, kept in MangaPoint\u{2019}s own folder, "
+                        "that only runs while the app is open."
                     }
-                    ul { class: "engine-facts",
-                        li { strong { "About 340 MB" } span { class: "muted", "downloaded once, from the Suwayomi project on GitHub" } }
-                        li { strong { "Kept in MangaPoint\u{2019}s folder" } span { class: "muted", title: "{folder}", "nothing is installed on the rest of your computer" } }
-                        li { strong { "Runs only while the app is open" } span { class: "muted", "and only answers to this computer" } }
-                    }
-                    button { class: "btn primary big",
+                    button { class: "btn primary big", style: "margin-top: 22px",
                         onclick: move |_| spawn_forever(backend::boot(state, true)),
                         Icon { name: "download", size: 16 }
                         "Install the engine"
@@ -218,7 +215,8 @@ fn ReaderStep() -> Element {
             }
         }
         div { class: "reader-pick",
-            DeviceAdder { always_open: !added, on_added: move |_| {} }
+            // The page slides in for 0.6 s; the cursor goes into the box after that.
+            DeviceAdder { always_open: !added, focus_after_ms: 700, on_added: move |_| {} }
         }
     }
 }

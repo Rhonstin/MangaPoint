@@ -16,9 +16,9 @@ use crate::fetch::{fetch_page_limited, with_retry, RetryPolicy};
 use crate::limiter::LimiterSet;
 use crate::types::{CancelFlag, ChapterRef, ChapterRequest, JobEvent, SkippedChapter, SourceUse};
 use catalog::{Catalog, CatalogError};
-use converter::decode::{image_dimensions, shrink_for_storage, STORAGE_MAX_HEIGHT};
+use converter::decode::{image_dimensions, shrink_page, StorageLimits};
 use futures_util::stream::{self, FuturesUnordered, StreamExt};
-use library::{chapter_key, DownloadLimits, DownloadedChapter, LibraryFiles};
+use library::{chapter_key, DownloadLimits, DownloadedChapter, LibraryFiles, PageQuality};
 use std::fs;
 use std::future::Future;
 use std::io;
@@ -27,8 +27,15 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc::UnboundedSender;
 
-/// JPEG quality used when shrinking pages to save space.
-const SHRINK_QUALITY: u8 = 88;
+/// What to do to a page before it is stored at each quality; `None` keeps the
+/// bytes exactly as downloaded.
+fn storage_limits(quality: PageQuality) -> Option<StorageLimits> {
+    match quality {
+        PageQuality::Ultra => Some(StorageLimits::ULTRA),
+        PageQuality::Save => Some(StorageLimits::SAVE),
+        PageQuality::Full => None,
+    }
+}
 /// How often a waiting download looks at the cancel button.
 const CANCEL_POLL: Duration = Duration::from_millis(60);
 
@@ -65,7 +72,7 @@ struct Context<'a, C> {
     catalog: &'a C,
     files: &'a LibraryFiles,
     series_id: &'a str,
-    shrink: bool,
+    quality: PageQuality,
     policy: &'a RetryPolicy,
     limiters: &'a LimiterSet,
     balancer: &'a Balancer,
@@ -114,7 +121,7 @@ pub async fn download_chapters<C: Catalog>(
     files: &LibraryFiles,
     series_id: &str,
     requests: &[ChapterRequest],
-    shrink: bool,
+    quality: PageQuality,
     limits: DownloadLimits,
     policy: &RetryPolicy,
     events: Option<UnboundedSender<JobEvent>>,
@@ -136,7 +143,7 @@ pub async fn download_chapters<C: Catalog>(
         catalog,
         files,
         series_id,
-        shrink,
+        quality,
         policy,
         limiters: &limiters,
         balancer: &balancer,
@@ -496,13 +503,11 @@ async fn download_one<C: Catalog>(
                 image_dimensions(&bytes).map_err(|e| {
                     PipelineError::Decode(format!("page {} is not an image ({e})", index + 1))
                 })?;
-                let bytes = if cx.shrink {
-                    tokio::task::spawn_blocking(move || {
-                        match shrink_for_storage(&bytes, STORAGE_MAX_HEIGHT, SHRINK_QUALITY) {
-                            Ok(Some(small)) => Ok(small),
-                            Ok(None) => Ok(bytes),
-                            Err(e) => Err(PipelineError::Decode(e.to_string())),
-                        }
+                let bytes = if let Some(limits) = storage_limits(cx.quality) {
+                    tokio::task::spawn_blocking(move || match shrink_page(&bytes, &limits) {
+                        Ok(Some(small)) => Ok(small),
+                        Ok(None) => Ok(bytes),
+                        Err(e) => Err(PipelineError::Decode(e.to_string())),
                     })
                     .await
                     .map_err(|e| PipelineError::Decode(e.to_string()))??

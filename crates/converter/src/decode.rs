@@ -111,29 +111,90 @@ pub fn shrink_for_storage(
     max_height: u32,
     quality: u8,
 ) -> Result<Option<Vec<u8>>, DecodeError> {
+    shrink_page(
+        bytes,
+        &StorageLimits {
+            max_height,
+            min_width: STORAGE_MIN_WIDTH,
+            quality,
+            always: false,
+        },
+    )
+}
+
+/// How far a downloaded page is made smaller for storage.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StorageLimits {
+    /// Tallest a portrait page is kept (a landscape spread may be twice this wide).
+    pub max_height: u32,
+    /// Narrowest a page is made, so a long strip is not squeezed into a sliver.
+    pub min_width: u32,
+    /// JPEG quality of the grayscale result.
+    pub quality: u8,
+    /// Re-encode every page, even one already within the limits, and keep the
+    /// result when it is smaller than the original. Without this a page that
+    /// is already small enough is left exactly as downloaded.
+    pub always: bool,
+}
+
+impl StorageLimits {
+    /// Tall pages are shrunk to twice the reader's screen; nothing visible is lost.
+    pub const SAVE: Self = Self {
+        max_height: STORAGE_MAX_HEIGHT,
+        min_width: STORAGE_MIN_WIDTH,
+        quality: 88,
+        always: false,
+    };
+
+    /// As small as still reads well on a small e-ink screen: a page about
+    /// 1.25 times the 800-pixel screen height (and never narrower than 600),
+    /// as a low-quality grayscale JPEG, whatever it was before. On pages from a
+    /// real series this is about a tenth of the downloaded size.
+    pub const ULTRA: Self = Self {
+        max_height: 1000,
+        min_width: 600,
+        quality: 60,
+        always: true,
+    };
+}
+
+/// [`shrink_for_storage`] with every limit given. `None` means keep the
+/// original bytes.
+pub fn shrink_page(
+    bytes: &[u8],
+    limits: &StorageLimits,
+) -> Result<Option<Vec<u8>>, DecodeError> {
     let (w, h) = image_dimensions(bytes)?;
     let landscape = w as f32 > h as f32 * 1.1;
     let scale = if landscape {
-        (2.0 * max_height as f64) / w as f64
+        (2.0 * limits.max_height as f64) / w as f64
     } else {
-        let by_height = max_height as f64 / h as f64;
-        let by_width = STORAGE_MIN_WIDTH as f64 / w as f64;
+        let by_height = limits.max_height as f64 / h as f64;
+        let by_width = limits.min_width as f64 / w as f64;
         by_height.max(by_width)
     };
-    if scale >= 1.0 {
+    if scale >= 1.0 && !limits.always {
         return Ok(None);
     }
+    let scale = scale.min(1.0);
     let gray = decode_to_gray(bytes)?;
     let new_w = ((gray.width as f64 * scale).round() as u32).max(1);
     let new_h = ((gray.height as f64 * scale).round() as u32).max(1);
-    let small = crate::process::resize(&gray, new_w, new_h);
+    let small = if scale < 1.0 {
+        crate::process::resize(&gray, new_w, new_h)
+    } else {
+        gray
+    };
     let mut out = Vec::new();
-    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, quality).write_image(
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, limits.quality).write_image(
         &small.pixels,
         new_w,
         new_h,
         image::ExtendedColorType::L8,
     )?;
+    if limits.always && out.len() >= bytes.len() {
+        return Ok(None);
+    }
     Ok(Some(out))
 }
 
