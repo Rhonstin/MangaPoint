@@ -2,7 +2,7 @@
 
 use super::ask_enable_browser;
 use super::browse::BrowsingCat;
-use super::widgets::{Chip, Icon};
+use super::widgets::{Chip, Icon, Loading};
 use crate::backend;
 use crate::state::spawn_forever;
 use crate::state::{AppState, Page};
@@ -167,7 +167,7 @@ pub fn Setup(#[props(default = false)] onboarding: bool) -> Element {
             }
         }
         if !loaded {
-            p { class: "muted", "Loading the list\u{2026}" }
+            Loading { label: "Loading sources\u{2026}" }
         }
         div { class: "setup-list", {rows.into_iter()} }
     }
