@@ -215,7 +215,8 @@ fn ReaderStep() -> Element {
             }
         }
         div { class: "reader-pick",
-            DeviceAdder { always_open: !added, on_added: move |_| {} }
+            // The page slides in for 0.6 s; the cursor goes into the box after that.
+            DeviceAdder { always_open: !added, focus_after_ms: 700, on_added: move |_| {} }
         }
     }
 }
