@@ -269,8 +269,10 @@ version is the title of what is merged, written as a
 [Conventional Commit](https://www.conventionalcommits.org): `feat:` raises the
 minor version, `fix:` and `perf:` the patch version, and `feat!:` the major
 version. Documentation, tests and maintenance alone do not make a release. A
-release pull request is opened from the Actions tab, and merging it builds all
-platforms and publishes the release. The details are in
+release is made by merging a pull request that raises the version (one can be
+opened from the Actions tab, or included in your own pull request); merging it
+builds all platforms and publishes the release, and a merge that leaves the version
+alone releases nothing. The details are in
 [CONTRIBUTING.md](CONTRIBUTING.md#releases-and-versions); every change is listed
 in the [changelog](CHANGELOG.md).
 
