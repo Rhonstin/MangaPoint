@@ -89,10 +89,15 @@ fn main() {
     covers::tidy_cache();
     let mut config = Config::new()
         .with_window(window)
-        .with_menu(None)
         .with_asynchronous_custom_protocol(covers::SCHEME, |_id, request, responder| {
             covers::serve(request, responder)
         });
+    // No menu bar on Windows and Linux. On macOS the menu is also where copy,
+    // paste, select all, quit and hide come from, so the default one stays.
+    #[cfg(not(target_os = "macos"))]
+    {
+        config = config.with_menu(None);
+    }
     // Developer switch: let tools such as an automated UI test connect to the
     // app's web view. Off unless MANGAPOINT_DEBUG_PORT is set; the port only
     // listens on this computer.

@@ -45,15 +45,21 @@ impl ExportTarget {
     /// never loaded into memory (Wi-Fi uploads are the exception, since they
     /// need the whole body).
     pub async fn write_file(&self, filename: &str, src: &Path) -> Result<ExportedFile> {
-        self.write_file_with(filename, src, || {}).await
+        self.write_file_with(filename, src, |_| {}, || {}).await
     }
 
-    /// As [`write_file`](Self::write_file), calling `flushing` when a drive has
-    /// the whole file and is being made to really store it.
+    /// As [`write_file`](Self::write_file), calling `progress` with how many
+    /// bytes of the file have been stored so far, and `flushing` when a drive
+    /// has the whole file and is being made to really store it.
+    ///
+    /// To a drive, what is reported is what the drive has accepted: it is made
+    /// to store the file as it goes, so the numbers follow its real speed
+    /// instead of racing ahead into the system's cache and then stalling.
     pub async fn write_file_with(
         &self,
         filename: &str,
         src: &Path,
+        mut progress: impl FnMut(u64) + Send + 'static,
         flushing: impl FnOnce() + Send + 'static,
     ) -> Result<ExportedFile> {
         let size = fs::metadata(src)
@@ -65,18 +71,24 @@ impl ExportTarget {
         match self {
             ExportTarget::Folder { path } => {
                 let path = path.clone();
-                blocking(move || copy_file(&path, &filename_owned, &src_owned, None)).await
+                blocking(move || copy_file(&path, &filename_owned, &src_owned, None, &mut progress)).await
             }
             ExportTarget::Device { mount, folder } => {
                 check_space(mount, size)?;
                 let dir = mount.join(sanitize_component(folder));
-                blocking(move || copy_file(&dir, &filename_owned, &src_owned, Some(Box::new(flushing)))).await
+                blocking(move || {
+                    copy_file(&dir, &filename_owned, &src_owned, Some(Box::new(flushing)), &mut progress)
+                })
+                .await
             }
             ExportTarget::WebDav { base_url, folder } => {
                 let data = tokio::fs::read(src)
                     .await
                     .map_err(|e| PipelineError::Io(src.to_path_buf(), e))?;
-                upload_webdav(base_url, folder, filename, data).await
+                let sent = upload_webdav(base_url, folder, filename, data).await?;
+                // The whole body goes in one request, so this is all there is to say.
+                progress(sent.bytes);
+                Ok(sent)
             }
         }
     }
@@ -103,11 +115,12 @@ fn copy_file(
     filename: &str,
     src: &Path,
     flush: Option<Box<dyn FnOnce() + Send>>,
+    progress: &mut dyn FnMut(u64),
 ) -> Result<ExportedFile> {
     fs::create_dir_all(dir).map_err(|e| PipelineError::Io(dir.to_path_buf(), e))?;
     let path = unique_path(dir, filename);
     let tmp = path.with_extension("part");
-    let bytes = fs::copy(src, &tmp).map_err(|e| {
+    let bytes = copy_in_chunks(src, &tmp, flush.is_some(), progress).map_err(|e| {
         let _ = fs::remove_file(&tmp);
         PipelineError::Io(tmp.clone(), e)
     })?;
@@ -120,6 +133,46 @@ fn copy_file(
         location: path.display().to_string(),
         bytes,
     })
+}
+
+/// How much is read and written at a time.
+const COPY_CHUNK: usize = 1 << 20;
+/// How much a drive is given before it is made to store it (see `copy_in_chunks`).
+const DRIVE_SYNC_EVERY: u64 = 8 << 20;
+
+/// Copy `src` to `dst`, reporting how many bytes are stored after each chunk.
+///
+/// With `to_drive`, the drive is made to really store what it has every few
+/// megabytes. Without that the system takes the whole file into its cache in
+/// seconds and then makes the last step wait for the drive, which is slow, so
+/// there would be nothing to report until the very end.
+fn copy_in_chunks(
+    src: &Path,
+    dst: &Path,
+    to_drive: bool,
+    progress: &mut dyn FnMut(u64),
+) -> std::io::Result<u64> {
+    use std::io::{Read, Write};
+    let mut from = fs::File::open(src)?;
+    let mut to = fs::File::create(dst)?;
+    let mut buffer = vec![0u8; COPY_CHUNK];
+    let (mut written, mut synced) = (0u64, 0u64);
+    loop {
+        let n = from.read(&mut buffer)?;
+        if n == 0 {
+            break;
+        }
+        to.write_all(&buffer[..n])?;
+        written += n as u64;
+        if to_drive && written - synced >= DRIVE_SYNC_EVERY {
+            to.sync_data()?;
+            synced = written;
+        }
+        progress(written);
+    }
+    to.flush()?;
+    progress(written);
+    Ok(written)
 }
 
 /// Force a written file out to its drive.
@@ -501,7 +554,9 @@ mod tests {
 
     #[test]
     fn a_mount_we_cannot_find_is_not_blocked() {
-        assert!(check_space(Path::new("/definitely/not/mounted"), u64::MAX / 4).is_ok());
+        // A relative path is under no mount, whatever the system's disks are
+        // (an absolute one would sit under `/` on macOS and Linux).
+        assert!(check_space(Path::new("definitely-not-mounted"), u64::MAX / 4).is_ok());
     }
 
     #[test]
@@ -634,6 +689,31 @@ mod tests {
         assert!(sent.location.ends_with("My Book.xtc"));
         assert_eq!(fs::read(mount.join("Manga").join("My Book.xtc")).unwrap().len(), 4096);
         assert!(!mount.join("Manga").join("My Book.part").exists(), "no half-written file is left");
+        let _ = fs::remove_dir_all(mount);
+    }
+
+    #[tokio::test]
+    async fn the_bytes_stored_are_reported_as_a_file_is_sent() {
+        let mount = temp("device-progress");
+        fs::create_dir_all(&mount).unwrap();
+        let src = mount.join("big.xtc");
+        let size = 20 * 1024 * 1024 + 123;
+        fs::write(&src, vec![1u8; size]).unwrap();
+        let target = ExportTarget::Device {
+            mount: mount.clone(),
+            folder: "Manga".into(),
+        };
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = seen.clone();
+        let sent = target
+            .write_file_with("Big.xtc", &src, move |n| log.lock().unwrap().push(n), || {})
+            .await
+            .unwrap();
+        assert_eq!(sent.bytes, size as u64);
+        let seen = seen.lock().unwrap();
+        assert!(seen.len() > 5, "it is reported as it goes, not once at the end");
+        assert!(seen.windows(2).all(|w| w[0] <= w[1]), "never goes backwards");
+        assert_eq!(*seen.last().unwrap(), size as u64);
         let _ = fs::remove_dir_all(mount);
     }
 

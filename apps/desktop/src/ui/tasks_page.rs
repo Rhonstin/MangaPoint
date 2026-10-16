@@ -7,7 +7,7 @@ use super::widgets::{open_folder, show_in_folder, Chip, Cover, EmptyState, Icon,
 use super::work::{
     cancel_batch, cancel_job, dismiss_batch, forget_exported_file,
     load_saved_cover, open_series_from_library, pause_batch, pause_export, prioritize_batch,
-    resume_batch, resume_export, retry_batch, saved_cover_key, set_queue_paused,
+    remove_waiting_export, resume_batch, resume_export, retry_batch, saved_cover_key, set_queue_paused,
 };
 use crate::logic::{ago, human_bytes, human_duration, plural, JobProgress};
 use crate::queue::BatchStatus;
@@ -37,6 +37,15 @@ pub fn TasksPage() -> Element {
             .map(|r| r.series_id.clone())
             .collect();
         for id in exported {
+            load_saved_cover(state, &id);
+        }
+        let waiting: Vec<String> = state
+            .export_waiting
+            .read()
+            .iter()
+            .map(|w| w.series_id.clone())
+            .collect();
+        for id in waiting {
             load_saved_cover(state, &id);
         }
     });
@@ -80,6 +89,13 @@ pub fn TasksPage() -> Element {
             .map(|j| !matches!(j.result, Some(Ok(_))))
     })();
     let nothing_exported = state.exports.read().records.is_empty();
+    // The series lined up behind the export that is running.
+    let waiting_exports: Vec<String> = state
+        .export_waiting
+        .read()
+        .iter()
+        .map(|w| w.series_id.clone())
+        .collect();
 
     rsx! {
         div { class: "rise-in",
@@ -162,6 +178,9 @@ pub fn TasksPage() -> Element {
             if job_shown == Some(true) {
                 ExportJobRow {}
             }
+            for id in waiting_exports.iter() {
+                ExportWaitingRow { key: "{id}", series_id: id.clone() }
+            }
             ExportedFiles {}
         }
         }
@@ -201,6 +220,7 @@ fn ExportJobRow() -> Element {
                     strong { class: "q-name", "{job.title}" }
                     match &job.result {
                         None if job.paused => rsx! { Chip { text: "paused", kind: Some("warn".to_string()) } },
+                        None if job.progress.writing.is_some() => rsx! { Chip { text: "writing", kind: Some("accent".to_string()) } },
                         None => rsx! { Chip { text: "exporting", kind: Some("accent".to_string()) } },
                         Some(Ok(_)) => rsx! { Chip { text: "done", kind: Some("ok".to_string()) } },
                         Some(Err(_)) => rsx! { Chip { text: "stopped", kind: Some("bad".to_string()) } },
@@ -208,18 +228,32 @@ fn ExportJobRow() -> Element {
                 }
                 if !ended {
                     div { class: "q-stats", style: "margin: 2px 0 8px",
-                        if job.progress.chapter_total > 0 {
-                            span { "{job.progress.finished} of {plural(job.progress.chapter_total, \"chapter\")} done" }
-                        }
-                        if running {
-                            if let Some(v) = speed { span { "about {v:.1} pages a second" } }
-                            if let Some(s) = left { span { "about {human_duration(s)} left" } }
+                        if let Some(w) = &job.progress.writing {
+                            span { "Writing {human_bytes(w.done)} of {human_bytes(w.total)}" }
+                            if running {
+                                if w.flushing {
+                                    span { "making sure the drive has all of it" }
+                                } else {
+                                    if let Some(v) = w.bytes_per_second() { span { "{human_bytes(v as u64)} a second" } }
+                                    if let Some(s) = w.eta_secs() { span { "about {human_duration(s)} left" } }
+                                }
+                            } else {
+                                span { "goes on from here when resumed, even after the app is closed" }
+                            }
                         } else {
-                            span { "goes on from here when resumed, even after the app is closed" }
+                            if job.progress.chapter_total > 0 {
+                                span { "{job.progress.finished} of {plural(job.progress.chapter_total, \"chapter\")} done" }
+                            }
+                            if running {
+                                if let Some(v) = speed { span { "about {v:.1} pages a second" } }
+                                if let Some(s) = left { span { "about {human_duration(s)} left" } }
+                            } else {
+                                span { "goes on from here when resumed, even after the app is closed" }
+                            }
                         }
                     }
                     ProgressBar { fraction: Some(job.progress.fraction()) }
-                    if running { ActiveChapters { progress: job.progress.clone() } }
+                    if running && job.progress.writing.is_none() { ActiveChapters { progress: job.progress.clone() } }
                     if let Some(note) = &job.progress.note {
                         div { class: "muted small q-line", "{note}" }
                     }
@@ -247,6 +281,48 @@ fn ExportJobRow() -> Element {
                     button { class: "btn small ghost", title: "Stop it for good", disabled: job.progress.stopping, onclick: move |_| cancel_job(state),
                         Icon { name: "x", size: 14 }
                     }
+                }
+            }
+        }
+    }
+}
+
+/// A series whose export is lined up behind the one running.
+#[component]
+fn ExportWaitingRow(series_id: String) -> Element {
+    let state = use_context::<AppState>();
+    let Some(waiting) = state
+        .export_waiting
+        .read()
+        .iter()
+        .find(|w| w.series_id == series_id)
+        .cloned()
+    else {
+        return rsx! {};
+    };
+    let has_cover = state
+        .library
+        .read()
+        .find(&series_id)
+        .and_then(|s| s.info.as_ref())
+        .is_some_and(|i| i.has_cover);
+    let remove_id = series_id.clone();
+    rsx! {
+        div { class: "q-row",
+            div { class: "q-cover",
+                if has_cover { Cover { key_id: saved_cover_key(&series_id) } } else { NoCover {} }
+            }
+            div { class: "q-main",
+                div { class: "row wrap",
+                    strong { class: "q-name", "{waiting.title}" }
+                    Chip { text: "waiting" }
+                }
+                div { class: "muted small", "{plural(waiting.keys.len(), \"chapter\")} waiting" }
+            }
+            div { class: "q-actions",
+                button { class: "btn small ghost", title: "Take it out of the line",
+                    onclick: move |_| remove_waiting_export(state, &remove_id),
+                    Icon { name: "x", size: 14 }
                 }
             }
         }

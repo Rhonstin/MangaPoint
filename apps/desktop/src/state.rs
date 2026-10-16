@@ -482,6 +482,15 @@ pub enum JobKind {
     Export,
 }
 
+/// A series whose export is lined up behind the one running.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WaitingExport {
+    pub series_id: String,
+    pub title: String,
+    /// The chapters to export, by key.
+    pub keys: Vec<String>,
+}
+
 #[derive(Clone)]
 pub struct JobView {
     pub kind: JobKind,
@@ -563,6 +572,8 @@ pub struct AppState {
     pub crop_draft: Signal<library::CropRect>,
     /// The running (or just finished) download or export.
     pub job: Signal<Option<JobView>>,
+    /// The exports lined up behind the running one, in the order they go.
+    pub export_waiting: Signal<Vec<WaitingExport>>,
     /// Bumped when installed sources or test results change.
     pub sources_version: Signal<u32>,
     /// Source ids being tested right now.
@@ -651,6 +662,7 @@ impl AppState {
             export_plan: sig(ExportPlan::default()),
             crop_draft: sig(library::CropRect::default()),
             job: sig(None),
+            export_waiting: sig(Vec::new()),
             sources_version: sig(0),
             testing: sig(HashSet::new()),
             installing: sig(false),

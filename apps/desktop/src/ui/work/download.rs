@@ -656,8 +656,7 @@ pub fn cancel_job(state: AppState) {
     let mut job = state.job;
     // Paused: nothing is running, so it is simply given up.
     if job.peek().as_ref().is_some_and(|v| v.paused && v.result.is_none()) {
-        job.set(None);
-        let _ = std::fs::remove_file(paths().export_job_file());
+        drop_paused_export(state);
         return;
     }
     let mut guard = job.write();

@@ -50,6 +50,13 @@ cat > "$app/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
+# Seal the whole bundle, Info.plist included. The compiler only signs the bare
+# program; with the plist outside that signature macOS calls a downloaded copy
+# "damaged" and offers no way to open it. A sealed ad-hoc signature gives the
+# usual "unidentified developer" prompt instead (see the README).
+codesign --force --sign - "$app"
+codesign --verify --strict "$app"
+
 ln -s /Applications "$stage/Applications"
 mkdir -p "$(dirname "$dmg")"
 hdiutil create -volname "MangaPoint" -srcfolder "$stage" -ov -format UDZO "$dmg"

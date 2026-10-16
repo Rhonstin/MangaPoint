@@ -97,7 +97,7 @@ pub fn SearchPage() -> Element {
             .collect(),
         _ => Vec::new(),
     };
-    sources.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    sources.sort_by_key(|a| a.name.to_lowercase());
     let total = sources.len();
     // Narrow the results by what is known of each.
     let filters = state.search_filters.read().clone();

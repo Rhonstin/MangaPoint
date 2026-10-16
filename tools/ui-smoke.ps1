@@ -50,6 +50,15 @@ try {
         Mouse-Click '.nav-item' 'export'
         Wait-Until "document.querySelector('.export-screen') !== null" 30 'the Export screen'
     }
+    Check 'the Export button stays on screen in the smallest window' {
+        Send-Cdp 'Emulation.setDeviceMetricsOverride' @{ width = 1280; height = 720; deviceScaleFactor = 1; mobile = $false } | Out-Null
+        Start-Sleep -Milliseconds 600
+        try {
+            $r = Eval "(() => { const b = document.querySelector('.px-footer .btn').getBoundingClientRect(); return [b.top, b.bottom, innerHeight]; })()"
+            if ([double]$r[0] -lt 0 -or [double]$r[1] -gt [double]$r[2] + 0.5) { throw "the button spans $($r[0])-$($r[1]) in a $($r[2]) px window" }
+        }
+        finally { Send-Cdp 'Emulation.clearDeviceMetricsOverride' @{} | Out-Null; Start-Sleep -Milliseconds 300 }
+    }
     Check 'a column bar can be dragged' {
         $w0 = Eval "document.querySelector('.export-side.left').getBoundingClientRect().width"
         $pt = Eval "(() => { const r = document.querySelector('.px-split-v[data-split=left]').getBoundingClientRect(); return [r.left + 1.5, r.top + 200]; })()"
