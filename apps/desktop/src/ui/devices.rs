@@ -661,7 +661,11 @@ fn ReaderForm(revision: Signal<u32>) -> Element {
             }
         }
         if setup().wifi {
-            p { class: "sx-note warn", "Wi-Fi is slow. A whole series can take an hour or more to send, because the reader takes files very slowly. We recommend USB (or the SD card in your computer), and Wi-Fi for a few chapters at a time." }
+            p { class: "sx-note warn",
+                strong { "Wi-Fi is not recommended. " }
+                "The files can be very large, the reader takes them very slowly (a whole series can take an hour or more), and sending too much at once can freeze the reader. "
+                "It has not been tested much, so use it at your own risk. USB, or the reader's SD card in your computer, is much safer."
+            }
             div { class: "sx-row",
                 div { class: "sx-text",
                     div { class: "sx-label", "Reader address"
