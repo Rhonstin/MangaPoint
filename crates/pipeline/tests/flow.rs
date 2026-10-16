@@ -6,7 +6,9 @@ use catalog::fake::FakeCatalog;
 use converter::decode::{decode_to_gray, image_dimensions};
 use converter::xtc::{Format, ReadDirection, XtcFile};
 use image::{ImageEncoder, Rgba, RgbaImage};
-use library::{ConversionSettings, DownloadLimits, DownloadedSeries, LibraryDb, LibraryFiles};
+use library::{
+    ConversionSettings, DownloadLimits, DownloadedSeries, LibraryDb, LibraryFiles, PageQuality,
+};
 use pipeline::{
     download_chapters, export_series, process_options_for, render_levels, CancelFlag, ChapterRef,
     ChapterRequest, ExportJob, ExportTarget, Grouping, JobEvent, PipelineError, RetryPolicy,
@@ -102,14 +104,14 @@ async fn download(
     c: &FakeCatalog,
     lib: &Library,
     reqs: &[ChapterRequest],
-    shrink: bool,
+    quality: PageQuality,
 ) -> Result<pipeline::DownloadOutcome, PipelineError> {
     download_chapters(
         c,
         &lib.files,
         &lib.id,
         reqs,
-        shrink,
+        quality,
         DownloadLimits::default(),
         &quick(),
         None,
@@ -182,7 +184,7 @@ async fn download_saves_every_page_and_reports_each_finished_chapter() {
         &lib.files,
         &lib.id,
         &[request(1.0, &[("s", 1)]), request(2.0, &[("s", 2)])],
-        false,
+        PageQuality::Full,
         DownloadLimits::default(),
         &quick(),
         Some(tx),
@@ -228,7 +230,7 @@ async fn transient_download_errors_are_retried() {
     let c = FakeCatalog::new();
     add_chapter(&c, 1, 2);
     c.flaky_path("/c1/p0", 2);
-    let out = download(&c, &lib, &[request(1.0, &[("s", 1)])], false)
+    let out = download(&c, &lib, &[request(1.0, &[("s", 1)])], PageQuality::Full)
         .await
         .unwrap();
     assert_eq!(out.chapters[0].pages, 2);
@@ -245,14 +247,14 @@ async fn an_interrupted_chapter_resumes_without_fetching_saved_pages_again() {
     c.set_bytes("/c1/p2", png(300, 450, 12));
 
     // The middle page is gone for now, so the chapter cannot finish.
-    let first = download(&c, &lib, &[request(1.0, &[("s", 1)])], false).await;
+    let first = download(&c, &lib, &[request(1.0, &[("s", 1)])], PageQuality::Full).await;
     assert!(matches!(first, Err(PipelineError::NothingDownloaded)));
     assert_eq!(gets(&c, "/c1/p0"), 1);
     assert_eq!(gets(&c, "/c1/p2"), 1);
 
     // The source recovers; the same download continues where it stopped.
     c.set_bytes("/c1/missing", png(300, 450, 11));
-    let out = download(&c, &lib, &[request(1.0, &[("s", 1)])], false)
+    let out = download(&c, &lib, &[request(1.0, &[("s", 1)])], PageQuality::Full)
         .await
         .unwrap();
     assert_eq!(out.chapters[0].pages, 3);
@@ -276,7 +278,7 @@ async fn a_failing_source_falls_back_and_its_partial_pages_are_discarded() {
         &lib.files,
         &lib.id,
         &[request(1.0, &[("bad", 10), ("good", 20)])],
-        false,
+        PageQuality::Full,
         DownloadLimits::default(),
         &quick(),
         Some(tx),
@@ -325,7 +327,7 @@ async fn chapters_no_source_can_supply_are_skipped_and_the_rest_are_saved() {
             request(2.0, &[("s", 2)]),
             request(3.0, &[("s", 3)]),
         ],
-        false,
+        PageQuality::Full,
     )
     .await
     .unwrap();
@@ -341,11 +343,11 @@ async fn nothing_downloading_and_empty_requests_are_clear_errors() {
     let c = FakeCatalog::new();
     c.set_pages(1, &["/nowhere"]);
     assert!(matches!(
-        download(&c, &lib, &[request(1.0, &[("s", 1)])], false).await,
+        download(&c, &lib, &[request(1.0, &[("s", 1)])], PageQuality::Full).await,
         Err(PipelineError::NothingDownloaded)
     ));
     assert!(matches!(
-        download(&c, &lib, &[], false).await,
+        download(&c, &lib, &[], PageQuality::Full).await,
         Err(PipelineError::EmptyJob)
     ));
     let _ = fs::remove_dir_all(lib.root);
@@ -358,7 +360,7 @@ async fn an_error_page_instead_of_an_image_is_never_saved() {
     c.set_pages(1, &["/bad"]);
     c.set_bytes("/bad", b"<html>access denied</html>".to_vec());
     add_chapter(&c, 2, 1);
-    let out = download(&c, &lib, &[request(1.0, &[("a", 1), ("b", 2)])], false)
+    let out = download(&c, &lib, &[request(1.0, &[("a", 1), ("b", 2)])], PageQuality::Full)
         .await
         .unwrap();
     assert_eq!(out.chapters[0].source_id, "b");
@@ -379,7 +381,7 @@ async fn cancelling_stops_before_fetching_anything() {
         &lib.files,
         &lib.id,
         &[request(1.0, &[("s", 1)])],
-        false,
+        PageQuality::Full,
         DownloadLimits::default(),
         &quick(),
         None,
@@ -398,7 +400,7 @@ async fn save_space_shrinks_big_pages_and_keeps_small_ones_untouched() {
     c.set_pages(1, &["/big", "/small"]);
     c.set_bytes("/big", png(1200, 4800, 0));
     c.set_bytes("/small", png(300, 450, 0));
-    download(&c, &lib, &[request(1.0, &[("s", 1)])], true)
+    download(&c, &lib, &[request(1.0, &[("s", 1)])], PageQuality::Save)
         .await
         .unwrap();
 
@@ -411,9 +413,9 @@ async fn save_space_shrinks_big_pages_and_keeps_small_ones_untouched() {
         png(300, 450, 0)
     );
 
-    // Default (full quality): the big page is kept exactly as downloaded.
+    // Full quality: the big page is kept exactly as downloaded.
     let lib2 = library("dl-noshrink");
-    download(&c, &lib2, &[request(1.0, &[("s", 1)])], false)
+    download(&c, &lib2, &[request(1.0, &[("s", 1)])], PageQuality::Full)
         .await
         .unwrap();
     assert_eq!(
@@ -422,6 +424,33 @@ async fn save_space_shrinks_big_pages_and_keeps_small_ones_untouched() {
     );
     let _ = fs::remove_dir_all(lib.root);
     let _ = fs::remove_dir_all(lib2.root);
+}
+
+#[tokio::test]
+async fn ultra_makes_every_page_small_and_keeps_an_original_that_is_already_smaller() {
+    let lib = library("dl-ultra");
+    let c = FakeCatalog::new();
+    // A big colored page, a page already within the limits that is still much
+    // bigger than it needs to be, and a tiny one a re-encode cannot beat.
+    c.set_pages(1, &["/big", "/medium", "/tiny"]);
+    c.set_bytes("/big", png(1200, 4800, 0));
+    c.set_bytes("/medium", png(500, 800, 7));
+    c.set_bytes("/tiny", png(8, 8, 0));
+    download(&c, &lib, &[request(1.0, &[("s", 1)])], PageQuality::Ultra)
+        .await
+        .unwrap();
+
+    let page = |i| fs::read(lib.files.page_path(&lib.id, "c1", i)).unwrap();
+    let big = page(0);
+    assert_eq!(&big[..3], &[0xFF, 0xD8, 0xFF], "re-encoded as JPEG");
+    // Never narrower than 600, so a tall strip is not shrunk to a sliver.
+    assert_eq!(image_dimensions(&big).unwrap(), (600, 2400));
+    let medium = page(1);
+    assert_eq!(&medium[..3], &[0xFF, 0xD8, 0xFF], "a page within the limits is re-encoded too");
+    assert_eq!(image_dimensions(&medium).unwrap(), (500, 800), "and not resized");
+    assert!(medium.len() < png(500, 800, 7).len());
+    assert_eq!(page(2), png(8, 8, 0), "an original a re-encode cannot beat is kept");
+    let _ = fs::remove_dir_all(lib.root);
 }
 
 // ---- Stage 3: export -------------------------------------------------------
@@ -658,7 +687,7 @@ async fn three_chapters(tag: &str) -> (Library, DownloadedSeries) {
         add_chapter(&c, id, 3);
     }
     let reqs: Vec<_> = (1..=3).map(|n| request(n as f64, &[("s", n)])).collect();
-    let out = download(&c, &lib, &reqs, false).await.unwrap();
+    let out = download(&c, &lib, &reqs, PageQuality::Full).await.unwrap();
     let series = series_from(&out, ConversionSettings::default());
     (lib, series)
 }
@@ -912,7 +941,7 @@ async fn a_double_page_spread_is_exported_as_two_pages() {
     let c = FakeCatalog::new();
     c.set_pages(1, &["/spread"]);
     c.set_bytes("/spread", png(900, 450, 0));
-    let out = download(&c, &lib, &[request(1.0, &[("s", 1)])], false)
+    let out = download(&c, &lib, &[request(1.0, &[("s", 1)])], PageQuality::Full)
         .await
         .unwrap();
     let series = series_from(&out, ConversionSettings::default());
@@ -1021,7 +1050,7 @@ async fn a_lone_unnumbered_chapter_is_named_after_itself() {
     let mut req = request(1.0, &[("s", 5)]);
     req.number = None;
     req.name = "Author's note".into();
-    let out = download(&c, &lib, &[req], false).await.unwrap();
+    let out = download(&c, &lib, &[req], PageQuality::Full).await.unwrap();
     let series = series_from(&out, ConversionSettings::default());
     let exported = export(&lib, &job(&lib, &series, Grouping::PerChapter))
         .await
@@ -1053,7 +1082,7 @@ async fn download_with(
         &lib.files,
         &lib.id,
         reqs,
-        false,
+        PageQuality::Full,
         limits,
         &quick(),
         events,
@@ -1224,7 +1253,7 @@ async fn a_cancel_during_parallel_downloads_keeps_what_finished() {
         &lib.files,
         &lib.id,
         &reqs,
-        false,
+        PageQuality::Full,
         limits(2, 4),
         &policy,
         Some(tx),
@@ -1414,7 +1443,7 @@ async fn cancelling_stops_at_once_even_with_requests_in_flight() {
         &lib.files,
         &lib.id,
         &reqs,
-        false,
+        PageQuality::Full,
         limits(1, 6),
         &policy,
         None,

@@ -9,7 +9,7 @@ use crate::state::{paths, AppState, BootState, Modal, ModalAction, Page, Setting
 use crate::updates::{self, UpdateState, VERSION};
 use catalog::browser;
 use dioxus::prelude::*;
-use library::{DownloadLimits, DownloadSpeed};
+use library::{DownloadLimits, DownloadSpeed, PageQuality};
 
 /// The sections, in the order the sidebar lists them.
 const SECTIONS: [(SettingsSection, &str, &str); 5] = [
@@ -155,21 +155,19 @@ pub fn SettingsPage() -> Element {
                         Group { title: "Saved pages" }
                         Row {
                             label: "Page quality",
-                            desc: if s.shrink_downloads {
-                                "Tall pages are shrunk to twice your reader's screen, roughly halving disk use. Applies to new downloads."
-                            } else {
-                                "Pages are kept exactly as downloaded. Recommended."
+                            desc: match s.page_quality {
+                                PageQuality::Ultra => "As small as still reads well on an e-ink screen, about a tenth of the full size. Best for small readers. Applies to new downloads.",
+                                PageQuality::Save => "Tall pages are shrunk to twice your reader's screen, which loses nothing you can see. Applies to new downloads.",
+                                PageQuality::Full => "Pages are kept exactly as downloaded. Uses the most space.",
                             },
                             div { class: "seg",
-                                button {
-                                    class: if !s.shrink_downloads { "on" } else { "" },
-                                    onclick: move |_| { let mut st = state.settings; st.write().shrink_downloads = false; state.save_settings(); },
-                                    "Full quality"
-                                }
-                                button {
-                                    class: if s.shrink_downloads { "on" } else { "" },
-                                    onclick: move |_| { let mut st = state.settings; st.write().shrink_downloads = true; state.save_settings(); },
-                                    "Save space"
+                                for (quality, name) in [(PageQuality::Ultra, "Ultra save"), (PageQuality::Save, "Save"), (PageQuality::Full, "Full")] {
+                                    button {
+                                        key: "{name}",
+                                        class: if s.page_quality == quality { "on" } else { "" },
+                                        onclick: move |_| { let mut st = state.settings; st.write().page_quality = quality; state.save_settings(); },
+                                        "{name}"
+                                    }
                                 }
                             }
                         }

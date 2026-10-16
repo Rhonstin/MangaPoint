@@ -1,7 +1,7 @@
 //! Live timing of MangaPoint's own downloader on a real series, to compare
 //! with another tool on the same chapters.
 //!
-//!   cargo run -p pipeline --example live_compare -- <suwayomi-dir> <data-dir> <source name> "<title>" <first> <last> <chapters> <pages> [shrink]
+//!   cargo run -p pipeline --example live_compare -- <suwayomi-dir> <data-dir> <source name> "<title>" <first> <last> <chapters> <pages> [ultra|save|full]
 //!
 //! Downloads chapters numbered `first..=last` of the first search result
 //! whose title contains `<title>` into a temporary library, with the given
@@ -90,7 +90,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         &files,
         "compare",
         &requests,
-        std::env::args().nth(9).is_some_and(|v| v == "shrink"),
+        match std::env::args().nth(9).as_deref() {
+            Some("ultra") => library::PageQuality::Ultra,
+            Some("save") | Some("shrink") => library::PageQuality::Save,
+            _ => library::PageQuality::Full,
+        },
         DownloadLimits {
             chapters,
             pages,

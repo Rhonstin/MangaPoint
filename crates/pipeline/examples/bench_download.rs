@@ -3,7 +3,7 @@
 //! download takes is the cost of fetching, checking, naming and writing them.
 //!   cargo run --release -p pipeline --example bench_download -- [chapters] [pages] [page KB]
 use catalog::fake::FakeCatalog;
-use library::{DownloadLimits, LibraryFiles};
+use library::{DownloadLimits, LibraryFiles, PageQuality};
 use pipeline::{download_chapters, CancelFlag, ChapterRef, ChapterRequest, RetryPolicy};
 use std::time::Instant;
 
@@ -47,8 +47,8 @@ async fn main() {
             options: vec![ChapterRef { source_id: "s".into(), chapter_id: n }],
         })
         .collect();
-    for shrink in [false, true] {
-        let root = std::env::temp_dir().join(format!("mangapoint-bench-dl-{shrink}"));
+    for quality in [PageQuality::Full, PageQuality::Save, PageQuality::Ultra] {
+        let root = std::env::temp_dir().join(format!("mangapoint-bench-dl-{quality:?}"));
         let _ = std::fs::remove_dir_all(&root);
         let files = LibraryFiles::new(root.join("library"));
         let started = Instant::now();
@@ -57,7 +57,7 @@ async fn main() {
             &files,
             "bench-series",
             &requests,
-            shrink,
+            quality,
             DownloadLimits::default(),
             &RetryPolicy::default(),
             None,
@@ -69,7 +69,7 @@ async fn main() {
         let total: u64 = out.chapters.iter().map(|c| c.bytes).sum();
         let n: usize = out.chapters.iter().map(|c| c.pages).sum();
         println!(
-            "shrink={shrink}: {n} pages in {secs:.2}s = {:.0} pages/s, {:.0} MB/s written ({:.0} MB on disk)",
+            "{quality:?}: {n} pages in {secs:.2}s = {:.0} pages/s, {:.0} MB/s written ({:.0} MB on disk)",
             n as f64 / secs,
             total as f64 / 1e6 / secs,
             total as f64 / 1e6

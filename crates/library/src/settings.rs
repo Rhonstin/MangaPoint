@@ -375,6 +375,20 @@ fn not_yet() -> bool {
     false
 }
 
+/// How much of a page is kept when it is downloaded.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PageQuality {
+    /// As small as is still easy to read on a small e-ink screen: about a
+    /// tenth of the full size.
+    Ultra,
+    /// Tall pages are shrunk to twice the reader's screen, which loses nothing
+    /// you can see. Pages already that small are left as downloaded.
+    #[default]
+    Save,
+    /// Exactly as downloaded.
+    Full,
+}
+
 /// How the app moves between pages and parts of them.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Animations {
@@ -437,9 +451,8 @@ pub struct Settings {
     pub export: ExportSettings,
     /// Allow Suwayomi's embedded Chromium (needed by a few sources).
     pub browser_support: bool,
-    /// Shrink downloaded pages to save disk space. Off by default: pages are
-    /// kept exactly as downloaded, for the best quality.
-    pub shrink_downloads: bool,
+    /// How much of each page is kept when it is downloaded.
+    pub page_quality: PageQuality,
     /// Show a system notification when a download or an export finishes.
     pub notifications: bool,
     /// Clean (fades, one part after another) or snappy (pages just appear).
@@ -499,7 +512,7 @@ impl Default for Settings {
             conversion: ConversionSettings::default(),
             export: ExportSettings::default(),
             browser_support: false,
-            shrink_downloads: false,
+            page_quality: PageQuality::Save,
             notifications: true,
             animations: Animations::Clean,
             reader_setups: BTreeMap::new(),
@@ -594,9 +607,10 @@ mod tests {
             s.search_excluded_sources.is_empty(),
             "every source is searched until the user says otherwise"
         );
-        assert!(
-            !s.shrink_downloads,
-            "pages are kept at full quality by default"
+        assert_eq!(
+            s.page_quality,
+            PageQuality::Save,
+            "pages are shrunk when they are far larger than a reader screen, by default"
         );
     }
 

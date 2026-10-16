@@ -354,14 +354,18 @@ pub(super) async fn run_batch(state: AppState, id: u64) {
     let started = Instant::now();
     let files = library_files();
     let (defaults, default_preset) = state.new_series_defaults();
-    let shrink = state.settings.peek().shrink_downloads;
+    let quality = state.settings.peek().page_quality;
     let policy = RetryPolicy::default();
     let limits = state.settings.peek().download.limits();
     info!(
         "Download started: \"{}\", {}{}",
         batch.title,
         logic::plural(batch.requests.len(), "chapter"),
-        if shrink { " (saving space)" } else { "" }
+        match quality {
+            library::PageQuality::Ultra => " (ultra save-space pages)",
+            library::PageQuality::Save => " (saving space)",
+            library::PageQuality::Full => "",
+        }
     );
     // Adaptive: test the sources that cover about the same, then put the best
     // first for every chapter (the others stay as fallbacks).
@@ -383,7 +387,7 @@ pub(super) async fn run_batch(state: AppState, id: u64) {
         &files,
         &batch.series_id,
         &requests,
-        shrink,
+        quality,
         limits,
         &policy,
         Some(tx),
