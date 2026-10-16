@@ -126,10 +126,11 @@ If yours is missing, add it as your own reader in **Settings → Your reader** (
 name, the screen size in inches and its pixels per inch) and pick EPUB.
 
 > **A note on testing.** The conversion, the file formats and the app are tested
-> automatically and by hand on Windows. The Xteink formats are checked against a
-> parser that follows the firmware's own, but files have not yet been tried on
-> every reader listed, and the macOS and Linux builds are produced by CI but not
-> yet hand-tested. Reports are very welcome.
+> automatically and by hand on Windows. The Linux build, its tests and the `.deb`
+> install were checked on Ubuntu 24.04; the macOS build and the `.dmg` have not yet
+> been tried on a Mac. The Xteink formats are checked against a parser that follows
+> the firmware's own, but files have not yet been tried on every reader listed.
+> Reports are very welcome.
 
 ## Getting started
 
@@ -140,11 +141,16 @@ Download the file for your system from the
 
 | System | Download | How to install |
 |---|---|---|
-| Windows 10/11 (64-bit) | `MangaPoint-…-windows-x86_64.exe` | Double-click it. Needs the Microsoft Edge WebView2 runtime (included in Windows 11). |
+| Windows 10/11 (64-bit) | `MangaPoint-…-windows-x86_64-setup.exe` | Run it. It installs for you without asking for administrator rights, adds a Start menu entry and appears in **Apps → Installed apps** for uninstalling. |
 | macOS, Apple silicon | `MangaPoint-…-macos-arm64.dmg` | Open it and drag MangaPoint onto Applications. |
 | macOS, Intel | `MangaPoint-…-macos-x86_64.dmg` | The same. |
-| Linux, Debian and Ubuntu (64-bit) | `MangaPoint-…-linux-x86_64.deb` | `sudo apt install ./MangaPoint-…-linux-x86_64.deb`, which also installs what it needs. |
-| Linux, other (64-bit) | `MangaPoint-…-linux-x86_64` | `chmod +x` it and run it. Needs `webkit2gtk-4.1` and GTK 3 (see [Linux packages](#linux-packages)). |
+| Debian, Ubuntu, Mint (64-bit) | `MangaPoint-…-linux-x86_64.deb` | `sudo apt install ./MangaPoint-…-linux-x86_64.deb`, which also installs what it needs. |
+| Fedora, openSUSE, RHEL (64-bit) | `MangaPoint-…-linux-x86_64.rpm` | `sudo dnf install ./MangaPoint-…-linux-x86_64.rpm` |
+| Any other Linux (64-bit) | `MangaPoint-…-linux-x86_64` | `chmod +x` it and run it. Needs `webkit2gtk-4.1` and GTK 3 (see [Linux packages](#linux-packages)). |
+
+Prefer not to install? `MangaPoint-…-windows-x86_64-portable.exe` is the same program on its own: run it from anywhere.
+Windows needs the Microsoft Edge WebView2 runtime, which Windows 11 already has; the installer tells you if it is missing.
+Uninstalling never touches your library or settings (see [Your data](#your-data)).
 
 Each release also has `SHA256SUMS.txt` to check your download.
 
@@ -263,8 +269,10 @@ version is the title of what is merged, written as a
 [Conventional Commit](https://www.conventionalcommits.org): `feat:` raises the
 minor version, `fix:` and `perf:` the patch version, and `feat!:` the major
 version. Documentation, tests and maintenance alone do not make a release. A
-release pull request is opened from the Actions tab, and merging it builds all
-platforms and publishes the release. The details are in
+release is made by merging a pull request that raises the version (one can be
+opened from the Actions tab, or included in your own pull request); merging it
+builds all platforms and publishes the release, and a merge that leaves the version
+alone releases nothing. The details are in
 [CONTRIBUTING.md](CONTRIBUTING.md#releases-and-versions); every change is listed
 in the [changelog](CHANGELOG.md).
 

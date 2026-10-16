@@ -71,10 +71,18 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $name = "MangaPoint-${{ steps.version.outputs.value }}-${{ matrix.label }}.exe"
+          $version = "${{ steps.version.outputs.value }}"
           New-Item -ItemType Directory -Path dist | Out-Null
-          Copy-Item "target/${{ matrix.target }}/release/mangapoint.exe" "dist/$name"
-          (Get-FileHash "dist/$name" -Algorithm SHA256).Hash.ToLower() + "  $name" | Out-File "dist/$name.sha256" -Encoding ascii
+          # The installer (Start menu entry, uninstaller), built with Inno Setup.
+          choco install innosetup --no-progress -y
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          & $iscc /Qp "/DAppVersion=$version" "/DSourceExe=$PWD\target\${{ matrix.target }}\release\mangapoint.exe" "/DOutputDir=$PWD\dist" tools\windows-installer.iss
+          if ($LASTEXITCODE -ne 0) { throw "the installer was not built" }
+          # And the program on its own, for anyone who would rather not install it.
+          Copy-Item "target/${{ matrix.target }}/release/mangapoint.exe" "dist/MangaPoint-$version-${{ matrix.label }}-portable.exe"
+          foreach ($f in Get-ChildItem dist -File) {
+            (Get-FileHash $f.FullName -Algorithm SHA256).Hash.ToLower() + "  " + $f.Name | Out-File "$($f.FullName).sha256" -Encoding ascii
+          }
 
       - name: Package (Linux)
         if: runner.os == 'Linux'
@@ -84,6 +92,8 @@ jobs:
           mkdir -p dist
           cp "target/${{ matrix.target }}/release/mangapoint" "dist/MangaPoint-$version-${{ matrix.label }}"
           bash tools/package-linux-deb.sh "target/${{ matrix.target }}/release/mangapoint" "$version" "dist/MangaPoint-$version-${{ matrix.label }}.deb"
+          sudo apt-get install -y --no-install-recommends rpm
+          bash tools/package-linux-rpm.sh "target/${{ matrix.target }}/release/mangapoint" "$version" "dist/MangaPoint-$version-${{ matrix.label }}.rpm"
           (cd dist && for f in MangaPoint-*; do case "$f" in *.sha256) ;; *) sha256sum "$f" > "$f.sha256" ;; esac; done)
 
       - name: Package (macOS)

@@ -188,6 +188,10 @@ def notes_for(version):
 
 
 def main(argv=None):
+    # The changelog holds characters (arrows, ellipses) that a Windows console
+    # cannot print in its own encoding.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("current")

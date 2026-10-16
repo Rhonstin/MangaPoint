@@ -54,9 +54,12 @@ jobs:
           python-version: "3.12"
       - run: python -m unittest tools/test_release.py
 
-  # Build the installable files on every pull request too, so a change that
-  # breaks packaging is seen before it is merged (nothing is published).
+  # Build the installable files on pull requests, so a change that breaks
+  # packaging is seen before it is merged (nothing is published). Not on a push
+  # to main, where release.yml builds them when there is a new version to
+  # publish, and not for Dependabot, whose updates are judged by the checks above.
   package:
     name: Package
     needs: check
+    if: github.event_name == 'pull_request' && github.actor != 'dependabot[bot]'
     uses: ./.github/workflows/package.yml

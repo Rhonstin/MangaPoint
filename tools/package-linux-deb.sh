@@ -38,7 +38,8 @@ Version: ${version}
 Section: graphics
 Priority: optional
 Architecture: amd64
-Depends: libwebkit2gtk-4.1-0, libgtk-3-0, libxdo3, libayatana-appindicator3-1
+Depends: libwebkit2gtk-4.1-0, libgtk-3-0, libxdo3, libdbus-1-3, libssl3 | libssl3t64
+Recommends: libayatana-appindicator3-1
 Maintainer: MangaPoint contributors <https://github.com/W1seGit/MangaPoint>
 Homepage: https://github.com/W1seGit/MangaPoint
 Description: The easiest way to get manga onto your e-reader

@@ -61,6 +61,15 @@ The largest one wins, so a `fix:` and a `feat:` together make a minor release.
 Examples: `feat: export CBZ files`, `fix(export): the cover was stretched`,
 `feat!: move the library to a new folder`.
 
+**A release is made by merging a version change.** The **Release** workflow runs on
+every push to `main` and looks at the version in `Cargo.toml`. If that version
+already has a release, it stops after a couple of seconds and builds nothing. If it
+has no release yet, it builds Windows, Linux and macOS, tags the commit and
+publishes. So a pull request that raises the version (and adds its section to
+`CHANGELOG.md`) publishes its own release when it is merged, and any pull request
+that leaves the version alone does not. Raise the version in your own pull request
+with `python tools/release.py apply X.Y.Z`, or let a workflow do it:
+
 **How a release is made** (maintainers):
 
 1. Open **Actions → Prepare a release → Run workflow**. Leave it on `auto` to take

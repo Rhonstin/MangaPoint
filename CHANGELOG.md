@@ -2,6 +2,15 @@
 
 All notable changes to MangaPoint are written down here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project follows [Semantic Versioning](https://semver.org/).
 
+## [1.0.1] - 2026-10-15
+
+### Build
+
+- A Windows installer (`MangaPoint-…-windows-x86_64-setup.exe`): it installs for the current user without asking for administrator rights, adds a Start menu entry and an entry in Apps → Installed apps, and leaves your library and settings alone when uninstalled. The program on its own is still there as `…-portable.exe`.
+- An `.rpm` for Fedora, openSUSE and RHEL.
+- The `.deb` names exactly the libraries it needs.
+- A merge to `main` no longer builds every package twice.
+
 ## [1.0.0] - 2026-10-15
 
 The first release.
